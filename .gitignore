@@ -1,0 +1,36 @@
+### Rust / Cargo
+/target/
+**/*.rs.bk
+
+### Environment and local secrets
+.env
+.env.*
+!.env.example
+
+### Runtime / local data
+*.log
+logs/
+tmp/
+.cache/
+
+### SQLite and local app state
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+### Coverage / profiling artifacts
+coverage/
+*.profraw
+*.profdata
+
+### Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+### OS files
+.DS_Store
+Thumbs.db
