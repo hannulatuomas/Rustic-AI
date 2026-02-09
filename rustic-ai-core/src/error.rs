@@ -21,4 +21,19 @@ pub enum Error {
 
     #[error("storage error: {0}")]
     Storage(String),
+
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("sqlx error: {0}")]
+    Sqlx(#[from] sqlx::Error),
+
+    #[error("toml parse error: {0}")]
+    TomlParse(#[from] toml::de::Error),
+
+    #[error("toml serialization error: {0}")]
+    TomlSerialize(#[from] toml::ser::Error),
+
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
 }

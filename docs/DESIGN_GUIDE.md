@@ -39,6 +39,10 @@ For any non-trivial change, follow this exact loop:
    - Confirm consistency with:
      - `docs/DECISIONS.md`
      - this guide
+6. Update TODO (Mandatory)
+   - Update `TODO.md` in the same change.
+   - Mark completed tasks as done and keep next tasks accurate.
+   - Treat `TODO.md` as the single active task tracker.
 
 Definition of Done (Per Change)
 

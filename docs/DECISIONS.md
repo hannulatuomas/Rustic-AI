@@ -97,13 +97,14 @@ ADR-0007: Development Workflow and Quality Gate
 - Status: Accepted
 - Date: 2026-02-09
 - Context: The project must be clean, correct, and consistent. We explicitly do not want shortcuts, partial implementations, or documentation drift.
-- Decision: For all non-trivial work, follow: plan -> implement -> quality check/validation -> fix all issues properly -> validate against big-picture/integration docs. Documentation updates are part of the same change when behavior/config/API changes.
+- Decision: For all non-trivial work, follow: plan -> implement -> quality check/validation -> fix all issues properly -> validate against big-picture/integration docs -> update TODO. Documentation updates are part of the same change when behavior/config/API changes.
 - Consequences:
   - No partial/placeholder implementations; features are implemented fully and integrated.
   - Build must pass for the touched scope; failures are fixed (not deferred).
   - Unused/deprecated code/files are removed as part of the change.
   - Planning requires understanding the current repo state and prior decisions; ask clarifying questions when ambiguity materially changes the outcome.
   - Documentation remains relevant; avoid creating redundant summary docs.
+  - `TODO.md` is the single active tracker and is updated in every non-trivial change.
 
 ---
 

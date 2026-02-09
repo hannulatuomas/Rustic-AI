@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
     pub mode: RuntimeMode,
     pub features: FeatureConfig,
@@ -12,7 +13,22 @@ pub struct Config {
     pub taxonomy: TaxonomyConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            mode: RuntimeMode::Direct,
+            features: FeatureConfig::default(),
+            project: None,
+            rules: RuleConfig::default(),
+            providers: Vec::new(),
+            agents: Vec::new(),
+            tools: Vec::new(),
+            taxonomy: TaxonomyConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeMode {
     Direct,
@@ -20,6 +36,7 @@ pub enum RuntimeMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct FeatureConfig {
     pub mcp_enabled: bool,
     pub skills_enabled: bool,
@@ -28,7 +45,20 @@ pub struct FeatureConfig {
     pub triggers_enabled: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl Default for FeatureConfig {
+    fn default() -> Self {
+        Self {
+            mcp_enabled: false,
+            skills_enabled: true,
+            plugins_enabled: false,
+            workflows_enabled: true,
+            triggers_enabled: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct ProjectConfig {
     pub name: String,
     pub root_path: String,
@@ -38,7 +68,8 @@ pub struct ProjectConfig {
     pub style_guidelines: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct RuleConfig {
     pub global_files: Vec<String>,
     pub project_files: Vec<String>,
@@ -47,14 +78,49 @@ pub struct RuleConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ProviderConfig {
     pub name: String,
-    pub provider_type: String,
-    pub model: String,
-    pub auth_mode: String,
+    pub provider_type: ProviderType,
+    pub model: Option<String>,
+    pub auth_mode: AuthMode,
+    pub api_key_env: Option<String>,
+    pub base_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            provider_type: ProviderType::OpenAi,
+            model: None,
+            auth_mode: AuthMode::ApiKey,
+            api_key_env: None,
+            base_url: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderType {
+    OpenAi,
+    Anthropic,
+    Grok,
+    Google,
+    Ollama,
+    Custom,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthMode {
+    ApiKey,
+    None,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct AgentConfig {
     pub name: String,
     pub provider: String,
@@ -63,17 +129,29 @@ pub struct AgentConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ToolConfig {
     pub name: String,
     pub enabled: bool,
 }
 
+impl Default for ToolConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            enabled: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TaxonomyConfig {
     pub baskets: Vec<BasketConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct BasketConfig {
     pub name: String,
     pub sub_baskets: Vec<String>,

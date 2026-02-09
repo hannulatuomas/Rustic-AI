@@ -6,9 +6,10 @@ Quality Gate
 
 We follow a strict workflow to keep Rustic-AI clean, correct, and consistent:
 
-- Required loop: plan -> implement -> quality check/validation -> fix all issues properly -> validate against big-picture/integrations
+- Required loop: plan -> implement -> quality check/validation -> fix all issues properly -> validate against big-picture/integrations -> update TODO
 - No partial implementations, no shortcuts, no deferring fixes, no documentation drift
 - Documentation updates ship with the code changes they describe
+- `TODO.md` is the single active task tracker and must be updated in every non-trivial change
 
 Source of truth: `docs/DESIGN_GUIDE.md`
 
