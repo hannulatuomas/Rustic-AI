@@ -162,6 +162,51 @@ ADR-0010: Requirements and Tool Inventory as Planning Inputs
 
 ---
 
+ADR-0011: Rule and Context Discovery Runtime Model
+
+- Status: Accepted
+- Date: 2026-02-09
+- Context: Rules/context files need deterministic precedence across global, project, and topic/session scopes, with project-specific overrides based on where the engine is executed.
+- Decision:
+  - Resolve discovery roots from the runtime working directory (where the CLI is launched), not from the Rustic-AI repository root.
+  - Add configurable discovery controls in config:
+    - global rules base path (default `~/.rustic-ai/rules`)
+    - project rules folder (default `.agents`)
+    - additional search paths
+    - recursive toggle, max depth (default 5), and `.gitignore` filtering toggle
+    - configurable rule extensions/file names and configurable context patterns/extensions
+    - configurable topic debouncing (`30s`) and similarity threshold (`0.5`)
+  - Parse rule frontmatter as JSON metadata with applicability (`general` or `context_specific`), topics, scope hint, and priority.
+  - Store discovered rule metadata as paths + descriptors in config; rule content loading remains deferred to session/agent layers.
+  - Sort discovered rules with deterministic precedence (`global -> project -> topic/session`) and then by proximity to the runtime working directory.
+- Consequences:
+  - Foundation now supports rule/context auto-discovery with override behavior aligned to the user’s active project folder.
+  - Session/agent layers can filter context-specific rules using discovered metadata without re-scanning filesystem each turn.
+  - Topic inference and rule materialization are now explicit follow-up integration tasks.
+
+---
+
+ADR-0012: JSON Config Format and Storage Path Strategy
+
+- Status: Accepted
+- Date: 2026-02-09
+- Context: We need consistent, user-friendly configuration and predictable storage locations across project-scoped sessions and global preferences.
+- Decision:
+  - Use JSON as the default runtime config format (`config.json`) for loader and CLI defaults.
+  - Keep global reusable data under `~/.rustic-ai/` with explicit separation:
+    - `~/.rustic-ai/settings.json` for global settings
+    - `~/.rustic-ai/data/` for global data/cache
+  - Keep project/session data under runtime working directory defaults:
+    - `<workdir>/.rustic-ai/sessions.db`
+  - Keep all path behavior configurable from config.
+  - Extend rule frontmatter metadata to support Cursor-like UX semantics (`description`, `globs`, `alwaysApply`) while preserving Rustic-AI scope/topic metadata and manual `@rule-name` invocation.
+- Consequences:
+  - Config and CLI setup are consistent around JSON by default.
+  - Session persistence aligns to active project working directory, while global settings remain reusable across projects.
+  - Rule selection now supports always-apply, file-pattern activation, context-specific topics, and manual invocation with deterministic precedence.
+
+---
+
 Template (copy/paste)
 
 ADR-XXXX: <Title>

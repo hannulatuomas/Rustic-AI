@@ -36,6 +36,42 @@ pub fn validate_config(config: &Config) -> Result<()> {
                 "duplicate provider name '{name}'"
             )));
         }
+
+        if provider
+            .model
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        {
+            return Err(Error::Validation(format!(
+                "provider '{name}' must define a non-empty model"
+            )));
+        }
+
+        if provider
+            .api_key_env
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        {
+            return Err(Error::Validation(format!(
+                "provider '{name}' must define api_key_env"
+            )));
+        }
+
+        if provider
+            .base_url
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        {
+            return Err(Error::Validation(format!(
+                "provider '{name}' must define base_url"
+            )));
+        }
     }
 
     let mut tool_names = HashSet::new();
@@ -64,6 +100,68 @@ pub fn validate_config(config: &Config) -> Result<()> {
         }
     }
 
+    if config.rules.max_discovery_depth > 32 {
+        return Err(Error::Validation(
+            "rules.max_discovery_depth must be 32 or less".to_owned(),
+        ));
+    }
+
+    if !(0.0..=1.0).contains(&config.rules.topic_similarity_threshold)
+        && config.rules.topic_similarity_threshold != 0.0
+    {
+        return Err(Error::Validation(
+            "rules.topic_similarity_threshold must be between 0.0 and 1.0".to_owned(),
+        ));
+    }
+
+    if config.storage.pool_size == 0 {
+        return Err(Error::Validation(
+            "storage.pool_size must be greater than zero".to_owned(),
+        ));
+    }
+
+    if config.storage.default_root_dir_name.trim().is_empty() {
+        return Err(Error::Validation(
+            "storage.default_root_dir_name must be non-empty".to_owned(),
+        ));
+    }
+
+    if config.storage.project_database_file.trim().is_empty() {
+        return Err(Error::Validation(
+            "storage.project_database_file must be non-empty".to_owned(),
+        ));
+    }
+
+    if config.storage.connection_string_prefix.trim().is_empty() {
+        return Err(Error::Validation(
+            "storage.connection_string_prefix must be non-empty".to_owned(),
+        ));
+    }
+
+    if config.storage.global_settings_file.trim().is_empty() {
+        return Err(Error::Validation(
+            "storage.global_settings_file must be non-empty".to_owned(),
+        ));
+    }
+
+    if config.storage.global_data_subdir.trim().is_empty() {
+        return Err(Error::Validation(
+            "storage.global_data_subdir must be non-empty".to_owned(),
+        ));
+    }
+
+    if config.summarization.max_context_tokens == 0 {
+        return Err(Error::Validation(
+            "summarization.max_context_tokens must be greater than zero".to_owned(),
+        ));
+    }
+
+    if config.summarization.summary_max_tokens == 0 {
+        return Err(Error::Validation(
+            "summarization.summary_max_tokens must be greater than zero".to_owned(),
+        ));
+    }
+
     Ok(())
 }
 
@@ -79,10 +177,10 @@ mod tests {
         config.providers.push(ProviderConfig {
             name: "openai".to_owned(),
             provider_type: ProviderType::OpenAi,
-            model: Some("gpt-4o-mini".to_owned()),
+            model: Some("configured-model".to_owned()),
             auth_mode: AuthMode::ApiKey,
-            api_key_env: Some("OPENAI_API_KEY".to_owned()),
-            base_url: None,
+            api_key_env: Some("TEST_PROVIDER_API_KEY_ENV".to_owned()),
+            base_url: Some("https://api.openai.com/v1".to_owned()),
         });
         config.agents.push(AgentConfig {
             name: "orchestrator".to_owned(),

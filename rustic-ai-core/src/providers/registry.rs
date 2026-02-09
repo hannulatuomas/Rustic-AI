@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::providers::types::ModelProvider;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct ProviderRegistry {
     providers: HashMap<String, Arc<dyn ModelProvider>>,
 }

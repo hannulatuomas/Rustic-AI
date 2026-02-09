@@ -24,13 +24,56 @@ pub use storage::model::Session;
 pub struct RusticAI {
     config: Config,
     runtime: runtime::Runtime,
+    session_manager: std::sync::Arc<conversation::session_manager::SessionManager>,
+    topic_inference: rules::TopicInferenceService,
+    work_dir: std::path::PathBuf,
 }
 
 impl RusticAI {
     pub fn new(config: Config) -> Result<Self> {
         config::validate_config(&config)?;
+        let work_dir = std::env::current_dir()
+            .map_err(|err| Error::Config(format!("failed to read current directory: {err}")))?;
+        let storage_paths = storage::paths::StoragePaths::resolve(&work_dir, &config);
+        std::fs::create_dir_all(&storage_paths.project_data_dir)?;
+        std::fs::create_dir_all(&storage_paths.global_data_dir)?;
+        if let Some(parent) = storage_paths.global_settings.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if !storage_paths.global_settings.exists() {
+            std::fs::write(&storage_paths.global_settings, "{}")?;
+        }
+
+        let connection_string = format!(
+            "{}{}",
+            config.storage.connection_string_prefix,
+            storage_paths.project_database.display()
+        );
+        let sqlite =
+            storage::sqlite::SqliteStorage::new(&connection_string, config.storage.pool_size)?;
+        let session_manager =
+            std::sync::Arc::new(conversation::session_manager::SessionManager::new(
+                std::sync::Arc::new(sqlite),
+                config.rules.discovered_rules.clone(),
+                work_dir.clone(),
+            ));
+
         let runtime = runtime::Runtime::new(config.clone());
-        Ok(Self { config, runtime })
+        let inference_provider = config.summarization.provider_name.clone().ok_or_else(|| {
+            Error::Config(
+                "summarization.provider_name must be set (no implicit provider fallback)"
+                    .to_owned(),
+            )
+        })?;
+        let topic_inference = rules::TopicInferenceService::new(inference_provider);
+
+        Ok(Self {
+            config,
+            runtime,
+            session_manager,
+            topic_inference,
+            work_dir,
+        })
     }
 
     pub fn from_config_path(path: &std::path::Path) -> Result<Self> {
@@ -44,5 +87,19 @@ impl RusticAI {
 
     pub fn runtime(&self) -> &runtime::Runtime {
         &self.runtime
+    }
+
+    pub fn session_manager(
+        &self,
+    ) -> &std::sync::Arc<conversation::session_manager::SessionManager> {
+        &self.session_manager
+    }
+
+    pub fn topic_inference(&self) -> &rules::TopicInferenceService {
+        &self.topic_inference
+    }
+
+    pub fn work_dir(&self) -> &std::path::Path {
+        &self.work_dir
     }
 }

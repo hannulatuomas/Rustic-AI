@@ -27,16 +27,22 @@ Last updated: 2026-02-09
 - [ ] Phase 1 completion pass (finish remaining non-deferred tasks)
 
 ## Next (Phase 1)
-- [ ] Config: load `.cursorrules` and `.windsurfrules` into rule sources
-- [ ] Config: load context files (`AGENTS.md`, others) with deterministic precedence
-- [ ] Config: implement explicit rule precedence (`global -> project -> topic/session -> runtime`)
-- [ ] Storage: complete backend abstraction methods needed for sessions/history
-- [ ] Storage: implement SQLite schema + CRUD (first minimal usable slice)
-- [ ] Storage manager: add high-level operations used by session manager
-- [ ] Conversation: implement session manager methods (create/get/list/delete)
-- [ ] Conversation: implement context window manager behavior
-- [ ] Runtime wiring: connect storage + conversation into `RusticAI`
-- [ ] CLI: add minimal command behavior beyond initialization (single-run path)
+- [x] Config: load `.cursorrules` and `.windsurfrules` into rule sources
+- [x] Config: load context files (`AGENTS.md`, others) with deterministic precedence
+- [x] Config: implement explicit rule precedence (`global -> project -> topic/session -> runtime`)
+- [x] Storage: complete backend abstraction methods needed for sessions/history
+- [x] Storage: implement SQLite schema + CRUD (first minimal usable slice)
+- [x] Storage manager: add high-level operations used by session manager
+- [x] Conversation: implement session manager methods (create/get/list/delete)
+- [x] Conversation: implement context window manager behavior
+- [x] Runtime wiring: connect storage + conversation into `RusticAI`
+- [x] CLI: add minimal command behavior beyond initialization (single-run path)
+- [x] Session manager: consume discovered `rules.discovered_rules` metadata and load rule contents on demand
+- [x] Agent/session flow: wire LLM-based topic inference into `TopicTracker` to switch context-specific rules efficiently
+- [x] Rule frontmatter: support Cursor-like metadata (`description`, `globs`, `alwaysApply`) with manual invocation support (`@rule-name`)
+- [x] Config format: use JSON (`config.json`) as default load format
+- [x] Storage paths: split global settings/data (`~/.rustic-ai`) from project session data (`<workdir>/.rustic-ai`), all configurable
+- [x] Remove hardcoded runtime/provider/storage fallback values and require explicit provider/storage config inputs
 
 ## Phase Backlog (High Level)
 
@@ -47,13 +53,15 @@ Last updated: 2026-02-09
 
 ### Phase 3 - Providers
 - [ ] Finalize provider trait shape (streaming + token helpers)
-- [ ] Implement OpenAI/Anthropic/Grok/Google/Ollama providers
+- [ ] Implement Anthropic/Grok/Google/Ollama providers
+- [x] Implement OpenAI provider baseline
 - [ ] Add provider registry auto-wiring from config
 
 ### Phase 4 - Tools/Skills/Plugins
 - [ ] Finalize tool trait and metadata schema
 - [ ] Implement shell/ssh/filesystem/http tools (safe defaults)
 - [ ] Implement plugin loader and MCP adapter wiring
+- [ ] SSH tool: support both key-based and username/password auth, prompt credentials per use, never persist or log credentials
 
 ### Phase 5-9 - Agents/Workflows/Conversation/CLI
 - [ ] Implement agent core + memory/state
