@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::config::schema::{Config, RuntimeMode};
+use crate::config::schema::{AuthMode, Config, ProviderType, RuntimeMode, StorageBackendKind};
 use crate::error::{Error, Result};
 
 pub fn validate_config(config: &Config) -> Result<()> {
@@ -37,39 +37,42 @@ pub fn validate_config(config: &Config) -> Result<()> {
             )));
         }
 
-        if provider
-            .model
-            .as_deref()
-            .unwrap_or_default()
-            .trim()
-            .is_empty()
+        if matches!(provider.auth_mode, AuthMode::ApiKey)
+            && provider
+                .api_key_env
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
         {
             return Err(Error::Validation(format!(
-                "provider '{name}' must define a non-empty model"
+                "provider '{name}' must define api_key_env when auth_mode is api_key"
             )));
         }
 
-        if provider
-            .api_key_env
-            .as_deref()
-            .unwrap_or_default()
-            .trim()
-            .is_empty()
+        if matches!(provider.provider_type, ProviderType::OpenAi)
+            && provider
+                .model
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
         {
             return Err(Error::Validation(format!(
-                "provider '{name}' must define api_key_env"
+                "provider '{name}' must define model for open_ai"
             )));
         }
 
-        if provider
-            .base_url
-            .as_deref()
-            .unwrap_or_default()
-            .trim()
-            .is_empty()
+        if matches!(provider.provider_type, ProviderType::OpenAi)
+            && provider
+                .base_url
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
         {
             return Err(Error::Validation(format!(
-                "provider '{name}' must define base_url"
+                "provider '{name}' must define base_url for open_ai"
             )));
         }
     }
@@ -150,6 +153,53 @@ pub fn validate_config(config: &Config) -> Result<()> {
         ));
     }
 
+    match config.storage.backend {
+        StorageBackendKind::Sqlite => {
+            if config.storage.sqlite.journal_mode.trim().is_empty() {
+                return Err(Error::Validation(
+                    "storage.sqlite.journal_mode must be non-empty".to_owned(),
+                ));
+            }
+            if config.storage.sqlite.synchronous.trim().is_empty() {
+                return Err(Error::Validation(
+                    "storage.sqlite.synchronous must be non-empty".to_owned(),
+                ));
+            }
+            if config.storage.sqlite.busy_timeout_ms == 0 {
+                return Err(Error::Validation(
+                    "storage.sqlite.busy_timeout_ms must be greater than zero".to_owned(),
+                ));
+            }
+            if !is_allowed_sqlite_journal_mode(&config.storage.sqlite.journal_mode) {
+                return Err(Error::Validation(
+                    "storage.sqlite.journal_mode must be one of: DELETE, TRUNCATE, PERSIST, MEMORY, WAL, OFF".to_owned(),
+                ));
+            }
+            if !is_allowed_sqlite_synchronous(&config.storage.sqlite.synchronous) {
+                return Err(Error::Validation(
+                    "storage.sqlite.synchronous must be one of: OFF, NORMAL, FULL, EXTRA"
+                        .to_owned(),
+                ));
+            }
+        }
+        StorageBackendKind::Postgres => {
+            if config
+                .storage
+                .postgres
+                .connection_url
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                return Err(Error::Validation(
+                    "storage.postgres.connection_url must be set for postgres backend".to_owned(),
+                ));
+            }
+        }
+        StorageBackendKind::Custom => {}
+    }
+
     if config.summarization.max_context_tokens == 0 {
         return Err(Error::Validation(
             "summarization.max_context_tokens must be greater than zero".to_owned(),
@@ -163,6 +213,20 @@ pub fn validate_config(config: &Config) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn is_allowed_sqlite_journal_mode(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_uppercase().as_str(),
+        "DELETE" | "TRUNCATE" | "PERSIST" | "MEMORY" | "WAL" | "OFF"
+    )
+}
+
+fn is_allowed_sqlite_synchronous(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_uppercase().as_str(),
+        "OFF" | "NORMAL" | "FULL" | "EXTRA"
+    )
 }
 
 #[cfg(test)]
@@ -181,6 +245,7 @@ mod tests {
             auth_mode: AuthMode::ApiKey,
             api_key_env: Some("TEST_PROVIDER_API_KEY_ENV".to_owned()),
             base_url: Some("https://api.openai.com/v1".to_owned()),
+            settings: None,
         });
         config.agents.push(AgentConfig {
             name: "orchestrator".to_owned(),

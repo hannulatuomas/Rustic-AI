@@ -1,3 +1,4 @@
+pub mod factory;
 pub mod model;
 pub mod paths;
 pub mod sqlite;
@@ -7,6 +8,8 @@ use uuid::Uuid;
 
 use crate::error::Result;
 use crate::storage::model::{Message, Session, SessionConfig};
+
+pub use factory::create_storage_backend;
 
 #[async_trait]
 pub trait StorageBackend: Send + Sync {

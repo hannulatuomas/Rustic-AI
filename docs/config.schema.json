@@ -1,0 +1,321 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rustic-ai.local/config.schema.json",
+  "title": "Rustic-AI Config",
+  "type": "object",
+  "required": [
+    "mode",
+    "features",
+    "storage",
+    "summarization",
+    "rules",
+    "providers",
+    "agents",
+    "tools",
+    "taxonomy"
+  ],
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": ["direct", "project"]
+    },
+    "features": {
+      "type": "object",
+      "required": [
+        "mcp_enabled",
+        "skills_enabled",
+        "plugins_enabled",
+        "workflows_enabled",
+        "triggers_enabled"
+      ],
+      "properties": {
+        "mcp_enabled": { "type": "boolean" },
+        "skills_enabled": { "type": "boolean" },
+        "plugins_enabled": { "type": "boolean" },
+        "workflows_enabled": { "type": "boolean" },
+        "triggers_enabled": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "storage": {
+      "type": "object",
+      "required": [
+        "backend",
+        "default_root_dir_name",
+        "project_database_file",
+        "connection_string_prefix",
+        "global_settings_file",
+        "global_data_subdir",
+        "pool_size",
+        "sqlite",
+        "postgres"
+      ],
+      "properties": {
+        "backend": {
+          "type": "string",
+          "enum": ["sqlite", "postgres", "custom"]
+        },
+        "default_root_dir_name": { "type": "string", "minLength": 1 },
+        "project_data_path": { "type": ["string", "null"] },
+        "project_database_file": { "type": "string", "minLength": 1 },
+        "connection_string_prefix": { "type": "string", "minLength": 1 },
+        "global_root_path": { "type": ["string", "null"] },
+        "global_settings_file": { "type": "string", "minLength": 1 },
+        "global_data_subdir": { "type": "string", "minLength": 1 },
+        "pool_size": { "type": "integer", "minimum": 1 },
+        "sqlite": {
+          "type": "object",
+          "required": [
+            "busy_timeout_ms",
+            "journal_mode",
+            "synchronous",
+            "foreign_keys"
+          ],
+          "properties": {
+            "busy_timeout_ms": { "type": "integer", "minimum": 1 },
+            "journal_mode": { "type": "string", "minLength": 1 },
+            "synchronous": { "type": "string", "minLength": 1 },
+            "foreign_keys": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "postgres": {
+          "type": "object",
+          "required": ["connection_url", "schema_name"],
+          "properties": {
+            "connection_url": { "type": ["string", "null"] },
+            "schema_name": { "type": ["string", "null"] }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "summarization": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "provider_name",
+        "max_context_tokens",
+        "summary_max_tokens"
+      ],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "provider_name": { "type": ["string", "null"] },
+        "max_context_tokens": { "type": "integer", "minimum": 1 },
+        "summary_max_tokens": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "rules": {
+      "type": "object",
+      "required": [
+        "global_rules_path",
+        "project_rules_folder",
+        "additional_search_paths",
+        "recursive_discovery",
+        "max_discovery_depth",
+        "use_gitignore",
+        "rule_extensions",
+        "rule_file_names",
+        "context_file_patterns",
+        "context_extensions",
+        "topic_debounce_interval_secs",
+        "topic_similarity_threshold",
+        "global_files",
+        "project_files",
+        "topic_files",
+        "context_files",
+        "discovered_rules"
+      ],
+      "properties": {
+        "global_rules_path": { "type": "string" },
+        "project_rules_folder": { "type": "string" },
+        "additional_search_paths": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "recursive_discovery": { "type": "boolean" },
+        "max_discovery_depth": { "type": "integer", "minimum": 0 },
+        "use_gitignore": { "type": "boolean" },
+        "rule_extensions": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "rule_file_names": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "context_file_patterns": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "context_extensions": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "topic_debounce_interval_secs": { "type": "integer", "minimum": 0 },
+        "topic_similarity_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+        "global_files": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "project_files": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "topic_files": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "context_files": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "discovered_rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "scope",
+              "globs",
+              "always_apply",
+              "applicability",
+              "topics"
+            ],
+            "properties": {
+              "path": { "type": "string" },
+              "scope": { "type": "string", "enum": ["global", "project", "topic"] },
+              "description": { "type": ["string", "null"] },
+              "globs": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "always_apply": { "type": "boolean" },
+              "applicability": {
+                "type": "string",
+                "enum": ["general", "context_specific"]
+              },
+              "topics": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "priority": { "type": ["integer", "null"] }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "providers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "name",
+              "provider_type",
+              "auth_mode",
+              "model",
+              "api_key_env",
+              "base_url"
+            ],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "provider_type": { "const": "open_ai" },
+              "auth_mode": { "type": "string", "enum": ["api_key", "none"] },
+              "model": { "type": "string", "minLength": 1 },
+              "api_key_env": { "type": "string", "minLength": 1 },
+              "base_url": { "type": "string", "minLength": 1 },
+              "settings": {
+                "type": ["object", "null"],
+                "additionalProperties": true
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["name", "provider_type", "auth_mode"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "provider_type": {
+                "type": "string",
+                "enum": ["anthropic", "grok", "google", "ollama", "custom"]
+              },
+              "auth_mode": { "type": "string", "enum": ["api_key", "none"] },
+              "model": { "type": ["string", "null"] },
+              "api_key_env": { "type": ["string", "null"] },
+              "base_url": { "type": ["string", "null"] },
+              "settings": {
+                "type": ["object", "null"],
+                "additionalProperties": true
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "agents": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "provider", "tools", "skills"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "provider": { "type": "string", "minLength": 1 },
+          "tools": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "skills": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "enabled"],
+        "properties": {
+          "name": { "type": "string" },
+          "enabled": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "taxonomy": {
+      "type": "object",
+      "required": ["baskets"],
+      "properties": {
+        "baskets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "sub_baskets"],
+            "properties": {
+              "name": { "type": "string" },
+              "sub_baskets": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

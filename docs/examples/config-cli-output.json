@@ -1,0 +1,65 @@
+{
+  "success_examples": [
+    {
+      "schema": "rustic-ai-cli/config-output/v1",
+      "status": "ok",
+      "command": "config.snapshot",
+      "data": {
+        "version": 12,
+        "path": "/home/user/project/config.json",
+        "config": {
+          "mode": "direct",
+          "summarization": {
+            "enabled": true,
+            "provider_name": "openai-main",
+            "max_context_tokens": 16000,
+            "summary_max_tokens": 500
+          }
+        }
+      }
+    },
+    {
+      "schema": "rustic-ai-cli/config-output/v1",
+      "status": "ok",
+      "command": "config.get",
+      "data": {
+        "path": "summarization.provider_name",
+        "source": "project_explicit",
+        "effective": "openai-main",
+        "project": "openai-main",
+        "global": "shared-provider"
+      }
+    },
+    {
+      "schema": "rustic-ai-cli/config-output/v1",
+      "status": "ok",
+      "command": "config.mutation",
+      "data": {
+        "action": "updated",
+        "version": 7
+      }
+    }
+  ],
+  "error_examples": [
+    {
+      "schema": "rustic-ai-cli/config-output/v1",
+      "status": "error",
+      "command": "config",
+      "error": {
+        "code": "not_found",
+        "message": "not found: provider 'missing-provider' not found",
+        "details": null
+      }
+    },
+    {
+      "schema": "rustic-ai-cli/config-output/v1",
+      "status": "error",
+      "command": "config",
+      "error": {
+        "code": "validation_error",
+        "message": "validation error: storage.pool_size must be greater than zero",
+        "details": null
+      }
+    }
+  ]
+}

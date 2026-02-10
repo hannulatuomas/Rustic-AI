@@ -5,6 +5,7 @@ use sqlx::Row;
 use tokio::sync::OnceCell;
 use uuid::Uuid;
 
+use crate::config::schema::SqliteStorageConfig;
 use crate::error::{Error, Result};
 use crate::storage::model::{Message, Session, SessionConfig};
 use crate::storage::StorageBackend;
@@ -28,10 +29,15 @@ const SCHEMA_V1: [&str; 12] = [
 pub struct SqliteStorage {
     pool: sqlx::SqlitePool,
     initialized: std::sync::Arc<OnceCell<()>>,
+    options: SqliteStorageConfig,
 }
 
 impl SqliteStorage {
-    pub fn new(connection_string: &str, pool_size: usize) -> Result<Self> {
+    pub fn new(
+        connection_string: &str,
+        pool_size: usize,
+        options: SqliteStorageConfig,
+    ) -> Result<Self> {
         let pool = SqlitePoolOptions::new()
             .max_connections(pool_size as u32)
             .connect_lazy(connection_string)
@@ -41,12 +47,14 @@ impl SqliteStorage {
         Ok(Self {
             pool,
             initialized: std::sync::Arc::new(OnceCell::new()),
+            options,
         })
     }
 
     async fn ensure_initialized(&self) -> Result<()> {
         self.initialized
             .get_or_try_init(|| async {
+                self.apply_runtime_settings().await?;
                 for statement in SCHEMA_V1 {
                     sqlx::query(statement).execute(&self.pool).await?;
                 }
@@ -55,6 +63,34 @@ impl SqliteStorage {
             .await
             .map_err(Error::from)
             .map(|_| ())
+    }
+
+    async fn apply_runtime_settings(&self) -> std::result::Result<(), sqlx::Error> {
+        let foreign_keys = if self.options.foreign_keys {
+            "ON"
+        } else {
+            "OFF"
+        };
+        let journal_mode = self.options.journal_mode.trim().to_ascii_uppercase();
+        let synchronous = self.options.synchronous.trim().to_ascii_uppercase();
+
+        sqlx::query(&format!("PRAGMA foreign_keys = {foreign_keys}"))
+            .execute(&self.pool)
+            .await?;
+        sqlx::query(&format!("PRAGMA journal_mode = {journal_mode}"))
+            .execute(&self.pool)
+            .await?;
+        sqlx::query(&format!("PRAGMA synchronous = {synchronous}"))
+            .execute(&self.pool)
+            .await?;
+        sqlx::query(&format!(
+            "PRAGMA busy_timeout = {}",
+            self.options.busy_timeout_ms
+        ))
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
     }
 
     fn parse_timestamp(value: &str) -> Result<DateTime<Utc>> {

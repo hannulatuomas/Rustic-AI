@@ -207,6 +207,89 @@ ADR-0012: JSON Config Format and Storage Path Strategy
 
 ---
 
+ADR-0013: Storage Backend Factory and Explicit Backend Selection
+
+- Status: Accepted
+- Date: 2026-02-10
+- Context: Runtime/storage wiring previously referenced SQLite directly in core initialization, making backend replacement harder.
+- Decision:
+  - Add explicit storage backend selection in config via `storage.backend` (`sqlite`, `postgres`, `custom`).
+  - Introduce backend-specific config namespaces under `storage`:
+    - `storage.sqlite.*` for SQLite runtime settings
+    - `storage.postgres.*` reserved for future PostgreSQL implementation
+  - Introduce storage factory boundary (`storage::create_storage_backend`) and remove direct SQLite construction from `RusticAI::new`.
+  - Keep `StorageBackend` trait as the only persistence boundary exposed to conversation/runtime layers.
+  - For unimplemented backends, fail fast with explicit errors:
+    - `storage backend 'postgres' is not implemented yet`
+    - `storage backend 'custom' is not implemented yet`
+- Consequences:
+  - Storage backend can be swapped with minimal impact to runtime/session code.
+  - Backend-specific tuning is configurable and isolated.
+  - Unknown/unimplemented backend selection fails clearly at startup.
+
+---
+
+ADR-0014: Provider Factory and Explicit Provider Wiring
+
+- Status: Accepted
+- Date: 2026-02-10
+- Context: Runtime had provider-specific wiring logic directly in `Runtime::new`, making provider extension and replacement harder.
+- Decision:
+  - Introduce provider factory boundary (`providers::create_provider_registry`) and move provider-specific construction out of runtime.
+  - Make `Runtime::new` return `Result<Self>` and fail fast when provider setup cannot be completed.
+  - Require explicit provider config and explicit env var availability; do not use provider-specific fallback values.
+  - Return clear "not implemented yet" errors for configured provider types that are not yet available.
+- Consequences:
+  - Runtime is provider-agnostic and easier to extend for additional provider implementations.
+  - Misconfiguration errors are surfaced during startup with actionable error messages.
+  - Provider onboarding follows a single factory extension point.
+
+---
+
+ADR-0015: Provider Config Schema Is Type-Specific and Extensible
+
+- Status: Accepted
+- Date: 2026-02-10
+- Context: A single provider schema requiring all fields for all provider types makes future provider onboarding brittle and forces runtime reshaping.
+- Decision:
+  - Use type-specific schema requirements for providers:
+    - `open_ai` requires explicit `model`, `api_key_env`, and `base_url`.
+    - Other provider types currently require generic identity/auth fields and may carry provider-specific `settings`.
+  - Add optional `settings` object to provider config for forward-compatible, provider-specific options.
+  - Keep strict CLI validation aligned with type-specific requirements.
+- Consequences:
+  - New providers can be added incrementally without breaking existing config shape.
+  - Runtime/provider factory remains stable while provider-specific options evolve.
+  - Validation remains explicit and deterministic for currently implemented providers.
+
+---
+
+ADR-0016: Config Mutation Layer with Typed Paths and Atomic Persistence
+
+- Status: Accepted
+- Date: 2026-02-10
+- Context: Multiple frontends (CLI/TUI/GUI/REST) need consistent config reads/partial writes without rewriting whole files manually.
+- Decision:
+  - Add `ConfigManager` in core as the config mutation boundary.
+  - Add typed `ConfigPath` and `ConfigScope` for stable, non-stringly config access/update APIs.
+  - Support partial updates via patch list (`ConfigChange`) with all-or-nothing apply semantics.
+  - Support effective config reads with source attribution (project/global/default).
+  - Allow explicit scope-targeted writes (`project` or `global`) so local overrides can differ from effective source.
+  - Persist updates atomically using temp-file write + fsync + rename.
+  - Validate effective config after patches before commit/persist.
+  - Keep session-scope writes explicitly unimplemented for now with clear errors.
+  - Add stable machine-readable CLI output envelope for config commands:
+    - schema id: `rustic-ai-cli/config-output/v1`
+    - success fields: `schema`, `status`, `command`, `data`
+    - failure fields: `schema`, `status`, `command`, `error{code,message,details}`
+- Consequences:
+  - Frontends can implement get/set/patch behavior consistently without custom file mutation logic.
+  - Config writes are safer against partial/corrupt file states.
+  - Frontend adapters (TUI/GUI/REST bridge) can depend on a stable JSON output contract.
+  - Future hot-reload and event propagation can integrate with `ConfigManager` as a single change source.
+
+---
+
 Template (copy/paste)
 
 ADR-XXXX: <Title>

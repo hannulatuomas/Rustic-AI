@@ -1,16 +1,18 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleScopeConfig {
     Global,
+    #[default]
     Project,
     Topic,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleApplicability {
+    #[default]
     General,
     ContextSpecific,
 }
@@ -50,6 +52,7 @@ impl Default for Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StorageConfig {
+    pub backend: StorageBackendKind,
     pub default_root_dir_name: String,
     pub project_data_path: Option<String>,
     pub project_database_file: String,
@@ -58,11 +61,14 @@ pub struct StorageConfig {
     pub global_settings_file: String,
     pub global_data_subdir: String,
     pub pool_size: usize,
+    pub sqlite: SqliteStorageConfig,
+    pub postgres: PostgresStorageConfig,
 }
 
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
+            backend: StorageBackendKind::Sqlite,
             default_root_dir_name: ".rustic-ai".to_owned(),
             project_data_path: None,
             project_database_file: "sessions.db".to_owned(),
@@ -71,8 +77,46 @@ impl Default for StorageConfig {
             global_settings_file: "settings.json".to_owned(),
             global_data_subdir: "data".to_owned(),
             pool_size: 5,
+            sqlite: SqliteStorageConfig::default(),
+            postgres: PostgresStorageConfig::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageBackendKind {
+    #[default]
+    Sqlite,
+    Postgres,
+    Custom,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SqliteStorageConfig {
+    pub busy_timeout_ms: u64,
+    pub journal_mode: String,
+    pub synchronous: String,
+    pub foreign_keys: bool,
+}
+
+impl Default for SqliteStorageConfig {
+    fn default() -> Self {
+        Self {
+            busy_timeout_ms: 5_000,
+            journal_mode: "WAL".to_owned(),
+            synchronous: "NORMAL".to_owned(),
+            foreign_keys: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PostgresStorageConfig {
+    pub connection_url: Option<String>,
+    pub schema_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,18 +241,6 @@ pub struct DiscoveredRuleConfig {
     pub priority: Option<i32>,
 }
 
-impl Default for RuleScopeConfig {
-    fn default() -> Self {
-        Self::Project
-    }
-}
-
-impl Default for RuleApplicability {
-    fn default() -> Self {
-        Self::General
-    }
-}
-
 impl Default for DiscoveredRuleConfig {
     fn default() -> Self {
         Self {
@@ -233,6 +265,7 @@ pub struct ProviderConfig {
     pub auth_mode: AuthMode,
     pub api_key_env: Option<String>,
     pub base_url: Option<String>,
+    pub settings: Option<serde_json::Value>,
 }
 
 impl Default for ProviderConfig {
@@ -244,6 +277,7 @@ impl Default for ProviderConfig {
             auth_mode: AuthMode::ApiKey,
             api_key_env: None,
             base_url: None,
+            settings: None,
         }
     }
 }

@@ -1,0 +1,86 @@
+{
+  "mode": "direct",
+  "features": {
+    "mcp_enabled": false,
+    "skills_enabled": true,
+    "plugins_enabled": false,
+    "workflows_enabled": true,
+    "triggers_enabled": false
+  },
+  "storage": {
+    "backend": "sqlite",
+    "default_root_dir_name": ".rustic-ai",
+    "project_data_path": null,
+    "project_database_file": "sessions.db",
+    "connection_string_prefix": "sqlite://",
+    "global_root_path": null,
+    "global_settings_file": "settings.json",
+    "global_data_subdir": "data",
+    "pool_size": 5,
+    "sqlite": {
+      "busy_timeout_ms": 5000,
+      "journal_mode": "WAL",
+      "synchronous": "NORMAL",
+      "foreign_keys": true
+    },
+    "postgres": {
+      "connection_url": null,
+      "schema_name": null
+    }
+  },
+  "summarization": {
+    "enabled": true,
+    "provider_name": "openai-main",
+    "max_context_tokens": 16000,
+    "summary_max_tokens": 500
+  },
+  "rules": {
+    "global_rules_path": "~/.rustic-ai/rules",
+    "project_rules_folder": ".agents",
+    "additional_search_paths": [],
+    "recursive_discovery": true,
+    "max_discovery_depth": 5,
+    "use_gitignore": true,
+    "rule_extensions": ["md", "rules", "txt"],
+    "rule_file_names": [".cursorrules", ".windsurfrules"],
+    "context_file_patterns": ["**/AGENTS.md", "**/CLAUDE.md", "**/*.md"],
+    "context_extensions": ["md", "txt"],
+    "topic_debounce_interval_secs": 30,
+    "topic_similarity_threshold": 0.5,
+    "global_files": [],
+    "project_files": [],
+    "topic_files": [],
+    "context_files": [],
+    "discovered_rules": []
+  },
+  "providers": [
+    {
+      "name": "openai-main",
+      "provider_type": "open_ai",
+      "model": "gpt-4.1",
+      "auth_mode": "api_key",
+      "api_key_env": "OPENAI_API_KEY",
+      "base_url": "https://api.openai.com/v1",
+      "settings": {
+        "request_timeout_ms": 30000
+      }
+    }
+  ],
+  "agents": [
+    {
+      "name": "orchestrator",
+      "provider": "openai-main",
+      "tools": ["shell"],
+      "skills": []
+    }
+  ],
+  "tools": [
+    {
+      "name": "shell",
+      "enabled": true
+    }
+  ],
+  "taxonomy": {
+    "baskets": []
+  }
+}

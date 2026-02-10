@@ -44,21 +44,15 @@ impl RusticAI {
             std::fs::write(&storage_paths.global_settings, "{}")?;
         }
 
-        let connection_string = format!(
-            "{}{}",
-            config.storage.connection_string_prefix,
-            storage_paths.project_database.display()
-        );
-        let sqlite =
-            storage::sqlite::SqliteStorage::new(&connection_string, config.storage.pool_size)?;
+        let storage_backend = storage::create_storage_backend(&config, &storage_paths)?;
         let session_manager =
             std::sync::Arc::new(conversation::session_manager::SessionManager::new(
-                std::sync::Arc::new(sqlite),
+                storage_backend,
                 config.rules.discovered_rules.clone(),
                 work_dir.clone(),
             ));
 
-        let runtime = runtime::Runtime::new(config.clone());
+        let runtime = runtime::Runtime::new(config.clone())?;
         let inference_provider = config.summarization.provider_name.clone().ok_or_else(|| {
             Error::Config(
                 "summarization.provider_name must be set (no implicit provider fallback)"

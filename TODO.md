@@ -43,19 +43,28 @@ Last updated: 2026-02-09
 - [x] Config format: use JSON (`config.json`) as default load format
 - [x] Storage paths: split global settings/data (`~/.rustic-ai`) from project session data (`<workdir>/.rustic-ai`), all configurable
 - [x] Remove hardcoded runtime/provider/storage fallback values and require explicit provider/storage config inputs
+- [x] Add `config.example.json` and `docs/config.schema.json` for explicit setup and validation
+- [x] Add config mutation foundation (`ConfigManager`, typed `ConfigPath`, atomic partial updates)
+- [x] Add CLI config operations (`snapshot/get/set/unset/patch`) with scope-aware writes and effective-value source visibility
+- [x] Add machine-readable config CLI responses (`--output json`) for frontend/API adapter consumption
+- [x] Add stable JSON envelope contract for config CLI output (`rustic-ai-cli/config-output/v1`)
+- [x] Add stable error envelope for config CLI JSON output (`status: error`, `code`, `message`, `details`)
+- [x] Add example payloads for config CLI JSON envelopes (`docs/examples/config-cli-output.json`)
+- [x] Add explicit `config.snapshot` JSON envelope example payload
 
 ## Phase Backlog (High Level)
 
 ### Phase 2 - Storage
-- [ ] Finalize `StorageBackend` trait surface
-- [ ] Complete SQLite implementation with migrations and indexes
-- [ ] Add storage integration tests (including in-memory DB)
+- [x] Finalize `StorageBackend` trait surface
+- [x] Complete SQLite implementation with migrations and indexes
+- [ ] Add storage integration tests (including in-memory DB; deferred until full working foundation)
 
 ### Phase 3 - Providers
 - [ ] Finalize provider trait shape (streaming + token helpers)
 - [ ] Implement Anthropic/Grok/Google/Ollama providers
 - [x] Implement OpenAI provider baseline
-- [ ] Add provider registry auto-wiring from config
+- [x] Add provider registry auto-wiring from config
+- [x] Make provider schema type-specific (open_ai strict requirements; other providers extensible via `settings`)
 
 ### Phase 4 - Tools/Skills/Plugins
 - [ ] Finalize tool trait and metadata schema
@@ -74,6 +83,7 @@ Last updated: 2026-02-09
 - [ ] Permission policy enforcement end-to-end
 - [ ] Reliability patterns (retry/fallback/circuit breaker/shutdown)
 - [ ] Logging/tracing polish (`init_logging`, prod json + dev pretty output, trace correlation)
+- [ ] Config hot-reload: file watcher -> `ConfigManager.reload()` -> `ConfigChanged` event bus publish (debounced/coalesced)
 - [ ] Performance profiling and optimization
 - [ ] Hardening/extensibility checks
 

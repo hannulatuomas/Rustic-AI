@@ -72,6 +72,37 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 ```
 
+## Configuration
+
+- Default runtime config file: `config.json`
+- Example config: `config.example.json`
+- JSON schema: `docs/config.schema.json`
+- Config CLI JSON envelope schema: `docs/config.cli-output.schema.json`
+- Envelope supports both success (`status: ok`) and failure (`status: error`) payloads
+- JSON envelope examples: `docs/examples/config-cli-output.json`
+
+Quick start:
+
+```bash
+cp config.example.json config.json
+export OPENAI_API_KEY="<your-key>"
+cargo run -p rustic-ai-cli -- --config config.json discover
+cargo run -p rustic-ai-cli -- --config config.json validate-config --schema docs/config.schema.json
+cargo run -p rustic-ai-cli -- --config config.json validate-config --strict
+
+# config manager commands (partial updates, persisted atomically)
+cargo run -p rustic-ai-cli -- --config config.json config snapshot
+cargo run -p rustic-ai-cli -- --config config.json config get --path summarization.provider_name
+cargo run -p rustic-ai-cli -- --config config.json config get --scope project --path storage.pool_size
+cargo run -p rustic-ai-cli -- --config config.json config set --scope project --path storage.pool_size --value-json 8
+cargo run -p rustic-ai-cli -- --config config.json config unset --scope project --path project.summarization_provider_name
+cargo run -p rustic-ai-cli -- --config config.json config get --path summarization.provider_name --output json
+cargo run -p rustic-ai-cli -- --config config.json config snapshot --output json
+
+# patch file format: [{"scope":"project","path":"rules.max_discovery_depth","value":7}]
+cargo run -p rustic-ai-cli -- --config config.json config patch --file config.patch.json
+```
+
 ## Documentation You Should Read First
 
 - `docs/DESIGN_GUIDE.md` - required workflow and definition of done

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rustic-ai.local/config.cli-output.schema.json",
+  "title": "Rustic-AI CLI Config Output Envelope",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["schema", "status", "command", "data"],
+      "properties": {
+        "schema": {
+          "type": "string",
+          "const": "rustic-ai-cli/config-output/v1"
+        },
+        "status": {
+          "type": "string",
+          "const": "ok"
+        },
+        "command": {
+          "type": "string",
+          "enum": ["config.snapshot", "config.get", "config.mutation"]
+        },
+        "data": {
+          "type": "object",
+          "description": "Command-specific payload"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": ["schema", "status", "command", "error"],
+      "properties": {
+        "schema": {
+          "type": "string",
+          "const": "rustic-ai-cli/config-output/v1"
+        },
+        "status": {
+          "type": "string",
+          "const": "error"
+        },
+        "command": {
+          "type": "string",
+          "const": "config"
+        },
+        "error": {
+          "type": "object",
+          "required": ["code", "message", "details"],
+          "properties": {
+            "code": {
+              "type": "string",
+              "enum": [
+                "config_error",
+                "validation_error",
+                "not_found",
+                "provider_error",
+                "tool_error",
+                "storage_error",
+                "io_error",
+                "sqlx_error",
+                "toml_parse_error",
+                "toml_serialize_error",
+                "json_error"
+              ]
+            },
+            "message": { "type": "string" },
+            "details": { "type": ["object", "array", "string", "number", "boolean", "null"] }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  ]
+}

@@ -1,7 +1,10 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
-use crate::config::schema::{Config, RuntimeMode, StorageConfig, SummarizationConfig};
+use crate::config::schema::{
+    Config, PostgresStorageConfig, RuntimeMode, SqliteStorageConfig, StorageConfig,
+    SummarizationConfig,
+};
 use crate::error::{Error, Result};
 use crate::rules::discover_rule_and_context_files;
 
@@ -220,6 +223,7 @@ fn merge_summarization(
 
 fn merge_storage(base: StorageConfig, override_values: StorageConfig) -> StorageConfig {
     StorageConfig {
+        backend: override_values.backend,
         default_root_dir_name: merge_string(
             base.default_root_dir_name,
             override_values.default_root_dir_name,
@@ -243,6 +247,30 @@ fn merge_storage(base: StorageConfig, override_values: StorageConfig) -> Storage
             override_values.global_data_subdir,
         ),
         pool_size: merge_usize(base.pool_size, override_values.pool_size),
+        sqlite: merge_sqlite_storage(base.sqlite, override_values.sqlite),
+        postgres: merge_postgres_storage(base.postgres, override_values.postgres),
+    }
+}
+
+fn merge_sqlite_storage(
+    base: SqliteStorageConfig,
+    override_values: SqliteStorageConfig,
+) -> SqliteStorageConfig {
+    SqliteStorageConfig {
+        busy_timeout_ms: merge_u64(base.busy_timeout_ms, override_values.busy_timeout_ms),
+        journal_mode: merge_string(base.journal_mode, override_values.journal_mode),
+        synchronous: merge_string(base.synchronous, override_values.synchronous),
+        foreign_keys: merge_bool(base.foreign_keys, override_values.foreign_keys),
+    }
+}
+
+fn merge_postgres_storage(
+    base: PostgresStorageConfig,
+    override_values: PostgresStorageConfig,
+) -> PostgresStorageConfig {
+    PostgresStorageConfig {
+        connection_url: override_values.connection_url.or(base.connection_url),
+        schema_name: override_values.schema_name.or(base.schema_name),
     }
 }
 
@@ -324,6 +352,7 @@ mod tests {
             auth_mode: AuthMode::ApiKey,
             api_key_env: Some("TEST_PROVIDER_API_KEY_ENV".to_owned()),
             base_url: None,
+            settings: None,
         });
 
         let mut override_config = Config {
