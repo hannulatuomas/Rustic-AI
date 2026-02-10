@@ -7,9 +7,9 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::error::Result;
-use crate::storage::model::{Message, Session, SessionConfig};
 
 pub use factory::create_storage_backend;
+pub use model::{Message, PendingToolState, Session, SessionConfig};
 
 #[async_trait]
 pub trait StorageBackend: Send + Sync {
@@ -36,4 +36,13 @@ pub trait StorageBackend: Send + Sync {
 
     async fn track_manual_invocation(&self, session_id: Uuid, rule_path: &str) -> Result<()>;
     async fn get_manual_invocations(&self, session_id: Uuid) -> Result<Vec<String>>;
+
+    // Pending tool execution state
+    async fn set_pending_tool(&self, state: &PendingToolState) -> Result<()>;
+    async fn get_and_clear_pending_tool(
+        &self,
+        session_id: Uuid,
+    ) -> Result<Option<PendingToolState>>;
+    async fn delete_stale_pending_tools(&self, older_than_secs: u64) -> Result<usize>;
+    async fn has_pending_tool(&self, session_id: Uuid) -> Result<bool>;
 }

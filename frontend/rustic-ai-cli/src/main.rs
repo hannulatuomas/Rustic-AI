@@ -7,8 +7,225 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use jsonschema::JSONSchema;
+use rustic_ai_core::auth::{CredentialStore, SubscriptionAuthManager};
+use rustic_ai_core::config::schema::{AuthMode, ProviderType};
 use rustic_ai_core::config::{ConfigChange, ConfigManager, ConfigPath, ConfigScope};
+use rustic_ai_core::providers::auth_capabilities::{auth_mode_name, supported_auth_mode_names};
 use serde::{Deserialize, Serialize};
+
+fn open_url_in_browser(url: &str) -> rustic_ai_core::Result<()> {
+    #[cfg(target_os = "linux")]
+    let command = ("xdg-open", vec![url]);
+
+    #[cfg(target_os = "macos")]
+    let command = ("open", vec![url]);
+
+    #[cfg(target_os = "windows")]
+    let command = ("cmd", vec!["/C", "start", "", url]);
+
+    let status = std::process::Command::new(command.0)
+        .args(command.1)
+        .status()
+        .map_err(|err| {
+            rustic_ai_core::Error::Config(format!("failed to open browser automatically: {err}"))
+        })?;
+
+    if !status.success() {
+        return Err(rustic_ai_core::Error::Config(
+            "failed to open browser automatically".to_owned(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn resolve_provider<'a>(
+    config: &'a rustic_ai_core::Config,
+    provider_name: &str,
+) -> rustic_ai_core::Result<&'a rustic_ai_core::config::schema::ProviderConfig> {
+    config
+        .providers
+        .iter()
+        .find(|provider| provider.name == provider_name)
+        .ok_or_else(|| {
+            rustic_ai_core::Error::Config(format!(
+                "provider '{}' not found in config",
+                provider_name
+            ))
+        })
+}
+
+fn provider_type_name(provider_type: &ProviderType) -> &'static str {
+    match provider_type {
+        ProviderType::OpenAi => "open_ai",
+        ProviderType::Anthropic => "anthropic",
+        ProviderType::Grok => "grok",
+        ProviderType::Google => "google",
+        ProviderType::ZAi => "z_ai",
+        ProviderType::Ollama => "ollama",
+        ProviderType::Custom => "custom",
+    }
+}
+
+fn handle_auth_command(
+    config_path: &Path,
+    command: cli::AuthCommand,
+) -> rustic_ai_core::Result<()> {
+    let runtime = tokio::runtime::Runtime::new().map_err(|err| {
+        rustic_ai_core::Error::Config(format!("failed to create tokio runtime: {err}"))
+    })?;
+
+    let config = rustic_ai_core::config::load_from_file(config_path)?;
+    let work_dir = std::env::current_dir().map_err(|err| {
+        rustic_ai_core::Error::Config(format!("failed to resolve current dir: {err}"))
+    })?;
+    let auth_store_path = rustic_ai_core::auth::resolve_auth_store_path(&config, &work_dir);
+
+    match command {
+        cli::AuthCommand::Methods => {
+            if config.providers.is_empty() {
+                println!("No providers configured.");
+                return Ok(());
+            }
+
+            println!("Provider auth methods:");
+            for provider in &config.providers {
+                let supported = supported_auth_mode_names(&provider.provider_type).join(", ");
+                println!(
+                    "- {} (type: {}, configured: {}, supported: {})",
+                    provider.name,
+                    provider_type_name(&provider.provider_type),
+                    auth_mode_name(&provider.auth_mode),
+                    supported
+                );
+            }
+            Ok(())
+        }
+        cli::AuthCommand::List => {
+            let store = CredentialStore::new(auth_store_path);
+            let entries = runtime.block_on(store.list_summaries())?;
+            if entries.is_empty() {
+                println!("No stored subscription credentials.");
+                return Ok(());
+            }
+
+            println!("Stored subscription credentials:");
+            for entry in entries {
+                println!(
+                    "- {} (token_type: {}, expires_at: {}, scopes: {})",
+                    entry.provider_name,
+                    entry.token_type,
+                    entry
+                        .expires_at_epoch_secs
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "never".to_owned()),
+                    if entry.scopes.is_empty() {
+                        "<none>".to_owned()
+                    } else {
+                        entry.scopes.join(",")
+                    }
+                );
+            }
+            Ok(())
+        }
+        cli::AuthCommand::Logout { provider } => {
+            let store = CredentialStore::new(auth_store_path);
+            let removed = runtime.block_on(store.remove(&provider))?;
+            if removed {
+                println!("Removed stored credential for provider '{provider}'.");
+            } else {
+                println!("No stored credential found for provider '{provider}'.");
+            }
+            Ok(())
+        }
+        cli::AuthCommand::Connect {
+            provider,
+            method,
+            no_browser,
+            timeout_secs,
+        } => {
+            let provider_config = resolve_provider(&config, &provider)?;
+            let supported = supported_auth_mode_names(&provider_config.provider_type);
+
+            if !supported.contains(&"subscription") {
+                return Err(rustic_ai_core::Error::Config(format!(
+                    "provider '{}' (type: {}) does not support subscription auth; supported auth modes: {}",
+                    provider,
+                    provider_type_name(&provider_config.provider_type),
+                    supported.join(", ")
+                )));
+            }
+
+            if provider_config.auth_mode != AuthMode::Subscription {
+                return Err(rustic_ai_core::Error::Config(format!(
+                    "provider '{}' is configured with auth_mode '{}' but 'auth connect' requires auth_mode 'subscription'",
+                    provider,
+                    auth_mode_name(&provider_config.auth_mode)
+                )));
+            }
+
+            let manager =
+                SubscriptionAuthManager::from_provider_config(provider_config, auth_store_path)?;
+
+            match method {
+                cli::AuthMethod::Browser => {
+                    let request = manager.build_browser_authorization_request()?;
+                    println!(
+                        "Open this URL to authenticate:\n{}",
+                        request.authorization_url
+                    );
+                    if !no_browser {
+                        if let Err(err) = open_url_in_browser(&request.authorization_url) {
+                            eprintln!("Browser auto-open failed: {err}");
+                            eprintln!("Continue manually by opening the URL above.");
+                        }
+                    }
+
+                    println!(
+                        "Waiting for OAuth callback on http://{}:{}/callback ...",
+                        manager.oauth_config().redirect_host,
+                        manager.oauth_config().redirect_port
+                    );
+
+                    let code = runtime.block_on(manager.await_browser_callback_code(
+                        &request.expected_state,
+                        std::time::Duration::from_secs(timeout_secs),
+                    ))?;
+
+                    let credential = runtime.block_on(manager.exchange_authorization_code(
+                        &code,
+                        &request.code_verifier,
+                        &request.redirect_uri,
+                    ))?;
+
+                    runtime.block_on(manager.save_credential(credential))?;
+                    println!("Authentication successful for provider '{provider}'.");
+                    Ok(())
+                }
+                cli::AuthMethod::Headless => {
+                    let start = runtime.block_on(manager.start_device_authorization())?;
+                    println!("Device authentication started.");
+                    println!("User code: {}", start.user_code);
+                    println!("Verification URL: {}", start.verification_uri);
+                    if let Some(url) = &start.verification_uri_complete {
+                        println!("Complete URL: {}", url);
+                        if !no_browser {
+                            if let Err(err) = open_url_in_browser(url) {
+                                eprintln!("Browser auto-open failed: {err}");
+                            }
+                        }
+                    }
+                    println!("Waiting for authorization confirmation...");
+
+                    let credential = runtime.block_on(manager.poll_device_authorization(&start))?;
+                    runtime.block_on(manager.save_credential(credential))?;
+                    println!("Authentication successful for provider '{provider}'.");
+                    Ok(())
+                }
+            }
+        }
+    }
+}
 
 fn handle_session_command(
     app: &rustic_ai_core::RusticAI,
@@ -91,6 +308,10 @@ fn run() -> rustic_ai_core::Result<()> {
                 }
                 return Ok(());
             }
+            cli::Command::Auth { command } => {
+                handle_auth_command(&config_path, command)?;
+                return Ok(());
+            }
             other => {
                 let app = rustic_ai_core::RusticAI::from_config_path(&config_path)?;
                 match other {
@@ -141,7 +362,7 @@ fn run() -> rustic_ai_core::Result<()> {
                     }
                     cli::Command::Chat { agent, output } => {
                         let app = std::sync::Arc::new(app);
-                        let repl = repl::Repl::new(app, agent.clone(), output);
+                        let repl = repl::Repl::new(app, agent.clone(), output, config_path.clone());
                         let runtime = tokio::runtime::Runtime::new().map_err(|err| {
                             rustic_ai_core::Error::Config(format!(
                                 "failed to create tokio runtime: {err}"
@@ -588,7 +809,7 @@ fn validate_config_strict(config_json: &serde_json::Value) -> rustic_ai_core::Re
             .unwrap_or_default();
 
         if provider_type == "open_ai" {
-            for required in ["model", "api_key_env", "base_url"] {
+            for required in ["model", "base_url"] {
                 let value = provider_obj.get(required).ok_or_else(|| {
                     rustic_ai_core::Error::Validation(format!(
                         "strict validation requires providers[{index}].{required} for open_ai"
@@ -604,6 +825,31 @@ fn validate_config_strict(config_json: &serde_json::Value) -> rustic_ai_core::Re
                 if value.as_str().map(|s| s.trim().is_empty()).unwrap_or(false) {
                     return Err(rustic_ai_core::Error::Validation(format!(
                         "strict validation does not allow empty values for providers[{index}].{required}"
+                    )));
+                }
+            }
+
+            let auth_mode = provider_obj
+                .get("auth_mode")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+
+            if auth_mode == "api_key" {
+                let value = provider_obj.get("api_key_env").ok_or_else(|| {
+                    rustic_ai_core::Error::Validation(format!(
+                        "strict validation requires providers[{index}].api_key_env for open_ai when auth_mode is api_key"
+                    ))
+                })?;
+
+                if value.is_null() {
+                    return Err(rustic_ai_core::Error::Validation(format!(
+                        "strict validation does not allow null for providers[{index}].api_key_env"
+                    )));
+                }
+
+                if value.as_str().map(|s| s.trim().is_empty()).unwrap_or(false) {
+                    return Err(rustic_ai_core::Error::Validation(format!(
+                        "strict validation does not allow empty values for providers[{index}].api_key_env"
                     )));
                 }
             }

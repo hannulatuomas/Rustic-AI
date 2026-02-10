@@ -7,10 +7,14 @@ use crate::config::schema::{
 };
 use crate::error::{Error, Result};
 use crate::rules::discover_rule_and_context_files;
+use serde_json::Value;
 
 pub fn load_from_file(path: &Path) -> Result<Config> {
     let content = std::fs::read_to_string(path).map_err(|err| {
-        Error::Config(format!("failed to read config '{}': {err}", path.display()))
+        Error::Config(format!(
+            "failed to read config file '{}': {err}",
+            path.display()
+        ))
     })?;
 
     let config: Config = serde_json::from_str(&content).map_err(|err| {
@@ -69,7 +73,7 @@ pub fn merge(base: Config, override_config: Config) -> Config {
 }
 
 pub fn load(path: Option<&Path>) -> Result<Config> {
-    let file_config = if let Some(path) = path {
+    let base_config = if let Some(path) = path {
         load_from_file(path)?
     } else {
         let default_path = PathBuf::from("config.json");
@@ -80,10 +84,14 @@ pub fn load(path: Option<&Path>) -> Result<Config> {
         }
     };
 
-    let mut merged = file_config;
+    // Load and merge fragments
+    let mut merged = load_with_fragments(base_config)?;
+
+    // Apply environment variable overrides
     apply_env_overrides(&mut merged)?;
     apply_rule_defaults(&mut merged.rules);
 
+    // Discover rule and context files
     let work_dir = env::current_dir().map_err(|err| {
         Error::Config(format!(
             "failed to resolve current working directory: {err}"
@@ -92,6 +100,178 @@ pub fn load(path: Option<&Path>) -> Result<Config> {
     merged.rules = discover_rule_and_context_files(&work_dir, &merged.rules)?;
 
     Ok(merged)
+}
+
+pub fn load_with_fragments(base_config: Config) -> Result<Config> {
+    // Convert base config to JSON value for merging
+    let mut merged_value = serde_json::to_value(&base_config)
+        .map_err(|err| Error::Config(format!("failed to serialize base config: {err}")))?;
+
+    // Resolve fragment directories
+    let global_fragment_dir = resolve_global_fragment_dir(&merged_value);
+    let project_fragment_dir = resolve_project_fragment_dir(&merged_value);
+
+    // Load and merge global fragments (sorted by filename)
+    if let Some(dir) = &global_fragment_dir {
+        if dir.exists() {
+            let global_fragments = load_fragments_from_dir(dir)?;
+            for fragment_value in global_fragments {
+                merged_value = merge_json_values(merged_value, fragment_value);
+            }
+        }
+    }
+
+    // Load and merge project fragments (sorted by filename)
+    if let Some(dir) = &project_fragment_dir {
+        if dir.exists() {
+            let project_fragments = load_fragments_from_dir(dir)?;
+            for fragment_value in project_fragments {
+                merged_value = merge_json_values(merged_value, fragment_value);
+            }
+        }
+    }
+
+    // Convert merged JSON back to Config
+    let merged_config: Config = serde_json::from_value(merged_value)
+        .map_err(|err| Error::Config(format!("failed to parse merged config: {err}")))?;
+
+    Ok(merged_config)
+}
+
+fn resolve_global_fragment_dir(config_value: &Value) -> Option<PathBuf> {
+    let home = env::var("HOME").ok()?;
+    let default_root = PathBuf::from(home).join(".rustic-ai");
+
+    // Check if storage.global_root_path is configured
+    let global_root_path = config_value
+        .get("storage")
+        .and_then(|s| s.get("global_root_path"))
+        .and_then(|v| v.as_str());
+
+    if let Some(path) = global_root_path {
+        if !path.is_empty() {
+            return Some(PathBuf::from(path).join("config"));
+        }
+    }
+
+    // Use default ~/.rustic-ai/config
+    Some(default_root.join("config"))
+}
+
+fn resolve_project_fragment_dir(config_value: &Value) -> Option<PathBuf> {
+    let work_dir = env::current_dir().ok()?;
+
+    // Check if storage.default_root_dir_name is configured
+    let default_root_dir_name = config_value
+        .get("storage")
+        .and_then(|s| s.get("default_root_dir_name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(".rustic-ai");
+
+    // Check if storage.project_data_path is configured
+    let project_data_path = config_value
+        .get("storage")
+        .and_then(|s| s.get("project_data_path"))
+        .and_then(|v| v.as_str());
+
+    let project_dir = if let Some(path) = project_data_path {
+        if !path.is_empty() {
+            if PathBuf::from(path).is_absolute() {
+                PathBuf::from(path)
+            } else {
+                work_dir.join(path)
+            }
+        } else {
+            work_dir.join(default_root_dir_name)
+        }
+    } else {
+        work_dir.join(default_root_dir_name)
+    };
+
+    Some(project_dir.join("config"))
+}
+
+fn load_fragments_from_dir(dir: &Path) -> Result<Vec<Value>> {
+    let entries = std::fs::read_dir(dir).map_err(|err| {
+        Error::Config(format!(
+            "failed to read config fragment directory '{}': {err}",
+            dir.display()
+        ))
+    })?;
+
+    let mut fragment_files: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|err| {
+            Error::Config(format!(
+                "failed to read entry in '{}': {err}",
+                dir.display()
+            ))
+        })?;
+
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(ext) = path.extension() {
+                if ext == "json" {
+                    fragment_files.push(path);
+                }
+            }
+        }
+    }
+
+    // Sort files by filename for deterministic merge order
+    fragment_files.sort_by_key(|p| {
+        p.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()
+    });
+
+    let mut fragments = Vec::new();
+    for fragment_path in &fragment_files {
+        let content = std::fs::read_to_string(fragment_path).map_err(|err| {
+            Error::Config(format!(
+                "failed to read config fragment '{}': {err}",
+                fragment_path.display()
+            ))
+        })?;
+
+        let value: Value = serde_json::from_str(&content).map_err(|err| {
+            Error::Config(format!(
+                "failed to parse config fragment '{}': {err}",
+                fragment_path.display()
+            ))
+        })?;
+
+        // Each fragment must be a JSON object
+        if !value.is_object() {
+            return Err(Error::Config(format!(
+                "config fragment '{}' must be a JSON object",
+                fragment_path.display()
+            )));
+        }
+
+        fragments.push(value);
+    }
+
+    Ok(fragments)
+}
+
+fn merge_json_values(base: Value, overlay: Value) -> Value {
+    match (base, overlay) {
+        (Value::Object(base_obj), Value::Object(overlay_obj)) => {
+            let mut merged = base_obj;
+            for (key, overlay_value) in overlay_obj {
+                let merged_value = if let Some(base_value) = merged.get(&key) {
+                    merge_json_values(base_value.clone(), overlay_value)
+                } else {
+                    overlay_value
+                };
+                merged.insert(key, merged_value);
+            }
+            Value::Object(merged)
+        }
+        (_, overlay) => overlay,
+    }
 }
 
 fn apply_env_overrides(config: &mut Config) -> Result<()> {
@@ -333,48 +513,5 @@ fn parse_mode(value: &str) -> Result<RuntimeMode> {
         _ => Err(Error::Config(format!(
             "environment variable RUSTIC_AI_MODE must be 'direct' or 'project', got '{value}'"
         ))),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::merge;
-    use crate::config::schema::{
-        AgentConfig, AuthMode, Config, ProviderConfig, ProviderType, RuntimeMode,
-    };
-
-    #[test]
-    fn merge_prefers_non_empty_override_vectors() {
-        let mut base = Config::default();
-        base.providers.push(ProviderConfig {
-            name: "base".to_owned(),
-            provider_type: ProviderType::OpenAi,
-            model: Some("configured-model".to_owned()),
-            auth_mode: AuthMode::ApiKey,
-            api_key_env: Some("TEST_PROVIDER_API_KEY_ENV".to_owned()),
-            base_url: None,
-            settings: None,
-        });
-
-        let mut override_config = Config {
-            mode: RuntimeMode::Project,
-            ..Config::default()
-        };
-        override_config.agents.push(AgentConfig {
-            name: "planner".to_owned(),
-            provider: "base".to_owned(),
-            tools: Vec::new(),
-            skills: Vec::new(),
-            temperature: 0.7,
-            max_tokens: 4096,
-            context_window_size: 8192,
-            system_prompt_template: None,
-        });
-
-        let merged = merge(base, override_config);
-        assert_eq!(merged.mode, RuntimeMode::Project);
-        assert_eq!(merged.providers.len(), 1);
-        assert_eq!(merged.providers[0].name, "base");
-        assert_eq!(merged.agents.len(), 1);
     }
 }

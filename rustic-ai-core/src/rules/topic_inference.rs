@@ -36,6 +36,8 @@ impl TopicInferenceService {
         let mut messages = vec![ChatMessage {
             role: "system".to_owned(),
             content: system_prompt,
+            name: None,
+            tool_calls: None,
         }];
         messages.extend(conversation.iter().cloned());
 
@@ -45,6 +47,11 @@ impl TopicInferenceService {
                 &GenerateOptions {
                     temperature: 0.1,
                     max_tokens: 96,
+                    top_p: None,
+                    top_k: None,
+                    stop_sequences: None,
+                    presence_penalty: None,
+                    frequency_penalty: None,
                 },
             )
             .await?;

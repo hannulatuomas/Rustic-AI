@@ -12,7 +12,7 @@ use crate::rules::discovery::simple_glob_match;
 use crate::rules::manual_invocation::{extract_manual_invocations, resolve_manual_invocations};
 use crate::rules::precedence::sort_rule_files_by_precedence;
 use crate::rules::{TopicInferenceService, TopicTracker};
-use crate::storage::model::{Message, Session, SessionConfig};
+use crate::storage::model::{Message, PendingToolState, Session, SessionConfig};
 use crate::storage::StorageBackend;
 
 #[derive(Debug, Clone)]
@@ -238,6 +238,8 @@ impl SessionManager {
             .map(|message| ChatMessage {
                 role: message.role,
                 content: message.content,
+                name: None,
+                tool_calls: None,
             })
             .collect::<Vec<_>>();
 
@@ -253,5 +255,40 @@ impl SessionManager {
             .update_session_topics(session_id, &inferred)
             .await?;
         Ok(true)
+    }
+
+    /// Store pending tool execution state for a session
+    ///
+    /// This is called when an agent tool loop encounters a tool that requires
+    /// permission (Ask decision). The state is saved so that after the user
+    /// approves the permission, the agent can resume exactly where it left off.
+    pub async fn set_pending_tool(&self, state: PendingToolState) -> Result<()> {
+        self.storage.set_pending_tool(&state).await
+    }
+
+    /// Retrieve and clear pending tool execution state for a session
+    ///
+    /// This is called after the user has approved a permission request.
+    /// Returns None if there is no pending state.
+    pub async fn get_and_clear_pending_tool(
+        &self,
+        session_id: Uuid,
+    ) -> Result<Option<PendingToolState>> {
+        self.storage.get_and_clear_pending_tool(session_id).await
+    }
+
+    /// Delete stale pending tool execution states older than the specified duration
+    ///
+    /// This should be called on application startup to clean up abandoned
+    /// pending tool states from previous runs.
+    pub async fn cleanup_stale_pending_tools(&self, older_than_secs: u64) -> Result<usize> {
+        self.storage
+            .delete_stale_pending_tools(older_than_secs)
+            .await
+    }
+
+    /// Check if a session has pending tool execution state (without clearing it)
+    pub async fn has_pending_tool(&self, session_id: Uuid) -> Result<bool> {
+        self.storage.has_pending_tool(session_id).await
     }
 }

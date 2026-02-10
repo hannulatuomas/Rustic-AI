@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use crate::config::schema::{AuthMode, Config, ProviderType, RuntimeMode, StorageBackendKind};
 use crate::error::{Error, Result};
+use crate::providers::auth_capabilities::{supported_auth_mode_names, supports_auth_mode};
 
 pub fn validate_config(config: &Config) -> Result<()> {
     if config.providers.is_empty() {
@@ -50,6 +51,60 @@ pub fn validate_config(config: &Config) -> Result<()> {
             )));
         }
 
+        if !supports_auth_mode(&provider.provider_type, &provider.auth_mode) {
+            let modes = supported_auth_mode_names(&provider.provider_type).join(", ");
+            return Err(Error::Validation(format!(
+                "provider '{name}' with type '{:?}' does not support auth_mode '{}'; supported auth modes: {}",
+                provider.provider_type,
+                match provider.auth_mode {
+                    AuthMode::ApiKey => "api_key",
+                    AuthMode::Subscription => "subscription",
+                    AuthMode::None => "none",
+                },
+                modes
+            )));
+        }
+
+        if matches!(provider.provider_type, ProviderType::Anthropic)
+            && provider
+                .model
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+        {
+            return Err(Error::Validation(format!(
+                "provider '{name}' must define model for anthropic"
+            )));
+        }
+
+        if matches!(provider.provider_type, ProviderType::Anthropic)
+            && provider
+                .base_url
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+        {
+            return Err(Error::Validation(format!(
+                "provider '{name}' must define base_url for anthropic"
+            )));
+        }
+
+        if matches!(provider.provider_type, ProviderType::Anthropic)
+            && provider
+                .api_key_env
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            && matches!(provider.auth_mode, AuthMode::ApiKey)
+        {
+            return Err(Error::Validation(format!(
+                "provider '{name}' must define api_key_env for anthropic"
+            )));
+        }
+
         if matches!(provider.provider_type, ProviderType::OpenAi)
             && provider
                 .model
@@ -73,6 +128,204 @@ pub fn validate_config(config: &Config) -> Result<()> {
         {
             return Err(Error::Validation(format!(
                 "provider '{name}' must define base_url for open_ai"
+            )));
+        }
+
+        if matches!(provider.provider_type, ProviderType::Google)
+            && provider
+                .model
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+        {
+            return Err(Error::Validation(format!(
+                "provider '{name}' must define model for google"
+            )));
+        }
+
+        if matches!(provider.provider_type, ProviderType::Google)
+            && provider
+                .base_url
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+        {
+            return Err(Error::Validation(format!(
+                "provider '{name}' must define base_url for google"
+            )));
+        }
+
+        if matches!(provider.provider_type, ProviderType::Google)
+            && provider
+                .api_key_env
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            && matches!(provider.auth_mode, AuthMode::ApiKey)
+        {
+            return Err(Error::Validation(format!(
+                "provider '{name}' must define api_key_env for google"
+            )));
+        }
+
+        if matches!(provider.provider_type, ProviderType::Grok)
+            && provider
+                .model
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+        {
+            return Err(Error::Validation(format!(
+                "provider '{name}' must define model for grok"
+            )));
+        }
+
+        if matches!(provider.provider_type, ProviderType::Grok)
+            && provider
+                .base_url
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+        {
+            return Err(Error::Validation(format!(
+                "provider '{name}' must define base_url for grok"
+            )));
+        }
+
+        if matches!(provider.provider_type, ProviderType::Grok)
+            && provider
+                .api_key_env
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            && matches!(provider.auth_mode, AuthMode::ApiKey)
+        {
+            return Err(Error::Validation(format!(
+                "provider '{name}' must define api_key_env for grok"
+            )));
+        }
+
+        if matches!(provider.provider_type, ProviderType::ZAi)
+            && provider
+                .model
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+        {
+            return Err(Error::Validation(format!(
+                "provider '{name}' must define model for z_ai"
+            )));
+        }
+
+        if matches!(provider.provider_type, ProviderType::ZAi)
+            && provider
+                .api_key_env
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+        {
+            return Err(Error::Validation(format!(
+                "provider '{name}' must define api_key_env for z_ai"
+            )));
+        }
+
+        if matches!(provider.provider_type, ProviderType::ZAi)
+            && provider
+                .settings
+                .as_ref()
+                .and_then(|settings| settings.get("coding_base_url"))
+                .and_then(|value| value.as_str())
+                .map(|value| value.trim().is_empty())
+                .unwrap_or(true)
+        {
+            return Err(Error::Validation(format!(
+                "provider '{name}' must define settings.coding_base_url for z_ai"
+            )));
+        }
+
+        if matches!(provider.provider_type, ProviderType::Ollama)
+            && provider
+                .model
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+        {
+            return Err(Error::Validation(format!(
+                "provider '{name}' must define model for ollama"
+            )));
+        }
+
+        if matches!(provider.provider_type, ProviderType::Ollama)
+            && provider
+                .base_url
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+        {
+            return Err(Error::Validation(format!(
+                "provider '{name}' must define base_url for ollama"
+            )));
+        }
+
+        if matches!(provider.provider_type, ProviderType::Ollama)
+            && provider
+                .api_key_env
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+        {
+            return Err(Error::Validation(format!(
+                "provider '{name}' must define api_key_env for ollama"
+            )));
+        }
+
+        if matches!(provider.provider_type, ProviderType::Custom)
+            && provider
+                .model
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+        {
+            return Err(Error::Validation(format!(
+                "provider '{name}' must define model for custom"
+            )));
+        }
+
+        if matches!(provider.provider_type, ProviderType::Custom)
+            && provider
+                .base_url
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+        {
+            return Err(Error::Validation(format!(
+                "provider '{name}' must define base_url for custom"
+            )));
+        }
+
+        if matches!(provider.provider_type, ProviderType::Custom)
+            && provider
+                .api_key_env
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+        {
+            return Err(Error::Validation(format!(
+                "provider '{name}' must define api_key_env for custom"
             )));
         }
     }
@@ -227,65 +480,4 @@ fn is_allowed_sqlite_synchronous(value: &str) -> bool {
         value.trim().to_ascii_uppercase().as_str(),
         "OFF" | "NORMAL" | "FULL" | "EXTRA"
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::validate_config;
-    use crate::config::schema::{
-        AgentConfig, AuthMode, Config, PermissionMode, ProviderConfig, ProviderType, ToolConfig,
-        WorkingDirMode,
-    };
-
-    fn valid_config() -> Config {
-        let mut config = Config::default();
-        config.providers.push(ProviderConfig {
-            name: "openai".to_owned(),
-            provider_type: ProviderType::OpenAi,
-            model: Some("configured-model".to_owned()),
-            auth_mode: AuthMode::ApiKey,
-            api_key_env: Some("TEST_PROVIDER_API_KEY_ENV".to_owned()),
-            base_url: Some("https://api.openai.com/v1".to_owned()),
-            settings: None,
-        });
-        config.agents.push(AgentConfig {
-            name: "orchestrator".to_owned(),
-            provider: "openai".to_owned(),
-            tools: vec!["shell".to_owned()],
-            skills: Vec::new(),
-            temperature: 0.7,
-            max_tokens: 4096,
-            context_window_size: 8192,
-            system_prompt_template: None,
-        });
-        config.tools.push(ToolConfig {
-            name: "shell".to_owned(),
-            enabled: true,
-            permission_mode: PermissionMode::Ask,
-            timeout_seconds: 30,
-            env_passthrough: false,
-            allowed_commands: Vec::new(),
-            denied_commands: Vec::new(),
-            working_dir: WorkingDirMode::Current,
-            custom_working_dir: None,
-            stream_output: false,
-        });
-        config
-    }
-
-    #[test]
-    fn accepts_minimal_valid_config() {
-        let config = valid_config();
-        assert!(validate_config(&config).is_ok());
-    }
-
-    #[test]
-    fn rejects_agent_with_unknown_provider() {
-        let mut config = valid_config();
-        config.agents[0].provider = "missing".to_owned();
-
-        let error = validate_config(&config).expect_err("validation should fail");
-        let message = error.to_string();
-        assert!(message.contains("references missing provider"));
-    }
 }

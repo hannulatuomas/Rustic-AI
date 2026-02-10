@@ -39,6 +39,36 @@ pub enum Command {
         #[arg(long, value_enum, default_value = "text")]
         output: OutputFormat,
     },
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommand,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum AuthCommand {
+    Methods,
+    Connect {
+        #[arg(long)]
+        provider: String,
+        #[arg(long, value_enum)]
+        method: AuthMethod,
+        #[arg(long, default_value_t = false)]
+        no_browser: bool,
+        #[arg(long, default_value_t = 300)]
+        timeout_secs: u64,
+    },
+    List,
+    Logout {
+        #[arg(long)]
+        provider: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum AuthMethod {
+    Browser,
+    Headless,
 }
 
 #[derive(Debug, Clone, Subcommand)]

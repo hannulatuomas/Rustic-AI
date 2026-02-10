@@ -35,6 +35,13 @@ pub enum Event {
         tool: String,
         decision: AskResolution,
     },
+    /// Secret prompt for privileged commands like sudo
+    /// Password is sent securely via stdin, never echoed or logged
+    SudoSecretPrompt {
+        session_id: String,
+        command: String,
+        reason: String,
+    },
     SessionUpdated(String),
     Error(String),
 }

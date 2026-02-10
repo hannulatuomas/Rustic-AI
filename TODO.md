@@ -1,144 +1,116 @@
 # TODO.md
 
-This is the single source of truth for implementation tasks.
+Single source of truth for active implementation work.
 
 Last updated: 2026-02-10
 
 ## Current Focus
-- End-to-end working agent session flow (in progress, needs debugging)
+- Wire agent turn loop to handle permission-approved follow-up
+
+## In Progress
+- [ ] Wire agent turn loop to handle permission-approved follow-up
+  - [x] Add `PendingToolState` model to storage
+  - [x] Add `pending_tool_timeout_secs` to `PermissionConfig` schema (default: 300s)
+  - [x] Add `StorageBackend` trait methods for pending tool operations
+  - [x] Implement SQLite pending tool storage with schema migration (v2)
+  - [x] Add `SessionManager` methods for pending tool operations
+  - [x] Modify `Agent::run_assistant_tool_loop` to store pending state on None
+  - [x] Add `Agent::resume_from_pending_tool` resume method
+  - [x] Modify `Agent::continue_after_tool` to use resume path
+  - [x] Add `RusticAI` cleanup for stale pending tools on startup
+
+- [ ] Implement Filesystem tool
+  - [x] Implement core filesystem operations (`read`, `write`, `edit`, `list`, `mkdir`, `delete`, `copy`, `move`, `info`, `glob`, `hash`)
+  - [x] Wire `filesystem` tool registration in `ToolManager`
+  - [x] Add runtime tool execution context plumbing (working directory) and apply it to shell/filesystem
+  - [x] Extend permission model foundation to path-aware and agent-scoped allow/deny checks
+  - [x] Add explicit permission prompts/resolutions integration for path-outside-root "ask" flows in active agent loop
+- [ ] Implement HTTP tool
+  - [x] Implement HTTP tool request execution (`GET`/`POST`/`PUT`/`PATCH`/`DELETE` and generic methods)
+  - [x] Add bounded response streaming and timeout handling
+  - [x] Wire `http` tool registration in `ToolManager`
+  - [x] Integrate HTTP tool invocation into active agent tool-calling loop (JSON tool call protocol)
+
+- [ ] Agent tool-call orchestration improvements
+  - [x] Parse JSON tool-call responses and execute via ToolManager
+  - [x] Feed tool outputs back into follow-up model response generation
+  - [x] Implement interactive permission resolution flow in REPL (`PermissionRequest` -> user decision -> `resolve_permission`)
+  - [x] Trigger assistant follow-up completion after permission-approved delayed tool execution
+  - [x] Support multi-round autonomous tool loops with configurable per-agent limits
+  - [x] Add per-agent total tool-call cap per turn (`max_total_tool_calls_per_turn`)
+  - [x] Add per-agent turn duration cap (`max_turn_duration_seconds`) with unlimited option (`0`)
+  - [ ] Add provider-focused integration tests (auth modes, non-stream and stream responses)
+
+- [ ] Permission ergonomics and policy scopes
+  - [x] Add config-level global/project allowed path lists
+  - [x] Add config-level global/project shell command pattern policies (`allow`/`ask`/`deny`)
+  - [x] Add runtime session/project/global permission overrides via REPL `/perm` commands
+  - [x] Persist runtime `/perm global|project` additions back into config scopes automatically
+
+- [ ] Harden shell sudo execution flow
+  - [x] Add permission/tool config fields for sudo TTL + privileged command matching
+  - [x] Add `SudoSecretPrompt` event and renderer support
+  - [x] Detect privileged shell commands and emit sudo prompt event
+  - [ ] Wire secure secret input + sudo command resume path (no persistence)
+
+- [x] Config ergonomics
+  - [x] Support layered config fragments for global and project scopes
+  - [x] Add explicit docs/examples for recommended split-file layouts (`agents.json`, `tools.json`, `providers.json`, `permissions.json`)
+
+## Next
+- [ ] Implement SSH PTY tool with non-persistent credentials
+- [ ] Implement MCP adapter integration
+- [ ] Implement plugin tool loader wiring
 
 ## Done
 - [x] Initialize workspace (`rustic-ai-core`, `frontend/rustic-ai-cli`)
-- [x] Build/lint/test baseline is green
-- [x] Implement base error type + `Result<T>`
-- [x] Add config schema with typed enums and defaults
-- [x] Implement config loading from file
-- [x] Implement config loading from env
-- [x] Implement config merge strategy
-- [x] Implement config validation (required sections + cross-reference checks)
-- [x] Add event bus foundation (`EventBus`)
-- [x] Add runtime container (`Runtime`)
-- [x] Add `RusticAI` constructor and config-path constructor
-- [x] Wire CLI startup to load config and initialize `RusticAI`
-- [x] Add basic registry accessors (`get`, `list`, `is_empty`)
-- [x] Add initial unit tests for config loader/validation
-- [x] Config: load `.cursorrules` and `.windsurfrules` into rule sources
-- [x] Config: load context files (`AGENTS.md`, others) with deterministic precedence
-- [x] Config: implement explicit rule precedence (`global -> project -> topic/session -> runtime`)
-- [x] Storage: complete backend abstraction methods needed for sessions/history
-- [x] Storage: implement SQLite schema + CRUD (first minimal usable slice)
-- [x] Storage manager: add high-level operations used by session manager
-- [x] Conversation: implement session manager methods (create/get/list/delete)
-- [x] Conversation: implement context window manager behavior
-- [x] Runtime wiring: connect storage + conversation into `RusticAI`
-- [x] CLI: add minimal command behavior beyond initialization (single-run path)
-- [x] Session manager: consume discovered `rules.discovered_rules` metadata and load rule contents on demand
-- [x] Agent/session flow: wire LLM-based topic inference into `TopicTracker` to switch context-specific rules efficiently
-- [x] Rule frontmatter: support Cursor-like metadata (`description`, `globs`, `alwaysApply`) with manual invocation support (`@rule-name`)
-- [x] Config format: use JSON (`config.json`) as default load format
-- [x] Storage paths: split global settings/data (`~/.rustic-ai`) from project session data (`<workdir>/.rustic-ai`), all configurable
-- [x] Remove hardcoded runtime/provider/storage fallback values and require explicit provider/storage config inputs
-- [x] Add `config.example.json` and `docs/config.schema.json` for explicit setup and validation
-- [x] Add config mutation foundation (`ConfigManager`, typed `ConfigPath`, atomic partial updates)
-- [x] Add CLI config operations (`snapshot/get/set/unset/patch`) with scope-aware writes and effective-value source visibility
-- [x] Add machine-readable config CLI responses (`--output json`) for frontend/API adapter consumption
-- [x] Add stable JSON envelope contract for config CLI output (`rustic-ai-cli/config-output/v1`)
-- [x] Add stable error envelope for config CLI JSON output (`status: error`, `code`, `message`, `details`)
-- [x] Add example payloads for config CLI JSON envelopes (`docs/examples/config-cli-output.json`)
-- [x] Add explicit `config.snapshot` JSON envelope example payload
-
-## In Progress (Phase 1+ - Foundation for Interactive Sessions)
-- [ ] Fix compilation errors in tool/agent permission/event system
-- [ ] Complete ShellTool with proper tokio::process feature handling
-- [ ] Implement ToolManager with proper permission resolution
-- [ ] Implement Agent act loop with proper SessionManager integration
-- [ ] Wire interactive loop in CLI with proper event handling
-- [ ] Test end-to-end session flow with OpenAI provider
-
-## Next (Phase 1+)
-- [x] Initialize workspace (`rustic-ai-core`, `frontend/rustic-ai-cli`)
-- [x] Build/lint/test baseline is green
-- [x] Implement base error type + `Result<T>`
-- [x] Add config schema with typed enums and defaults
-- [x] Implement config loading from file
-- [x] Implement config loading from env
-- [x] Implement config merge strategy
-- [x] Implement config validation (required sections + cross-reference checks)
-- [x] Add event bus foundation (`EventBus`)
-- [x] Add runtime container (`Runtime`)
-- [x] Add `RusticAI` constructor and config-path constructor
-- [x] Wire CLI startup to load config and initialize `RusticAI`
-- [x] Add basic registry accessors (`get`, `list`, `is_empty`)
-- [x] Add initial unit tests for config loader/validation
-
-## In Progress
-- [ ] Phase 1 completion pass (finish remaining non-deferred tasks)
-
-## Next (Phase 1)
-- [x] Config: load `.cursorrules` and `.windsurfrules` into rule sources
-- [x] Config: load context files (`AGENTS.md`, others) with deterministic precedence
-- [x] Config: implement explicit rule precedence (`global -> project -> topic/session -> runtime`)
-- [x] Storage: complete backend abstraction methods needed for sessions/history
-- [x] Storage: implement SQLite schema + CRUD (first minimal usable slice)
-- [x] Storage manager: add high-level operations used by session manager
-- [x] Conversation: implement session manager methods (create/get/list/delete)
-- [x] Conversation: implement context window manager behavior
-- [x] Runtime wiring: connect storage + conversation into `RusticAI`
-- [x] CLI: add minimal command behavior beyond initialization (single-run path)
-- [x] Session manager: consume discovered `rules.discovered_rules` metadata and load rule contents on demand
-- [x] Agent/session flow: wire LLM-based topic inference into `TopicTracker` to switch context-specific rules efficiently
-- [x] Rule frontmatter: support Cursor-like metadata (`description`, `globs`, `alwaysApply`) with manual invocation support (`@rule-name`)
-- [x] Config format: use JSON (`config.json`) as default load format
-- [x] Storage paths: split global settings/data (`~/.rustic-ai`) from project session data (`<workdir>/.rustic-ai`), all configurable
-- [x] Remove hardcoded runtime/provider/storage fallback values and require explicit provider/storage config inputs
-- [x] Add `config.example.json` and `docs/config.schema.json` for explicit setup and validation
-- [x] Add config mutation foundation (`ConfigManager`, typed `ConfigPath`, atomic partial updates)
-- [x] Add CLI config operations (`snapshot/get/set/unset/patch`) with scope-aware writes and effective-value source visibility
-- [x] Add machine-readable config CLI responses (`--output json`) for frontend/API adapter consumption
-- [x] Add stable JSON envelope contract for config CLI output (`rustic-ai-cli/config-output/v1`)
-- [x] Add stable error envelope for config CLI JSON output (`status: error`, `code`, `message`, `details`)
-- [x] Add example payloads for config CLI JSON envelopes (`docs/examples/config-cli-output.json`)
-- [x] Add explicit `config.snapshot` JSON envelope example payload
-
-## Phase Backlog (High Level)
-
-### Phase 2 - Storage
-- [x] Finalize `StorageBackend` trait surface
-- [x] Complete SQLite implementation with migrations and indexes
-- [ ] Add storage integration tests (including in-memory DB; deferred until full working foundation)
-
-### Phase 3 - Providers
-- [ ] Finalize provider trait shape (streaming + token helpers)
-- [ ] Implement Anthropic/Grok/Google/Ollama providers
-- [x] Implement OpenAI provider baseline
-- [x] Add provider registry auto-wiring from config
-- [x] Make provider schema type-specific (open_ai strict requirements; other providers extensible via `settings`)
-
-### Phase 4 - Tools/Skills/Plugins
-- [ ] Finalize tool trait and metadata schema
-- [ ] Implement shell/ssh/filesystem/http tools (safe defaults)
-- [ ] Implement plugin loader and MCP adapter wiring
-- [ ] SSH tool: support both key-based and username/password auth, prompt credentials per use, never persist or log credentials
-
-### Phase 5-9 - Agents/Workflows/Conversation/CLI
-- [ ] Implement agent core + memory/state
-- [ ] Implement coordinator and multi-agent orchestration
-- [ ] Implement workflow parser/executor and command routing
-- [ ] Implement robust session/history APIs
-- [ ] Expand CLI into full interactive + batch workflow support
-
-### Phase 10 - Reliability, Policy, and Runtime Hardening
-- [ ] Permission policy enforcement end-to-end
-- [ ] Reliability patterns (retry/fallback/circuit breaker/shutdown)
-- [ ] Logging/tracing polish (`init_logging`, prod json + dev pretty output, trace correlation)
-- [ ] Config hot-reload: file watcher -> `ConfigManager.reload()` -> `ConfigChanged` event bus publish (debounced/coalesced)
-- [ ] Performance profiling and optimization
-- [ ] Hardening/extensibility checks
-
-### Phase 11 - Documentation and Examples
-- [ ] Public API documentation/examples
-- [ ] Error variant and configuration reference docs
-- [ ] User/developer guides and runnable examples
+- [x] Build/lint/test baseline green for initial foundation
+- [x] Implement core config loading, merge, and validation framework
+- [x] Implement config mutation layer (`ConfigManager`, typed paths, atomic writes)
+- [x] Implement storage abstraction and SQLite backend with session/message persistence
+- [x] Implement provider registry and factory boundary
+- [x] Implement OpenAI provider baseline (`generate`)
+- [x] Extend provider generation model (`GenerateOptions`, `ChatMessage`, function-call metadata)
+- [x] Extend `ModelProvider` trait with `stream_generate`, `count_tokens`, capability flags
+- [x] Add provider SSE parsing utility module (`providers/streaming.rs`)
+- [x] Upgrade OpenAI provider:
+  - [x] robust request construction (advanced options + typed payload)
+  - [x] streaming response handling via SSE parser
+  - [x] `auth_mode: subscription` support with explicit header/config handling
+  - [x] remove panic-based header/client construction in runtime path
+- [x] Implement subscription auth subsystem:
+  - [x] browser OAuth login flow (local callback receiver + PKCE)
+  - [x] headless/device-code flow
+  - [x] credential persistence in local auth store (`~/.rustic-ai/data/auth.json` by default)
+  - [x] token refresh handling for runtime provider requests
+  - [x] CLI auth commands (`auth connect`, `auth list`, `auth logout`)
+- [x] Integrate OpenAI provider subscription auth with persisted credentials (API key no longer required for subscription mode)
+- [x] Implement Anthropic provider (generate + stream + token count) and wire into provider factory
+- [x] Implement Anthropic authentication parity:
+  - [x] `auth_mode: api_key`
+  - [x] `auth_mode: subscription` via shared browser/headless auth subsystem
+  - [x] runtime token refresh integration for subscription calls
+- [x] Implement Google provider (generate + stream + token count) and wire into provider factory
+- [x] Implement Google authentication parity:
+  - [x] `auth_mode: api_key`
+  - [x] `auth_mode: subscription` via shared browser/headless auth subsystem
+  - [x] runtime token refresh integration for subscription calls
+- [x] Implement Grok provider (generate + stream + token count) with API-key-only auth
+- [x] Implement Z.ai provider with dual endpoint support (general and coding) and API-key auth
+- [x] Implement custom OpenAI-compatible provider (endpoint + api key)
+- [x] Implement Ollama provider (generate + stream + token count)
+- [x] Add provider auth capability visibility and enforcement:
+  - [x] central provider auth-mode capability mapping
+  - [x] validation errors list supported auth modes per provider type
+  - [x] CLI command `auth methods` to show configured vs supported auth modes
+  - [x] default `api_key` path available across configured provider types
+  - [x] `subscription` limited to open_ai, anthropic, google
+- [x] Update OpenAI factory wiring for auth-mode aware construction and settings parsing
+- [x] Update config validation/schema for `auth_mode: subscription`
+- [x] Implement tool system foundation (`Tool` trait, registry, manager)
+- [x] Implement Shell tool baseline with permission checks and streaming events
+- [x] Implement permission policy foundation (`allow` / `deny` / `ask`)
+- [x] Implement agent/session flow foundation and CLI interactive loop baseline
 
 ## Verification Commands
 - `export PATH="$HOME/.cargo/bin:$PATH" && cargo fmt --all`
@@ -146,8 +118,8 @@ Last updated: 2026-02-10
 - `export PATH="$HOME/.cargo/bin:$PATH" && cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - `export PATH="$HOME/.cargo/bin:$PATH" && cargo test --workspace --all-features`
 
-## Update Rules (Mandatory)
-- Every non-trivial change must update this file in the same change.
-- Move finished items to Done immediately.
-- If scope changes, reflect it here before implementation continues.
-- Do not keep parallel task trackers in other docs as the active source.
+## Update Rules
+- Every non-trivial change updates this file in the same change.
+- Keep only one active tracker (this file).
+- Move completed work to Done immediately.
+- Reflect scope changes before implementation proceeds.

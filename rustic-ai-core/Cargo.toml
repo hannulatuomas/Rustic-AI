@@ -17,6 +17,7 @@ tool-plugin = ["dep:libloading"]
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+base64.workspace = true
 chrono.workspace = true
 futures.workspace = true
 libloading = { workspace = true, optional = true }
@@ -25,6 +26,7 @@ regex.workspace = true
 russh = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

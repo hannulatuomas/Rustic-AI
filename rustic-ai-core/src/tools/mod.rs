@@ -9,4 +9,4 @@ pub mod ssh;
 pub mod types;
 
 pub use manager::ToolManager;
-pub use types::{Tool, ToolResult};
+pub use types::{Tool, ToolExecutionContext, ToolResult};

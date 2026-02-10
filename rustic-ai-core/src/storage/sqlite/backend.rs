@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::config::schema::SqliteStorageConfig;
 use crate::error::{Error, Result};
-use crate::storage::model::{Message, Session, SessionConfig};
+use crate::storage::model::{Message, PendingToolState, Session, SessionConfig};
 use crate::storage::StorageBackend;
 
 const SCHEMA_V1: [&str; 12] = [
@@ -23,6 +23,11 @@ const SCHEMA_V1: [&str; 12] = [
     "CREATE INDEX IF NOT EXISTS idx_manual_rule_invocations_session_id ON manual_rule_invocations(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_manual_rule_invocations_rule_path ON manual_rule_invocations(rule_path)",
     "UPDATE schema_version SET version = 1",
+];
+
+const SCHEMA_V2_MIGRATION: [&str; 2] = [
+    "CREATE TABLE IF NOT EXISTS pending_tools (session_id TEXT PRIMARY KEY, tool_name TEXT NOT NULL, args_json TEXT NOT NULL, round_index INTEGER NOT NULL, tool_messages_json TEXT NOT NULL, context_snapshot_json TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE)",
+    "UPDATE schema_version SET version = 2",
 ];
 
 #[derive(Debug, Clone)]
@@ -55,9 +60,26 @@ impl SqliteStorage {
         self.initialized
             .get_or_try_init(|| async {
                 self.apply_runtime_settings().await?;
-                for statement in SCHEMA_V1 {
-                    sqlx::query(statement).execute(&self.pool).await?;
+
+                let current_version = {
+                    let row = sqlx::query("SELECT version FROM schema_version LIMIT 1")
+                        .fetch_optional(&self.pool)
+                        .await?;
+                    row.map(|r| r.get::<i64, _>("version") as u32).unwrap_or(0)
+                };
+
+                if current_version < 1 {
+                    for statement in SCHEMA_V1 {
+                        sqlx::query(statement).execute(&self.pool).await?;
+                    }
                 }
+
+                if current_version < 2 {
+                    for statement in SCHEMA_V2_MIGRATION {
+                        sqlx::query(statement).execute(&self.pool).await?;
+                    }
+                }
+
                 Ok::<(), sqlx::Error>(())
             })
             .await
@@ -403,5 +425,97 @@ impl StorageBackend for SqliteStorage {
             .into_iter()
             .map(|row| row.get::<String, _>("rule_path"))
             .collect())
+    }
+
+    async fn set_pending_tool(&self, state: &PendingToolState) -> Result<()> {
+        self.ensure_initialized().await?;
+
+        let tool_messages_json = serde_json::to_string(&state.tool_messages)?;
+        let context_snapshot_json = serde_json::to_string(&state.context_snapshot)?;
+        let args_json = serde_json::to_string(&state.args)?;
+
+        sqlx::query(
+            "INSERT OR REPLACE INTO pending_tools(session_id, tool_name, args_json, round_index, tool_messages_json, context_snapshot_json, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(state.session_id.to_string())
+        .bind(&state.tool_name)
+        .bind(args_json)
+        .bind(state.round_index as i64)
+        .bind(tool_messages_json)
+        .bind(context_snapshot_json)
+        .bind(state.created_at.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn get_and_clear_pending_tool(
+        &self,
+        session_id: Uuid,
+    ) -> Result<Option<PendingToolState>> {
+        self.ensure_initialized().await?;
+
+        let row = sqlx::query(
+            "SELECT session_id, tool_name, args_json, round_index, tool_messages_json, context_snapshot_json, created_at FROM pending_tools WHERE session_id = ?",
+        )
+        .bind(session_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        // Delete the pending tool state
+        sqlx::query("DELETE FROM pending_tools WHERE session_id = ?")
+            .bind(session_id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+        let tool_messages_json = row.get::<String, _>("tool_messages_json");
+        let context_snapshot_json = row.get::<String, _>("context_snapshot_json");
+        let args_json = row.get::<String, _>("args_json");
+        let session_id_str = row.get::<String, _>("session_id");
+        let created_at_str = row.get::<String, _>("created_at");
+
+        Ok(Some(PendingToolState {
+            session_id: Uuid::parse_str(&session_id_str).map_err(|err| {
+                Error::Storage(format!(
+                    "invalid session uuid in pending tool state '{session_id_str}': {err}"
+                ))
+            })?,
+            tool_name: row.get::<String, _>("tool_name"),
+            args: serde_json::from_str(&args_json)?,
+            round_index: row.get::<i64, _>("round_index") as usize,
+            tool_messages: serde_json::from_str(&tool_messages_json)?,
+            context_snapshot: serde_json::from_str(&context_snapshot_json)?,
+            created_at: Self::parse_timestamp(&created_at_str)?,
+        }))
+    }
+
+    async fn delete_stale_pending_tools(&self, older_than_secs: u64) -> Result<usize> {
+        self.ensure_initialized().await?;
+
+        let cutoff_time = Utc::now() - chrono::Duration::seconds(older_than_secs as i64);
+        let cutoff_rfc3339 = cutoff_time.to_rfc3339();
+
+        let result = sqlx::query("DELETE FROM pending_tools WHERE created_at < ?")
+            .bind(cutoff_rfc3339)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(result.rows_affected() as usize)
+    }
+
+    async fn has_pending_tool(&self, session_id: Uuid) -> Result<bool> {
+        self.ensure_initialized().await?;
+
+        let row = sqlx::query("SELECT 1 FROM pending_tools WHERE session_id = ?")
+            .bind(session_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+
+        Ok(row.is_some())
     }
 }

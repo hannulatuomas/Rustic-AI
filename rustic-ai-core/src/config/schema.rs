@@ -147,6 +147,15 @@ pub struct PermissionConfig {
     pub default_tool_permission: PermissionMode,
     pub ask_decisions_persist_scope: DecisionScope,
     pub remember_denied_duration_secs: u64,
+    pub globally_allowed_paths: Vec<String>,
+    pub project_allowed_paths: Vec<String>,
+    pub global_command_patterns: CommandPatternConfig,
+    pub project_command_patterns: CommandPatternConfig,
+    /// Timeout in seconds for pending tool execution states (default: 300 = 5 minutes)
+    pub pending_tool_timeout_secs: u64,
+    /// Time-to-live for sudo password cache in RAM (default: 300 = 5 minutes)
+    /// Never persisted to disk/session history/logs; only in-memory for security
+    pub sudo_cache_ttl_secs: u64,
 }
 
 impl Default for PermissionConfig {
@@ -155,8 +164,22 @@ impl Default for PermissionConfig {
             default_tool_permission: PermissionMode::Ask,
             ask_decisions_persist_scope: DecisionScope::Session,
             remember_denied_duration_secs: 0,
+            globally_allowed_paths: Vec::new(),
+            project_allowed_paths: Vec::new(),
+            global_command_patterns: CommandPatternConfig::default(),
+            project_command_patterns: CommandPatternConfig::default(),
+            pending_tool_timeout_secs: 300,
+            sudo_cache_ttl_secs: 300,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct CommandPatternConfig {
+    pub allow: Vec<String>,
+    pub ask: Vec<String>,
+    pub deny: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -318,6 +341,7 @@ pub enum ProviderType {
     Anthropic,
     Grok,
     Google,
+    ZAi,
     Ollama,
     Custom,
 }
@@ -326,6 +350,7 @@ pub enum ProviderType {
 #[serde(rename_all = "snake_case")]
 pub enum AuthMode {
     ApiKey,
+    Subscription,
     None,
 }
 
@@ -340,6 +365,10 @@ pub struct AgentConfig {
     pub temperature: f32,
     pub max_tokens: usize,
     pub context_window_size: usize,
+    pub max_tool_rounds: Option<usize>,
+    pub max_tools_per_round: Option<usize>,
+    pub max_total_tool_calls_per_turn: Option<usize>,
+    pub max_turn_duration_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -355,6 +384,12 @@ pub struct ToolConfig {
     pub custom_working_dir: Option<String>,
     pub env_passthrough: bool,
     pub stream_output: bool,
+    /// Explicit sudo requirement (optional, default false)
+    /// When true, always prompt for sudo regardless of command patterns
+    pub require_sudo: bool,
+    /// Command patterns that always require sudo privilege (optional, default empty)
+    /// Shell commands matching these patterns will always trigger sudo prompt
+    pub privileged_command_patterns: Vec<String>,
 }
 
 impl Default for ToolConfig {
@@ -370,6 +405,8 @@ impl Default for ToolConfig {
             custom_working_dir: None,
             env_passthrough: true,
             stream_output: true,
+            require_sudo: false,
+            privileged_command_patterns: Vec::new(),
         }
     }
 }

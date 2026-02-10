@@ -56,7 +56,30 @@
   "permissions": {
     "default_tool_permission": "ask",
     "ask_decisions_persist_scope": "session",
-    "remember_denied_duration_secs": 0
+    "remember_denied_duration_secs": 0,
+    "globally_allowed_paths": [
+      "~/dev",
+      "/tmp"
+    ],
+    "project_allowed_paths": [],
+    "global_command_patterns": {
+      "allow": [
+        "git *",
+        "cargo *"
+      ],
+      "ask": [
+        "sudo *"
+      ],
+      "deny": [
+        "rm -rf /",
+        "dd *"
+      ]
+    },
+    "project_command_patterns": {
+      "allow": [],
+      "ask": [],
+      "deny": []
+    }
   },
   "providers": [
     {
@@ -67,6 +90,141 @@
       "api_key_env": "OPENAI_API_KEY",
       "base_url": "https://api.openai.com/v1",
       "settings": {
+        "request_timeout_ms": 30000,
+        "request_max_retries": 2,
+        "retry_base_delay_ms": 250,
+        "retry_max_delay_ms": 3000,
+        "retry_jitter_ms": 100
+      }
+    },
+    {
+      "name": "openai-subscription",
+      "provider_type": "open_ai",
+      "model": "gpt-5",
+      "auth_mode": "subscription",
+      "base_url": "https://api.openai.com/v1",
+      "settings": {
+        "request_timeout_ms": 30000,
+        "subscription_auth": {
+          "client_id": "your-openai-oauth-client-id",
+          "authorize_url": "https://auth.openai.com/oauth/authorize",
+          "token_url": "https://auth.openai.com/oauth/token",
+          "device_authorization_url": "https://auth.openai.com/oauth/device/code",
+          "scopes": ["openid", "profile", "offline_access"],
+          "redirect_host": "127.0.0.1",
+          "redirect_port": 8787,
+          "extra_authorize_params": {},
+          "extra_token_params": {}
+        }
+      }
+    },
+    {
+      "name": "anthropic-subscription",
+      "provider_type": "anthropic",
+      "model": "claude-sonnet-4-5",
+      "auth_mode": "subscription",
+      "base_url": "https://api.anthropic.com/v1",
+      "settings": {
+        "request_timeout_ms": 30000,
+        "api_version": "2023-06-01",
+        "subscription_auth": {
+          "client_id": "your-anthropic-oauth-client-id",
+          "authorize_url": "https://auth.anthropic.com/oauth/authorize",
+          "token_url": "https://auth.anthropic.com/oauth/token",
+          "device_authorization_url": "https://auth.anthropic.com/oauth/device/code",
+          "scopes": ["openid", "profile", "offline_access"],
+          "redirect_host": "127.0.0.1",
+          "redirect_port": 8788,
+          "extra_authorize_params": {},
+          "extra_token_params": {}
+        }
+      }
+    },
+    {
+      "name": "google-main",
+      "provider_type": "google",
+      "model": "gemini-2.5-pro",
+      "auth_mode": "api_key",
+      "api_key_env": "GOOGLE_API_KEY",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "settings": {
+        "request_timeout_ms": 30000,
+        "headers": {
+          "X-Goog-Api-Client": "rustic-ai/0.1"
+        }
+      }
+    },
+    {
+      "name": "google-subscription",
+      "provider_type": "google",
+      "model": "gemini-2.5-pro",
+      "auth_mode": "subscription",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "settings": {
+        "request_timeout_ms": 30000,
+        "subscription_auth": {
+          "client_id": "your-google-oauth-client-id",
+          "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+          "token_url": "https://oauth2.googleapis.com/token",
+          "device_authorization_url": "https://oauth2.googleapis.com/device/code",
+          "scopes": ["openid", "profile", "email", "https://www.googleapis.com/auth/generative-language"],
+          "redirect_host": "127.0.0.1",
+          "redirect_port": 8789,
+          "extra_authorize_params": {
+            "access_type": "offline",
+            "prompt": "consent"
+          },
+          "extra_token_params": {}
+        }
+      }
+    },
+    {
+      "name": "grok-main",
+      "provider_type": "grok",
+      "model": "grok-4",
+      "auth_mode": "api_key",
+      "api_key_env": "XAI_API_KEY",
+      "base_url": "https://api.x.ai/v1",
+      "settings": {
+        "request_timeout_ms": 30000,
+        "headers": {
+          "X-Client-Name": "rustic-ai"
+        }
+      }
+    },
+    {
+      "name": "zai-main",
+      "provider_type": "z_ai",
+      "model": "glm-4.5",
+      "auth_mode": "api_key",
+      "api_key_env": "ZAI_API_KEY",
+      "base_url": "https://api.z.ai/api/paas/v4",
+      "settings": {
+        "request_timeout_ms": 30000,
+        "general_base_url": "https://api.z.ai/api/paas/v4",
+        "coding_base_url": "https://api.z.ai/api/coding/v1",
+        "endpoint_profile": "general"
+      }
+    },
+    {
+      "name": "custom-openai-compatible",
+      "provider_type": "custom",
+      "model": "your-model",
+      "auth_mode": "api_key",
+      "api_key_env": "CUSTOM_PROVIDER_API_KEY",
+      "base_url": "https://your-openai-compatible-endpoint/v1",
+      "settings": {
+        "request_timeout_ms": 30000
+      }
+    },
+    {
+      "name": "ollama-main",
+      "provider_type": "ollama",
+      "model": "llama3.1:8b",
+      "auth_mode": "api_key",
+      "api_key_env": "OLLAMA_API_KEY",
+      "base_url": "http://127.0.0.1:11434",
+      "settings": {
         "request_timeout_ms": 30000
       }
     }
@@ -75,12 +233,16 @@
     {
       "name": "default",
       "provider": "openai-main",
-      "tools": ["shell"],
+      "tools": ["shell", "filesystem", "http"],
       "skills": [],
       "system_prompt_template": "You are a helpful AI assistant with access to shell commands.",
       "temperature": 0.7,
       "max_tokens": 4000,
-      "context_window_size": 12000
+      "context_window_size": 12000,
+      "max_tool_rounds": 4,
+      "max_tools_per_round": 8,
+      "max_total_tool_calls_per_turn": 24,
+      "max_turn_duration_seconds": 300
     }
   ],
   "tools": [
@@ -95,10 +257,33 @@
       "custom_working_dir": null,
       "env_passthrough": true,
       "stream_output": true
+    },
+    {
+      "name": "filesystem",
+      "enabled": true,
+      "permission_mode": "ask",
+      "timeout_seconds": 30,
+      "allowed_commands": [],
+      "denied_commands": [],
+      "working_dir": "project_root",
+      "custom_working_dir": null,
+      "env_passthrough": false,
+      "stream_output": true
+    },
+    {
+      "name": "http",
+      "enabled": true,
+      "permission_mode": "ask",
+      "timeout_seconds": 30,
+      "allowed_commands": [],
+      "denied_commands": [],
+      "working_dir": "project_root",
+      "custom_working_dir": null,
+      "env_passthrough": false,
+      "stream_output": true
     }
   ],
   "taxonomy": {
     "baskets": []
   }
 }
-

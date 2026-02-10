@@ -1,8 +1,12 @@
-use crate::config::schema::ToolConfig;
+use crate::config::schema::{PermissionConfig, ToolConfig};
 use crate::error::{Error, Result};
 use crate::events::Event;
-use crate::permissions::{AskResolution, PermissionDecision, PermissionPolicy};
-use crate::tools::{shell::ShellTool, Tool};
+use crate::permissions::{
+    AskResolution, CommandPatternBucket, PermissionContext, PermissionDecision, PermissionPolicy,
+};
+use crate::tools::{
+    filesystem::FilesystemTool, http::HttpTool, shell::ShellTool, Tool, ToolExecutionContext,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -13,12 +17,15 @@ pub struct ToolManager {
     tools: Arc<RwLock<HashMap<String, Arc<dyn Tool>>>>,
     tool_configs: Arc<RwLock<HashMap<String, ToolConfig>>>,
     permission_policy: Arc<RwLock<Box<dyn PermissionPolicy + Send + Sync>>>,
+    execution_context: ToolExecutionContext,
 }
 
 impl ToolManager {
     pub fn new(
         permission_policy: Box<dyn PermissionPolicy + Send + Sync>,
+        permission_config: Arc<PermissionConfig>,
         tool_configs: Vec<ToolConfig>,
+        execution_context: ToolExecutionContext,
     ) -> Self {
         let mut tools = HashMap::new();
         let mut configs = HashMap::new();
@@ -29,10 +36,14 @@ impl ToolManager {
             }
 
             let tool: Arc<dyn Tool> = match config.name.as_str() {
-                "shell" => Arc::new(ShellTool::new(config.clone())),
+                "shell" => Arc::new(ShellTool::new(
+                    config.clone(),
+                    permission_config.sudo_cache_ttl_secs,
+                )),
+                "filesystem" => Arc::new(FilesystemTool::new(config.clone())),
+                "http" => Arc::new(HttpTool::new(config.clone())),
                 _ => {
                     // For now, skip unknown tools
-                    // In future, we could load plugins or return error
                     continue;
                 }
             };
@@ -45,6 +56,7 @@ impl ToolManager {
             tools: Arc::new(RwLock::new(tools)),
             tool_configs: Arc::new(RwLock::new(configs)),
             permission_policy: Arc::new(RwLock::new(permission_policy)),
+            execution_context,
         }
     }
 
@@ -70,6 +82,7 @@ impl ToolManager {
     pub async fn execute_tool(
         &self,
         session_id: String,
+        agent_name: Option<String>,
         tool_name: &str,
         args: serde_json::Value,
         event_tx: mpsc::Sender<Event>,
@@ -82,16 +95,24 @@ impl ToolManager {
 
         let tool = tool.ok_or_else(|| Error::Tool(format!("tool '{tool_name}' not found")))?;
 
+        let permission_context = PermissionContext {
+            session_id: session_id.clone(),
+            agent_name,
+            working_directory: self.execution_context.working_directory.clone(),
+        };
+
         // Check permission
         let permission = {
             let policy = self.permission_policy.read().await;
-            policy.check_tool_permission(tool_name, &args)
+            policy.check_tool_permission(tool_name, &args, &permission_context)
         };
 
         match permission {
             PermissionDecision::Allow => {
                 // Execute directly
-                let result = tool.stream_execute(args.clone(), event_tx).await?;
+                let result = tool
+                    .stream_execute(args.clone(), event_tx, &self.execution_context)
+                    .await?;
                 Ok(Some(result))
             }
             PermissionDecision::Deny => {
@@ -119,15 +140,22 @@ impl ToolManager {
     pub async fn resolve_permission(
         &self,
         session_id: String,
+        agent_name: Option<String>,
         tool_name: &str,
         args: serde_json::Value,
         decision: AskResolution,
         event_tx: mpsc::Sender<Event>,
     ) -> Result<Option<crate::tools::ToolResult>> {
+        let permission_context = PermissionContext {
+            session_id: session_id.clone(),
+            agent_name,
+            working_directory: self.execution_context.working_directory.clone(),
+        };
+
         // Record decision in policy
         {
             let mut policy = self.permission_policy.write().await;
-            policy.record_permission(tool_name, &args, decision);
+            policy.record_permission(tool_name, &args, &permission_context, decision);
         }
 
         // Emit decision event
@@ -150,8 +178,45 @@ impl ToolManager {
 
         let tool = tool.ok_or_else(|| Error::Tool(format!("tool '{tool_name}' not found")))?;
 
-        let result = tool.stream_execute(args, event_tx).await?;
+        let result = tool
+            .stream_execute(args, event_tx, &self.execution_context)
+            .await?;
         Ok(Some(result))
+    }
+
+    pub async fn add_session_allowed_path(&self, session_id: &str, path: &str) {
+        let mut policy = self.permission_policy.write().await;
+        policy.add_session_allowed_path(session_id, path);
+    }
+
+    pub async fn add_session_command_pattern(
+        &self,
+        session_id: &str,
+        bucket: CommandPatternBucket,
+        pattern: &str,
+    ) {
+        let mut policy = self.permission_policy.write().await;
+        policy.add_session_command_pattern(session_id, bucket, pattern);
+    }
+
+    pub async fn add_global_allowed_path(&self, path: &str) {
+        let mut policy = self.permission_policy.write().await;
+        policy.add_global_allowed_path(path);
+    }
+
+    pub async fn add_project_allowed_path(&self, path: &str) {
+        let mut policy = self.permission_policy.write().await;
+        policy.add_project_allowed_path(path);
+    }
+
+    pub async fn add_global_command_pattern(&self, bucket: CommandPatternBucket, pattern: &str) {
+        let mut policy = self.permission_policy.write().await;
+        policy.add_global_command_pattern(bucket, pattern);
+    }
+
+    pub async fn add_project_command_pattern(&self, bucket: CommandPatternBucket, pattern: &str) {
+        let mut policy = self.permission_policy.write().await;
+        policy.add_project_command_pattern(bucket, pattern);
     }
 }
 
@@ -161,6 +226,7 @@ impl std::fmt::Debug for ToolManager {
             .field("tools", &"<tools>")
             .field("tool_configs", &"<tool_configs>")
             .field("permission_policy", &"<dyn PermissionPolicy>")
+            .field("execution_context", &self.execution_context)
             .finish()
     }
 }

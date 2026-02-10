@@ -5,7 +5,8 @@ use crate::events::EventBus;
 use crate::permissions::{ConfigurablePermissionPolicy, PermissionPolicy};
 use crate::providers::create_provider_registry;
 use crate::providers::registry::ProviderRegistry;
-use crate::ToolManager;
+use crate::tools::{ToolExecutionContext, ToolManager};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 pub struct Runtime {
@@ -21,7 +22,9 @@ impl Runtime {
         config: crate::config::Config,
         session_manager: Arc<SessionManager>,
     ) -> Result<Self> {
-        let providers = create_provider_registry(&config)?;
+        let work_dir = std::env::current_dir()
+            .map_err(|err| crate::Error::Config(format!("failed to resolve current dir: {err}")))?;
+        let providers = create_provider_registry(&config, &work_dir)?;
 
         // Create permission policy
         let tool_specific_modes: Vec<(String, crate::config::schema::PermissionMode)> = config
@@ -30,19 +33,35 @@ impl Runtime {
             .map(|tc| (tc.name.clone(), tc.permission_mode))
             .collect();
 
-        let permission_policy: Box<dyn PermissionPolicy + Send + Sync> = Box::new(
-            ConfigurablePermissionPolicy::new(config.permissions.clone(), tool_specific_modes),
-        );
+        let mut agent_tool_allowlist: HashMap<String, HashSet<String>> = HashMap::new();
+        for agent in &config.agents {
+            agent_tool_allowlist.insert(agent.name.clone(), agent.tools.iter().cloned().collect());
+        }
+
+        let permission_policy: Box<dyn PermissionPolicy + Send + Sync> =
+            Box::new(ConfigurablePermissionPolicy::new(
+                config.permissions.clone(),
+                tool_specific_modes,
+                work_dir.clone(),
+                agent_tool_allowlist,
+            ));
 
         // Create tool manager
-        let tools = Arc::new(ToolManager::new(permission_policy, config.tools.clone()));
+        let tools = Arc::new(ToolManager::new(
+            permission_policy,
+            Arc::new(config.permissions.clone()),
+            config.tools.clone(),
+            ToolExecutionContext {
+                working_directory: work_dir,
+            },
+        ));
 
         // Create agent coordinator
         let agents = AgentCoordinator::new(
             config.agents.clone(),
             &providers,
             tools.clone(),
-            session_manager,
+            session_manager.clone(),
         )?;
 
         Ok(Self {

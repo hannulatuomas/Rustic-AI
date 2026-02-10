@@ -286,7 +286,85 @@ ADR-0016: Config Mutation Layer with Typed Paths and Atomic Persistence
   - Frontends can implement get/set/patch behavior consistently without custom file mutation logic.
   - Config writes are safer against partial/corrupt file states.
   - Frontend adapters (TUI/GUI/REST bridge) can depend on a stable JSON output contract.
-  - Future hot-reload and event propagation can integrate with `ConfigManager` as a single change source.
+- Future hot-reload and event propagation can integrate with `ConfigManager` as a single change source.
+
+---
+
+ADR-0017: Subscription Authentication for OpenAI (Browser + Headless)
+
+- Status: Accepted
+- Date: 2026-02-10
+- Context: Users need to run OpenAI provider using subscription-style authentication (Plus/Pro-compatible token flow) instead of only static API keys, including browser and headless login UX.
+- Decision:
+  - Add a core auth subsystem with:
+    - OAuth browser flow (authorization code + PKCE + local callback listener)
+    - OAuth device flow (headless / command-line authentication)
+    - Local credential store under global data path (default `~/.rustic-ai/data/auth.json`)
+    - Runtime token refresh using refresh tokens when available
+  - Add CLI auth commands:
+    - `auth connect --provider <name> --method browser|headless`
+    - `auth list`
+    - `auth logout --provider <name>`
+  - Allow OpenAI `auth_mode: subscription` without requiring `api_key_env`.
+  - Keep OpenAI request headers auth-mode aware and inject subscription bearer tokens dynamically per request.
+- Consequences:
+  - Subscription-mode OpenAI operation no longer depends on manual API-key env vars.
+  - Credential lifecycle (acquire, store, refresh, revoke local copy) is handled by Rustic-AI instead of external manual token handling.
+- Other providers can adopt the same auth subsystem incrementally.
+
+---
+
+ADR-0018: Provider-Scoped Auth Mode Capabilities
+
+- Status: Accepted
+- Date: 2026-02-10
+- Context: Not all providers support all auth modes (for example, Grok currently supports API key auth only). We need explicit, user-visible enforcement to prevent invalid config and confusing auth flows.
+- Decision:
+  - Add central provider auth capability mapping in core (`providers/auth_capabilities.rs`).
+  - Validate configured `auth_mode` against provider capabilities and return errors listing supported auth modes.
+  - Add CLI command `auth methods` to show configured providers, configured auth mode, and supported auth modes.
+  - Block `auth connect` when provider/auth-mode configuration does not support subscription authentication.
+- Consequences:
+  - Invalid provider/auth combinations fail early with actionable guidance.
+  - Users can discover supported auth methods without reading source code.
+- Subscription auth can be rolled out provider-by-provider without breaking existing providers.
+
+---
+
+ADR-0019: Expanded Provider Matrix (Grok, Z.ai, Custom OpenAI-Compatible, Ollama)
+
+- Status: Accepted
+- Date: 2026-02-10
+- Context: We need broader provider coverage while keeping authentication support explicit and predictable.
+- Decision:
+  - Implement Grok provider with API-key auth only.
+  - Implement Z.ai provider with two endpoint families (general/coding) and explicit endpoint profile selection.
+  - Implement Custom provider as OpenAI-compatible (`/chat/completions`) with endpoint + API key.
+  - Implement Ollama provider with chat, stream, and token-count endpoints, authenticated via API key.
+  - Keep subscription authentication available only for OpenAI, Anthropic, and Google.
+- Consequences:
+  - Provider behavior is explicit and discoverable via `auth methods`.
+  - Config validation fails fast for unsupported auth/provider combinations.
+  - Additional providers are usable without introducing fake/untested subscription paths.
+
+---
+
+ADR-0020: Layered Configuration via Global/Project Fragment Files
+
+- Status: Accepted
+- Date: 2026-02-10
+- Context: A single monolithic config file is hard to maintain as provider/tool/agent settings grow. We need easier separation similar to OpenCode-style organization while preserving deterministic merge behavior.
+- Decision:
+  - Keep `config.json` as the canonical base config.
+  - Add automatic JSON fragment loading from:
+    - global: `~/.rustic-ai/config/*.json` (or `<storage.global_root_path>/config/*.json` when configured)
+    - project: `<workdir>/<storage.default_root_dir_name>/config/*.json` (typically `.rustic-ai/config/*.json`)
+  - Merge order is deterministic: base `config.json` -> global fragments (sorted by filename) -> project fragments (sorted by filename) -> env overrides.
+  - Fragments are partial JSON objects and can override only the sections they define (agents/tools/providers/permissions/etc).
+- Consequences:
+  - Users can split config concerns into separate files without losing a single effective config model.
+  - Project config can override global defaults cleanly.
+  - Env vars remain highest-precedence runtime override path.
 
 ---
 

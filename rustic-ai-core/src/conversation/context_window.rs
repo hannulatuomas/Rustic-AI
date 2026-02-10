@@ -68,6 +68,8 @@ impl ContextWindowManager {
         final_context.push(ChatMessage {
             role: "system".to_owned(),
             content: format!("Conversation summary (older context): {summary}"),
+            name: None,
+            tool_calls: None,
         });
         final_context.extend(selected);
         Ok(final_context)
@@ -81,6 +83,8 @@ impl ContextWindowManager {
         let mut summary_messages = vec![ChatMessage {
             role: "system".to_owned(),
             content: "Summarize this conversation history focusing on goals, decisions, and unresolved items. Return plain text only.".to_owned(),
+            name: None,
+            tool_calls: None,
         }];
 
         summary_messages.extend(messages.iter().cloned());
@@ -90,6 +94,11 @@ impl ContextWindowManager {
                 &GenerateOptions {
                     temperature: 0.2,
                     max_tokens: self.summary_max_tokens,
+                    top_p: None,
+                    top_k: None,
+                    stop_sequences: None,
+                    presence_penalty: None,
+                    frequency_penalty: None,
                 },
             )
             .await

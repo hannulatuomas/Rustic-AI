@@ -2,7 +2,6 @@ use crate::cli::OutputFormat;
 use rustic_ai_core::events::Event;
 use rustic_ai_core::permissions::AskResolution;
 use std::io::Write;
-use tokio::sync::mpsc;
 
 pub struct Renderer {
     output_format: OutputFormat,
@@ -13,12 +12,10 @@ impl Renderer {
         Self { output_format }
     }
 
-    pub async fn run(&self, mut rx: mpsc::Receiver<Event>) {
-        while let Some(event) = rx.recv().await {
-            match self.output_format {
-                OutputFormat::Text => self.render_text(&event),
-                OutputFormat::Json => self.render_json(&event),
-            }
+    pub fn render_event(&self, event: &Event) {
+        match self.output_format {
+            OutputFormat::Text => self.render_text(event),
+            OutputFormat::Json => self.render_json(event),
         }
     }
 
@@ -76,6 +73,13 @@ impl Renderer {
                     AskResolution::Deny => "denied",
                 };
                 println!("[permission] Tool '{tool}' {desc}");
+            }
+            Event::SudoSecretPrompt {
+                command, reason, ..
+            } => {
+                println!();
+                println!("[sudo] {reason}: {command}");
+                println!("[sudo] Interactive sudo prompt is not wired yet.");
             }
             Event::SessionUpdated(_) => {
                 // Silent for now, useful for debugging
@@ -147,6 +151,16 @@ impl Renderer {
                 "session_id": session_id,
                 "tool": tool,
                 "decision": decision
+            }),
+            Event::SudoSecretPrompt {
+                session_id,
+                command,
+                reason,
+            } => serde_json::json!({
+                "type": "sudo_secret_prompt",
+                "session_id": session_id,
+                "command": command,
+                "reason": reason
             }),
             Event::SessionUpdated(id) => serde_json::json!({
                 "type": "session_updated",

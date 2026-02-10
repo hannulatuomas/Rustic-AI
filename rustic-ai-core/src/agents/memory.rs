@@ -27,6 +27,8 @@ impl AgentMemory {
         let mut context = vec![ChatMessage {
             role: "system".to_string(),
             content: system_prompt.to_string(),
+            name: None,
+            tool_calls: None,
         }];
 
         // Calculate approximate token count (4 chars per token is a rough estimate)

@@ -209,6 +209,47 @@
       },
       "additionalProperties": false
     },
+    "permissions": {
+      "type": "object",
+      "required": [
+        "default_tool_permission",
+        "ask_decisions_persist_scope",
+        "remember_denied_duration_secs",
+        "globally_allowed_paths",
+        "project_allowed_paths",
+        "global_command_patterns",
+        "project_command_patterns"
+      ],
+      "properties": {
+        "default_tool_permission": {
+          "type": "string",
+          "enum": ["allow", "ask", "deny"]
+        },
+        "ask_decisions_persist_scope": {
+          "type": "string",
+          "enum": ["session", "project", "global"]
+        },
+        "remember_denied_duration_secs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "globally_allowed_paths": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "project_allowed_paths": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "global_command_patterns": {
+          "$ref": "#/$defs/command_pattern_config"
+        },
+        "project_command_patterns": {
+          "$ref": "#/$defs/command_pattern_config"
+        }
+      },
+      "additionalProperties": false
+    },
     "providers": {
       "type": "array",
       "minItems": 1,
@@ -221,15 +262,14 @@
               "provider_type",
               "auth_mode",
               "model",
-              "api_key_env",
               "base_url"
             ],
             "properties": {
               "name": { "type": "string", "minLength": 1 },
               "provider_type": { "const": "open_ai" },
-              "auth_mode": { "type": "string", "enum": ["api_key", "none"] },
+              "auth_mode": { "type": "string", "enum": ["api_key", "subscription", "none"] },
               "model": { "type": "string", "minLength": 1 },
-              "api_key_env": { "type": "string", "minLength": 1 },
+              "api_key_env": { "type": ["string", "null"] },
               "base_url": { "type": "string", "minLength": 1 },
               "settings": {
                 "type": ["object", "null"],
@@ -245,9 +285,9 @@
               "name": { "type": "string", "minLength": 1 },
               "provider_type": {
                 "type": "string",
-                "enum": ["anthropic", "grok", "google", "ollama", "custom"]
+                "enum": ["anthropic", "grok", "google", "z_ai", "ollama", "custom"]
               },
-              "auth_mode": { "type": "string", "enum": ["api_key", "none"] },
+              "auth_mode": { "type": "string", "enum": ["api_key", "subscription", "none"] },
               "model": { "type": ["string", "null"] },
               "api_key_env": { "type": ["string", "null"] },
               "base_url": { "type": ["string", "null"] },
@@ -277,7 +317,15 @@
           "skills": {
             "type": "array",
             "items": { "type": "string" }
-          }
+          },
+          "system_prompt_template": { "type": ["string", "null"] },
+          "temperature": { "type": "number" },
+          "max_tokens": { "type": "integer", "minimum": 1 },
+          "context_window_size": { "type": "integer", "minimum": 1 },
+          "max_tool_rounds": { "type": ["integer", "null"], "minimum": 0 },
+          "max_tools_per_round": { "type": ["integer", "null"], "minimum": 0 },
+          "max_total_tool_calls_per_turn": { "type": ["integer", "null"], "minimum": 0 },
+          "max_turn_duration_seconds": { "type": ["integer", "null"], "minimum": 0 }
         },
         "additionalProperties": false
       }
@@ -286,10 +334,38 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name", "enabled"],
+        "required": [
+          "name",
+          "enabled",
+          "permission_mode",
+          "timeout_seconds",
+          "allowed_commands",
+          "denied_commands",
+          "working_dir",
+          "custom_working_dir",
+          "env_passthrough",
+          "stream_output"
+        ],
         "properties": {
           "name": { "type": "string" },
-          "enabled": { "type": "boolean" }
+          "enabled": { "type": "boolean" },
+          "permission_mode": { "type": "string", "enum": ["allow", "ask", "deny"] },
+          "timeout_seconds": { "type": "integer", "minimum": 1 },
+          "allowed_commands": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "denied_commands": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "working_dir": {
+            "type": "string",
+            "enum": ["current", "project_root", "custom_path"]
+          },
+          "custom_working_dir": { "type": ["string", "null"] },
+          "env_passthrough": { "type": "boolean" },
+          "stream_output": { "type": "boolean" }
         },
         "additionalProperties": false
       }
@@ -312,6 +388,27 @@
             },
             "additionalProperties": false
           }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "command_pattern_config": {
+      "type": "object",
+      "required": ["allow", "ask", "deny"],
+      "properties": {
+        "allow": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "ask": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "deny": {
+          "type": "array",
+          "items": { "type": "string" }
         }
       },
       "additionalProperties": false

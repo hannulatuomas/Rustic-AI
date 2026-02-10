@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod auth;
 pub mod catalog;
 pub mod commands;
 pub mod config;
@@ -11,15 +12,18 @@ pub mod project;
 pub mod providers;
 pub mod rules;
 pub mod runtime;
-pub mod skills;
 pub mod storage;
 pub mod tools;
-pub mod workflows;
 
 pub use agents::Agent;
+pub use auth::CredentialStore;
+pub use config::schema::PermissionConfig;
 pub use config::Config;
+pub use conversation::session_manager::SessionManager;
 pub use error::{Error, Result};
-pub use storage::model::Session;
+pub use events::EventBus;
+pub use providers::create_provider_registry;
+pub use storage::create_storage_backend;
 pub use tools::ToolManager;
 
 pub struct RusticAI {
@@ -61,6 +65,16 @@ impl RusticAI {
                 config.rules.discovered_rules.clone(),
                 work_dir.clone(),
             ));
+
+        // Cleanup stale pending tool states on startup using a dedicated runtime
+        let cleanup_timeout = config.permissions.pending_tool_timeout_secs;
+        let session_manager_clone = session_manager.clone();
+        let _ = std::thread::spawn(move || {
+            if let Ok(rt) = tokio::runtime::Runtime::new() {
+                let _ =
+                    rt.block_on(session_manager_clone.cleanup_stale_pending_tools(cleanup_timeout));
+            }
+        });
 
         let runtime = runtime::Runtime::new(config.clone(), session_manager.clone())?;
         let inference_provider = config.summarization.provider_name.clone().ok_or_else(|| {
