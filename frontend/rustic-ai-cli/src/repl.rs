@@ -17,6 +17,15 @@ struct PendingPermissionRequest {
     args: Value,
 }
 
+#[derive(Debug, Clone)]
+struct PendingSudoRequest {
+    session_id: String,
+    tool: String,
+    args: Value,
+    command: String,
+    reason: String,
+}
+
 pub struct Repl {
     app: Arc<RusticAI>,
     agent_name: Option<String>,
@@ -248,7 +257,9 @@ impl Repl {
         let renderer = Renderer::new(self.output_format);
         let pending_permission: Arc<Mutex<Option<PendingPermissionRequest>>> =
             Arc::new(Mutex::new(None));
+        let pending_sudo: Arc<Mutex<Option<PendingSudoRequest>>> = Arc::new(Mutex::new(None));
         let pending_for_listener = pending_permission.clone();
+        let pending_sudo_for_listener = pending_sudo.clone();
         let renderer_handle = tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
                 if let Event::PermissionRequest {
@@ -262,6 +273,24 @@ impl Repl {
                         session_id: session_id.clone(),
                         tool: tool.clone(),
                         args: args.clone(),
+                    });
+                }
+
+                if let Event::SudoSecretPrompt {
+                    session_id,
+                    tool,
+                    args,
+                    command,
+                    reason,
+                } = &event
+                {
+                    let mut sudo_guard = pending_sudo_for_listener.lock().await;
+                    *sudo_guard = Some(PendingSudoRequest {
+                        session_id: session_id.clone(),
+                        tool: tool.clone(),
+                        args: args.clone(),
+                        command: command.clone(),
+                        reason: reason.clone(),
                     });
                 }
 
@@ -290,6 +319,85 @@ impl Repl {
         println!();
 
         loop {
+            let pending_sudo_request = {
+                let guard = pending_sudo.lock().await;
+                guard.clone()
+            };
+
+            if let Some(request) = pending_sudo_request {
+                println!("[sudo] {}", request.reason);
+                println!("[sudo] command: {}", request.command);
+                let mut password =
+                    rpassword::prompt_password("[sudo] Password: ").map_err(|err| {
+                        rustic_ai_core::Error::Io(io::Error::other(format!(
+                            "failed reading sudo password: {err}"
+                        )))
+                    })?;
+
+                if password.trim().is_empty() {
+                    println!("[sudo] Empty password entered; request cancelled.");
+                    let mut guard = pending_sudo.lock().await;
+                    *guard = None;
+                    continue;
+                }
+
+                let resolved = self
+                    .app
+                    .runtime()
+                    .tools
+                    .resolve_sudo_prompt(
+                        request.session_id.clone(),
+                        &request.tool,
+                        request.args.clone(),
+                        password.clone(),
+                        event_tx.clone(),
+                    )
+                    .await;
+                password.clear();
+
+                match resolved {
+                    Ok(Some(result)) => {
+                        let message = format!(
+                            "{{\"tool\":\"{}\",\"success\":{},\"exit_code\":{},\"output\":{}}}",
+                            request.tool,
+                            result.success,
+                            result.exit_code.unwrap_or_default(),
+                            serde_json::to_string(&result.output)
+                                .unwrap_or_else(|_| "\"\"".to_string())
+                        );
+                        self.app
+                            .session_manager()
+                            .append_message(session_id, "tool", &message)
+                            .await?;
+
+                        let agent = self.app.runtime().agents.get_agent(Some(&agent_name))?;
+                        if let Err(err) = agent
+                            .continue_after_tool(session_id, event_tx.clone())
+                            .await
+                        {
+                            let _ = event_tx.try_send(Event::Error(err.to_string()));
+                        }
+
+                        let mut permission_guard = pending_permission.lock().await;
+                        *permission_guard = None;
+                        let mut sudo_guard = pending_sudo.lock().await;
+                        *sudo_guard = None;
+                        continue;
+                    }
+                    Ok(None) => {
+                        let mut sudo_guard = pending_sudo.lock().await;
+                        *sudo_guard = None;
+                        continue;
+                    }
+                    Err(err) => {
+                        let _ = event_tx.try_send(Event::Error(err.to_string()));
+                        let mut sudo_guard = pending_sudo.lock().await;
+                        *sudo_guard = None;
+                        continue;
+                    }
+                }
+            }
+
             print!("> ");
             io::stdout().flush()?;
 

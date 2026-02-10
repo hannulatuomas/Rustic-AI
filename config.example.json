@@ -7,6 +7,19 @@
     "workflows_enabled": true,
     "triggers_enabled": false
   },
+  "mcp": {
+    "servers": [
+      {
+        "name": "example",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+        "env": {},
+        "working_directory": null,
+        "startup_timeout_seconds": 20,
+        "protocol_version": "2024-11-05"
+      }
+    ]
+  },
   "storage": {
     "backend": "sqlite",
     "default_root_dir_name": ".rustic-ai",
@@ -233,7 +246,7 @@
     {
       "name": "default",
       "provider": "openai-main",
-      "tools": ["shell", "filesystem", "http"],
+      "tools": ["shell", "filesystem", "http", "ssh"],
       "skills": [],
       "system_prompt_template": "You are a helpful AI assistant with access to shell commands.",
       "temperature": 0.7,
@@ -275,6 +288,30 @@
       "enabled": true,
       "permission_mode": "ask",
       "timeout_seconds": 30,
+      "allowed_commands": [],
+      "denied_commands": [],
+      "working_dir": "project_root",
+      "custom_working_dir": null,
+      "env_passthrough": false,
+      "stream_output": true
+    },
+    {
+      "name": "ssh",
+      "enabled": true,
+      "permission_mode": "ask",
+      "timeout_seconds": 60,
+      "allowed_commands": [],
+      "denied_commands": [],
+      "working_dir": "project_root",
+      "custom_working_dir": null,
+      "env_passthrough": false,
+      "stream_output": true
+    },
+    {
+      "name": "mcp",
+      "enabled": true,
+      "permission_mode": "ask",
+      "timeout_seconds": 60,
       "allowed_commands": [],
       "denied_commands": [],
       "working_dir": "project_root",

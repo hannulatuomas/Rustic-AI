@@ -79,7 +79,7 @@ impl Renderer {
             } => {
                 println!();
                 println!("[sudo] {reason}: {command}");
-                println!("[sudo] Interactive sudo prompt is not wired yet.");
+                println!("[sudo] Waiting for secure password input.");
             }
             Event::SessionUpdated(_) => {
                 // Silent for now, useful for debugging
@@ -154,11 +154,15 @@ impl Renderer {
             }),
             Event::SudoSecretPrompt {
                 session_id,
+                tool,
+                args,
                 command,
                 reason,
             } => serde_json::json!({
                 "type": "sudo_secret_prompt",
                 "session_id": session_id,
+                "tool": tool,
+                "args": args,
                 "command": command,
                 "reason": reason
             }),

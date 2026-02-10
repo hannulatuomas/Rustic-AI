@@ -47,19 +47,30 @@ Last updated: 2026-02-10
   - [x] Add runtime session/project/global permission overrides via REPL `/perm` commands
   - [x] Persist runtime `/perm global|project` additions back into config scopes automatically
 
-- [ ] Harden shell sudo execution flow
+- [x] Harden shell sudo execution flow
   - [x] Add permission/tool config fields for sudo TTL + privileged command matching
   - [x] Add `SudoSecretPrompt` event and renderer support
   - [x] Detect privileged shell commands and emit sudo prompt event
-  - [ ] Wire secure secret input + sudo command resume path (no persistence)
+  - [x] Wire secure secret input + sudo command resume path (no persistence)
+
+- [x] Implement SSH persistent session tool
+  - [x] Add `ssh` tool registration in `ToolManager`
+  - [x] Implement `connect`/`exec`/`disconnect` operations with streamed output
+  - [x] Reuse existing SSH control session across multiple commands
+  - [x] Add `list_sessions` and `close_all` operations
+  - [x] Add PTY mode (`exec` with `pty=true`) and SCP upload/download operations
+
+- [x] Implement MCP adapter integration
+  - [x] Add MCP config schema (`mcp.servers`) with validation
+  - [x] Register `mcp` tool behind `features.mcp_enabled`
+  - [x] Implement MCP stdio adapter operations (`list_servers`, `list_tools`, `call_tool`)
+  - [x] Add config schema/example documentation updates
 
 - [x] Config ergonomics
   - [x] Support layered config fragments for global and project scopes
   - [x] Add explicit docs/examples for recommended split-file layouts (`agents.json`, `tools.json`, `providers.json`, `permissions.json`)
 
 ## Next
-- [ ] Implement SSH PTY tool with non-persistent credentials
-- [ ] Implement MCP adapter integration
 - [ ] Implement plugin tool loader wiring
 
 ## Done

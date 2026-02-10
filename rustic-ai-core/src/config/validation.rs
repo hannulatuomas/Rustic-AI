@@ -342,6 +342,37 @@ pub fn validate_config(config: &Config) -> Result<()> {
         }
     }
 
+    let mut mcp_server_names = HashSet::new();
+    for server in &config.mcp.servers {
+        let name = server.name.trim();
+        if name.is_empty() {
+            return Err(Error::Validation(
+                "mcp server name cannot be empty".to_owned(),
+            ));
+        }
+        if !mcp_server_names.insert(name.to_owned()) {
+            return Err(Error::Validation(format!(
+                "duplicate mcp server name '{name}'"
+            )));
+        }
+
+        if server.command.trim().is_empty() {
+            return Err(Error::Validation(format!(
+                "mcp server '{name}' must define command"
+            )));
+        }
+        if server.startup_timeout_seconds == 0 {
+            return Err(Error::Validation(format!(
+                "mcp server '{name}' startup_timeout_seconds must be greater than zero"
+            )));
+        }
+        if server.protocol_version.trim().is_empty() {
+            return Err(Error::Validation(format!(
+                "mcp server '{name}' protocol_version must be non-empty"
+            )));
+        }
+    }
+
     for agent in &config.agents {
         let name = agent.name.trim();
         if name.is_empty() {

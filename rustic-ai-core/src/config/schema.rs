@@ -22,6 +22,7 @@ pub enum RuleApplicability {
 pub struct Config {
     pub mode: RuntimeMode,
     pub features: FeatureConfig,
+    pub mcp: McpConfig,
     pub project: Option<ProjectConfig>,
     pub rules: RuleConfig,
     pub providers: Vec<ProviderConfig>,
@@ -38,6 +39,7 @@ impl Default for Config {
         Self {
             mode: RuntimeMode::Direct,
             features: FeatureConfig::default(),
+            mcp: McpConfig::default(),
             project: None,
             rules: RuleConfig::default(),
             providers: Vec::new(),
@@ -47,6 +49,38 @@ impl Default for Config {
             storage: StorageConfig::default(),
             summarization: SummarizationConfig::default(),
             permissions: PermissionConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct McpConfig {
+    pub servers: Vec<McpServerConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct McpServerConfig {
+    pub name: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: std::collections::BTreeMap<String, String>,
+    pub working_directory: Option<String>,
+    pub startup_timeout_seconds: u64,
+    pub protocol_version: String,
+}
+
+impl Default for McpServerConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            command: String::new(),
+            args: Vec::new(),
+            env: std::collections::BTreeMap::new(),
+            working_directory: None,
+            startup_timeout_seconds: 20,
+            protocol_version: "2024-11-05".to_owned(),
         }
     }
 }

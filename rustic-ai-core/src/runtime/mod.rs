@@ -50,6 +50,8 @@ impl Runtime {
         let tools = Arc::new(ToolManager::new(
             permission_policy,
             Arc::new(config.permissions.clone()),
+            config.features.mcp_enabled,
+            Arc::new(config.mcp.clone()),
             config.tools.clone(),
             ToolExecutionContext {
                 working_directory: work_dir,

@@ -318,7 +318,7 @@ impl Agent {
                         )
                     }
                     None => format!(
-                        "tool '{}' requires permission before execution and is pending user decision",
+                        "tool '{}' requires user input before execution and is pending",
                         call.tool
                     ),
                 };
@@ -498,7 +498,7 @@ impl Agent {
                 )
             }
             None => format!(
-                "tool '{}' requires permission before execution and is pending user decision",
+                "tool '{}' requires user input before execution and is pending",
                 pending.tool_name
             ),
         };
@@ -607,7 +607,7 @@ impl Agent {
                     )
                 }
                 None => format!(
-                    "tool '{}' requires permission before execution and is pending user decision",
+                    "tool '{}' requires user input before execution and is pending",
                     call.tool
                 ),
             };
@@ -744,7 +744,7 @@ impl Agent {
                         )
                     }
                     None => format!(
-                        "tool '{}' requires permission before execution and is pending user decision",
+                        "tool '{}' requires user input before execution and is pending",
                         call.tool
                     ),
                 };

@@ -39,6 +39,8 @@ pub enum Event {
     /// Password is sent securely via stdin, never echoed or logged
     SudoSecretPrompt {
         session_id: String,
+        tool: String,
+        args: serde_json::Value,
         command: String,
         reason: String,
     },

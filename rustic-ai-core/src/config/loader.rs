@@ -56,6 +56,11 @@ pub fn merge(base: Config, override_config: Config) -> Config {
     Config {
         mode: override_config.mode,
         features: override_config.features,
+        mcp: if override_config.mcp.servers.is_empty() {
+            base.mcp
+        } else {
+            override_config.mcp
+        },
         project: override_config.project.or(base.project),
         rules: merge_rules(base.rules, override_config.rules),
         providers: merge_vec(base.providers, override_config.providers),

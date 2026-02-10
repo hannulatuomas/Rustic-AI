@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::timeout;
@@ -23,6 +23,15 @@ const OUTPUT_CAPTURE_LIMIT_BYTES: usize = 10 * 1024;
 struct SudoPasswordEntry {
     password: String,
     expires_at: SystemTime,
+}
+
+struct CommandExecutionInput<'a> {
+    command: &'a str,
+    session_id: Option<&'a str>,
+    sudo_password: Option<&'a str>,
+    work_dir: &'a Path,
+    per_call_override: Option<&'a Path>,
+    tool_name: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -196,14 +205,48 @@ impl ShellTool {
     async fn cleanup_expired_sudo_passwords(&self) {
         let now = SystemTime::now();
         let mut cache = self.sudo_password_cache.lock().await;
-        cache.retain(|_, entry| {
-            let keep = entry.expires_at > now;
-            if !keep {
-                let mut password = entry.password.clone();
-                password.clear();
-            }
-            keep
-        });
+        cache.retain(|_, entry| entry.expires_at > now);
+    }
+
+    async fn get_cached_password(&self, session_id: &str) -> Option<String> {
+        self.cleanup_expired_sudo_passwords().await;
+        let cache = self.sudo_password_cache.lock().await;
+        cache.get(session_id).map(|entry| entry.password.clone())
+    }
+
+    async fn cache_password(&self, session_id: &str, password: &str) {
+        let expires_at = SystemTime::now() + Duration::from_secs(self.sudo_cache_ttl_secs);
+        let mut cache = self.sudo_password_cache.lock().await;
+        cache.insert(
+            session_id.to_owned(),
+            SudoPasswordEntry {
+                password: password.to_owned(),
+                expires_at,
+            },
+        );
+    }
+
+    async fn clear_cached_password(&self, session_id: &str) {
+        let mut cache = self.sudo_password_cache.lock().await;
+        cache.remove(session_id);
+    }
+
+    fn build_sudo_command(command: &str) -> String {
+        let trimmed = command.trim();
+        if trimmed.starts_with("sudo ") {
+            trimmed.to_owned()
+        } else {
+            format!("sudo -S {trimmed}")
+        }
+    }
+
+    fn args_with_redacted_secrets(args: &serde_json::Value) -> serde_json::Value {
+        let mut redacted = args.clone();
+        if let Some(obj) = redacted.as_object_mut() {
+            obj.remove("_sudo_password");
+            obj.remove("_session_id");
+        }
+        redacted
     }
 
     fn apply_environment(&self, cmd: &mut Command) {
@@ -241,41 +284,74 @@ impl ShellTool {
 
     async fn stream_command(
         &self,
-        command: &str,
-        work_dir: &Path,
-        per_call_override: Option<&Path>,
+        input: CommandExecutionInput<'_>,
         tx: mpsc::Sender<Event>,
-        tool_name: &str,
     ) -> Result<(String, String, i32)> {
+        let command = input.command;
+        let session_id = input.session_id;
+        let sudo_password = input.sudo_password;
+        let work_dir = input.work_dir;
+        let per_call_override = input.per_call_override;
+        let tool_name = input.tool_name;
+
         self.cleanup_expired_sudo_passwords().await;
         let working_dir = self.resolve_working_dir(work_dir, per_call_override)?;
+        let requires_sudo = self.command_requires_sudo(command);
 
-        if self.command_requires_sudo(command) {
-            let ttl_secs = self.sudo_cache_ttl_secs;
-            let _ = tx.try_send(Event::SudoSecretPrompt {
-                session_id: "unknown".to_owned(),
-                command: command.to_owned(),
-                reason: "sudo command detected".to_owned(),
-            });
-            return Err(Error::Tool(format!(
-                "sudo command execution is not wired yet; prompt event emitted (configured cache ttl: {ttl_secs}s)"
-            )));
+        let effective_password = if requires_sudo {
+            if let Some(password) = sudo_password {
+                Some(password.to_owned())
+            } else if let Some(session_id) = session_id {
+                self.get_cached_password(session_id).await
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if requires_sudo && effective_password.is_none() {
+            return Err(Error::Tool(
+                "sudo password is required but was not provided".to_owned(),
+            ));
         }
+
+        let effective_command = if requires_sudo {
+            Self::build_sudo_command(command)
+        } else {
+            command.to_owned()
+        };
 
         let shell = if cfg!(windows) { "cmd.exe" } else { "/bin/sh" };
         let shell_flag = if cfg!(windows) { "/C" } else { "-c" };
 
         let mut cmd = Command::new(shell);
-        cmd.arg(shell_flag).arg(command);
+        cmd.arg(shell_flag).arg(&effective_command);
         cmd.current_dir(&working_dir);
         self.apply_environment(&mut cmd);
 
+        cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
         let mut child = cmd
             .spawn()
             .map_err(|err| Error::Tool(format!("failed to spawn command: {err}")))?;
+
+        if let Some(password) = effective_password.as_deref() {
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| Error::Tool("failed to capture stdin".to_owned()))?;
+            stdin
+                .write_all(format!("{password}\n").as_bytes())
+                .await
+                .map_err(|err| Error::Tool(format!("failed to write sudo password: {err}")))?;
+            stdin
+                .flush()
+                .await
+                .map_err(|err| Error::Tool(format!("failed to flush sudo password: {err}")))?;
+        }
 
         let stdout = child
             .stdout
@@ -342,11 +418,18 @@ impl ShellTool {
             .await
             .map_err(|err| Error::Tool(format!("stderr task join error: {err}")))?;
 
-        Ok((
-            stdout_captured,
-            stderr_captured,
-            status.code().unwrap_or(-1),
-        ))
+        let exit_code = status.code().unwrap_or(-1);
+        if requires_sudo {
+            if exit_code == 0 {
+                if let (Some(id), Some(password)) = (session_id, effective_password.as_deref()) {
+                    self.cache_password(id, password).await;
+                }
+            } else if let Some(id) = session_id {
+                self.clear_cached_password(id).await;
+            }
+        }
+
+        Ok((stdout_captured, stderr_captured, exit_code))
     }
 }
 
@@ -389,21 +472,29 @@ impl super::Tool for ShellTool {
             .get("working_directory")
             .and_then(|value| value.as_str())
             .map(PathBuf::from);
+        let session_id = args.get("_session_id").and_then(|value| value.as_str());
+        let sudo_password = args.get("_sudo_password").and_then(|value| value.as_str());
 
         self.validate_command(command)?;
 
+        let display_args = Self::args_with_redacted_secrets(&args);
+
         let _ = tx.try_send(Event::ToolStarted {
             tool: tool_name.clone(),
-            args: args.clone(),
+            args: display_args,
         });
 
         let (stdout, stderr, exit_code) = self
             .stream_command(
-                command,
-                &context.working_directory,
-                per_call_working_dir.as_deref(),
+                CommandExecutionInput {
+                    command,
+                    session_id,
+                    sudo_password,
+                    work_dir: &context.working_directory,
+                    per_call_override: per_call_working_dir.as_deref(),
+                    tool_name: &tool_name,
+                },
                 tx.clone(),
-                &tool_name,
             )
             .await?;
 

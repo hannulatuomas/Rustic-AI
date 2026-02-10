@@ -1,12 +1,14 @@
-use crate::config::schema::{PermissionConfig, ToolConfig};
+use crate::config::schema::{McpConfig, PermissionConfig, ToolConfig};
 use crate::error::{Error, Result};
 use crate::events::Event;
 use crate::permissions::{
     AskResolution, CommandPatternBucket, PermissionContext, PermissionDecision, PermissionPolicy,
 };
 use crate::tools::{
-    filesystem::FilesystemTool, http::HttpTool, shell::ShellTool, Tool, ToolExecutionContext,
+    filesystem::FilesystemTool, http::HttpTool, mcp::McpToolAdapter, shell::ShellTool,
+    ssh::SshTool, Tool, ToolExecutionContext,
 };
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -21,9 +23,85 @@ pub struct ToolManager {
 }
 
 impl ToolManager {
+    fn shell_command_program(command: &str) -> Option<String> {
+        command
+            .split_whitespace()
+            .next()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    }
+
+    fn shell_matches_pattern(program: &str, pattern: &str) -> bool {
+        if program == pattern {
+            return true;
+        }
+
+        let program_name = std::path::Path::new(program)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or(program);
+        let pattern_name = std::path::Path::new(pattern)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or(pattern);
+        program_name == pattern_name
+    }
+
+    fn shell_requires_sudo(config: &ToolConfig, args: &Value) -> bool {
+        if !config.enabled {
+            return false;
+        }
+
+        let command = match args.get("command").and_then(|value| value.as_str()) {
+            Some(command) => command,
+            None => return false,
+        };
+
+        if config.require_sudo {
+            return true;
+        }
+
+        if let Some(program) = Self::shell_command_program(command) {
+            for pattern in &config.privileged_command_patterns {
+                if let Some(pattern_program) = Self::shell_command_program(pattern) {
+                    if Self::shell_matches_pattern(&program, &pattern_program) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        let lowered = command.to_ascii_lowercase();
+        lowered.starts_with("sudo ") || lowered.contains(" sudo ")
+    }
+
+    fn shell_args_with_session(args: &Value, session_id: &str) -> Value {
+        let mut enriched = args.clone();
+        if let Some(obj) = enriched.as_object_mut() {
+            obj.insert(
+                "_session_id".to_owned(),
+                serde_json::Value::String(session_id.to_owned()),
+            );
+        }
+        enriched
+    }
+
+    fn shell_args_with_secret(args: &Value, session_id: &str, password: &str) -> Value {
+        let mut enriched = Self::shell_args_with_session(args, session_id);
+        if let Some(obj) = enriched.as_object_mut() {
+            obj.insert(
+                "_sudo_password".to_owned(),
+                serde_json::Value::String(password.to_owned()),
+            );
+        }
+        enriched
+    }
+
     pub fn new(
         permission_policy: Box<dyn PermissionPolicy + Send + Sync>,
         permission_config: Arc<PermissionConfig>,
+        mcp_enabled: bool,
+        mcp_config: Arc<McpConfig>,
         tool_configs: Vec<ToolConfig>,
         execution_context: ToolExecutionContext,
     ) -> Self {
@@ -42,6 +120,13 @@ impl ToolManager {
                 )),
                 "filesystem" => Arc::new(FilesystemTool::new(config.clone())),
                 "http" => Arc::new(HttpTool::new(config.clone())),
+                "ssh" => Arc::new(SshTool::new(config.clone())),
+                "mcp" => {
+                    if !mcp_enabled {
+                        continue;
+                    }
+                    Arc::new(McpToolAdapter::new(config.clone(), mcp_config.clone()))
+                }
                 _ => {
                     // For now, skip unknown tools
                     continue;
@@ -109,9 +194,43 @@ impl ToolManager {
 
         match permission {
             PermissionDecision::Allow => {
+                if tool_name == "shell" {
+                    let shell_config = {
+                        let configs = self.tool_configs.read().await;
+                        configs.get(tool_name).cloned()
+                    };
+
+                    if let Some(config) = shell_config {
+                        let has_secret = args
+                            .get("_sudo_password")
+                            .and_then(|value| value.as_str())
+                            .is_some();
+                        if !has_secret && Self::shell_requires_sudo(&config, &args) {
+                            let command = args
+                                .get("command")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or_default()
+                                .to_owned();
+                            let _ = event_tx.try_send(Event::SudoSecretPrompt {
+                                session_id,
+                                tool: tool_name.to_owned(),
+                                args: args.clone(),
+                                command,
+                                reason: "sudo privileges required".to_owned(),
+                            });
+                            return Ok(None);
+                        }
+                    }
+                }
+
                 // Execute directly
+                let tool_args = if tool_name == "shell" {
+                    Self::shell_args_with_session(&args, &session_id)
+                } else {
+                    args.clone()
+                };
                 let result = tool
-                    .stream_execute(args.clone(), event_tx, &self.execution_context)
+                    .stream_execute(tool_args, event_tx, &self.execution_context)
                     .await?;
                 Ok(Some(result))
             }
@@ -160,7 +279,7 @@ impl ToolManager {
 
         // Emit decision event
         let _ = event_tx.try_send(Event::PermissionDecision {
-            session_id,
+            session_id: session_id.clone(),
             tool: tool_name.to_string(),
             decision,
         });
@@ -178,8 +297,70 @@ impl ToolManager {
 
         let tool = tool.ok_or_else(|| Error::Tool(format!("tool '{tool_name}' not found")))?;
 
+        if tool_name == "shell" {
+            let shell_config = {
+                let configs = self.tool_configs.read().await;
+                configs.get(tool_name).cloned()
+            };
+
+            if let Some(config) = shell_config {
+                let has_secret = args
+                    .get("_sudo_password")
+                    .and_then(|value| value.as_str())
+                    .is_some();
+                if !has_secret && Self::shell_requires_sudo(&config, &args) {
+                    let command = args
+                        .get("command")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_owned();
+                    let _ = event_tx.try_send(Event::SudoSecretPrompt {
+                        session_id,
+                        tool: tool_name.to_owned(),
+                        args: args.clone(),
+                        command,
+                        reason: "sudo privileges required".to_owned(),
+                    });
+                    return Ok(None);
+                }
+            }
+        }
+
+        let tool_args = if tool_name == "shell" {
+            Self::shell_args_with_session(&args, &session_id)
+        } else {
+            args
+        };
+
         let result = tool
-            .stream_execute(args, event_tx, &self.execution_context)
+            .stream_execute(tool_args, event_tx, &self.execution_context)
+            .await?;
+        Ok(Some(result))
+    }
+
+    pub async fn resolve_sudo_prompt(
+        &self,
+        session_id: String,
+        tool_name: &str,
+        args: serde_json::Value,
+        password: String,
+        event_tx: mpsc::Sender<Event>,
+    ) -> Result<Option<crate::tools::ToolResult>> {
+        if tool_name != "shell" {
+            return Err(Error::Tool(
+                "sudo prompt resolution is only supported for shell tool".to_owned(),
+            ));
+        }
+
+        let tool = {
+            let tools = self.tools.read().await;
+            tools.get(tool_name).cloned()
+        };
+        let tool = tool.ok_or_else(|| Error::Tool(format!("tool '{tool_name}' not found")))?;
+
+        let tool_args = Self::shell_args_with_secret(&args, &session_id, &password);
+        let result = tool
+            .stream_execute(tool_args, event_tx, &self.execution_context)
             .await?;
         Ok(Some(result))
     }
