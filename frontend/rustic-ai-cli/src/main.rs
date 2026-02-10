@@ -10,6 +10,55 @@ use jsonschema::JSONSchema;
 use rustic_ai_core::config::{ConfigChange, ConfigManager, ConfigPath, ConfigScope};
 use serde::{Deserialize, Serialize};
 
+fn handle_session_command(
+    app: &rustic_ai_core::RusticAI,
+    command: cli::SessionCommand,
+) -> rustic_ai_core::Result<()> {
+    let runtime = tokio::runtime::Runtime::new().map_err(|err| {
+        rustic_ai_core::Error::Config(format!("failed to create tokio runtime: {err}"))
+    })?;
+
+    match command {
+        cli::SessionCommand::List => {
+            let sessions = runtime.block_on(app.session_manager().list_sessions(None))?;
+            println!("Sessions:");
+            for session in sessions {
+                println!(
+                    "- {} (agent: {}, created: {})",
+                    session.id, session.agent_name, session.created_at
+                );
+            }
+        }
+        cli::SessionCommand::Create { agent } => {
+            let session_id = runtime.block_on(
+                app.session_manager()
+                    .create_session(agent.as_deref().unwrap_or("default")),
+            )?;
+            println!("Created session: {}", session_id);
+        }
+        cli::SessionCommand::Continue { id } => {
+            let session_id = uuid::Uuid::parse_str(&id).map_err(|err| {
+                rustic_ai_core::Error::Config(format!("invalid session id '{id}': {err}"))
+            })?;
+            let session = runtime.block_on(app.session_manager().get_session(session_id))?;
+            if let Some(session) = session {
+                println!("Session: {} (agent: {})", session_id, session.agent_name);
+            } else {
+                println!("Session not found: {}", id);
+            }
+        }
+        cli::SessionCommand::Delete { id } => {
+            let session_id = uuid::Uuid::parse_str(&id).map_err(|err| {
+                rustic_ai_core::Error::Config(format!("invalid session id '{id}': {err}"))
+            })?;
+            runtime.block_on(app.session_manager().delete_session(session_id))?;
+            println!("Deleted session: {}", id);
+        }
+    }
+
+    Ok(())
+}
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("rustic-ai-cli failed: {error}");
@@ -84,6 +133,21 @@ fn run() -> rustic_ai_core::Result<()> {
                             .unwrap_or_default();
                         println!("Session: {session_id}");
                         println!("Topics: {}", topics.join(", "));
+                        return Ok(());
+                    }
+                    cli::Command::Session { command } => {
+                        handle_session_command(&app, command)?;
+                        return Ok(());
+                    }
+                    cli::Command::Chat { agent, output } => {
+                        let app = std::sync::Arc::new(app);
+                        let repl = repl::Repl::new(app, agent.clone(), output);
+                        let runtime = tokio::runtime::Runtime::new().map_err(|err| {
+                            rustic_ai_core::Error::Config(format!(
+                                "failed to create tokio runtime: {err}"
+                            ))
+                        })?;
+                        runtime.block_on(repl.run())?;
                         return Ok(());
                     }
                     _ => unreachable!("command variant handled earlier"),

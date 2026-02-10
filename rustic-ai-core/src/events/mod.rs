@@ -2,7 +2,7 @@ pub mod types;
 
 use tokio::sync::broadcast;
 
-use crate::events::types::Event;
+pub use types::Event;
 
 #[derive(Clone)]
 pub struct EventBus {

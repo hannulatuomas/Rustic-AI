@@ -20,6 +20,7 @@ pub use agents::Agent;
 pub use config::Config;
 pub use error::{Error, Result};
 pub use storage::model::Session;
+pub use tools::ToolManager;
 
 pub struct RusticAI {
     config: Config,
@@ -30,7 +31,7 @@ pub struct RusticAI {
 }
 
 impl RusticAI {
-    pub fn new(config: Config) -> Result<Self> {
+    pub fn new(mut config: Config) -> Result<Self> {
         config::validate_config(&config)?;
         let work_dir = std::env::current_dir()
             .map_err(|err| Error::Config(format!("failed to read current directory: {err}")))?;
@@ -44,6 +45,15 @@ impl RusticAI {
             std::fs::write(&storage_paths.global_settings, "{}")?;
         }
 
+        // Set default permissions if not present
+        if config.permissions.default_tool_permission == crate::config::schema::PermissionMode::Ask
+            && config.permissions.ask_decisions_persist_scope
+                == crate::config::schema::DecisionScope::Session
+        {
+            // Use default values
+            config.permissions = crate::config::schema::PermissionConfig::default();
+        }
+
         let storage_backend = storage::create_storage_backend(&config, &storage_paths)?;
         let session_manager =
             std::sync::Arc::new(conversation::session_manager::SessionManager::new(
@@ -52,7 +62,7 @@ impl RusticAI {
                 work_dir.clone(),
             ));
 
-        let runtime = runtime::Runtime::new(config.clone())?;
+        let runtime = runtime::Runtime::new(config.clone(), session_manager.clone())?;
         let inference_provider = config.summarization.provider_name.clone().ok_or_else(|| {
             Error::Config(
                 "summarization.provider_name must be set (no implicit provider fallback)"

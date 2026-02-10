@@ -233,7 +233,8 @@ fn is_allowed_sqlite_synchronous(value: &str) -> bool {
 mod tests {
     use super::validate_config;
     use crate::config::schema::{
-        AgentConfig, AuthMode, Config, ProviderConfig, ProviderType, ToolConfig,
+        AgentConfig, AuthMode, Config, PermissionMode, ProviderConfig, ProviderType, ToolConfig,
+        WorkingDirMode,
     };
 
     fn valid_config() -> Config {
@@ -252,10 +253,22 @@ mod tests {
             provider: "openai".to_owned(),
             tools: vec!["shell".to_owned()],
             skills: Vec::new(),
+            temperature: 0.7,
+            max_tokens: 4096,
+            context_window_size: 8192,
+            system_prompt_template: None,
         });
         config.tools.push(ToolConfig {
             name: "shell".to_owned(),
             enabled: true,
+            permission_mode: PermissionMode::Ask,
+            timeout_seconds: 30,
+            env_passthrough: false,
+            allowed_commands: Vec::new(),
+            denied_commands: Vec::new(),
+            working_dir: WorkingDirMode::Current,
+            custom_working_dir: None,
+            stream_output: false,
         });
         config
     }

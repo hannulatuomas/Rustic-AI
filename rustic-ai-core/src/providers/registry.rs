@@ -26,4 +26,8 @@ impl ProviderRegistry {
     pub fn is_empty(&self) -> bool {
         self.providers.is_empty()
     }
+
+    pub fn get_provider(&self, name: &str) -> Option<Arc<dyn ModelProvider>> {
+        self.get(name)
+    }
 }

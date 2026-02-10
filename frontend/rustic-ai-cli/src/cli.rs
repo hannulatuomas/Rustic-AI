@@ -29,6 +29,16 @@ pub enum Command {
         #[arg(long, value_enum, default_value = "text")]
         output: OutputFormat,
     },
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
+    },
+    Chat {
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long, value_enum, default_value = "text")]
+        output: OutputFormat,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -85,6 +95,21 @@ pub enum ConfigWriteScope {
 pub enum OutputFormat {
     Text,
     Json,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum SessionCommand {
+    List,
+    Create {
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    Continue {
+        id: String,
+    },
+    Delete {
+        id: String,
+    },
 }
 
 impl Cli {

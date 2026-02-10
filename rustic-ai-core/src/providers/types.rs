@@ -21,3 +21,9 @@ pub trait ModelProvider: Send + Sync {
     async fn generate(&self, messages: &[ChatMessage], options: &GenerateOptions)
         -> Result<String>;
 }
+
+impl std::fmt::Debug for dyn ModelProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ModelProvider").field(&"<dyn>").finish()
+    }
+}

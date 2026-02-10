@@ -30,6 +30,7 @@ pub struct Config {
     pub taxonomy: TaxonomyConfig,
     pub storage: StorageConfig,
     pub summarization: SummarizationConfig,
+    pub permissions: PermissionConfig,
 }
 
 impl Default for Config {
@@ -45,6 +46,7 @@ impl Default for Config {
             taxonomy: TaxonomyConfig::default(),
             storage: StorageConfig::default(),
             summarization: SummarizationConfig::default(),
+            permissions: PermissionConfig::default(),
         }
     }
 }
@@ -137,6 +139,33 @@ impl Default for SummarizationConfig {
             summary_max_tokens: 500,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PermissionConfig {
+    pub default_tool_permission: PermissionMode,
+    pub ask_decisions_persist_scope: DecisionScope,
+    pub remember_denied_duration_secs: u64,
+}
+
+impl Default for PermissionConfig {
+    fn default() -> Self {
+        Self {
+            default_tool_permission: PermissionMode::Ask,
+            ask_decisions_persist_scope: DecisionScope::Session,
+            remember_denied_duration_secs: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionScope {
+    Session,
+    #[default]
+    Project,
+    Global,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -307,6 +336,10 @@ pub struct AgentConfig {
     pub provider: String,
     pub tools: Vec<String>,
     pub skills: Vec<String>,
+    pub system_prompt_template: Option<String>,
+    pub temperature: f32,
+    pub max_tokens: usize,
+    pub context_window_size: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -314,6 +347,14 @@ pub struct AgentConfig {
 pub struct ToolConfig {
     pub name: String,
     pub enabled: bool,
+    pub permission_mode: PermissionMode,
+    pub timeout_seconds: u64,
+    pub allowed_commands: Vec<String>,
+    pub denied_commands: Vec<String>,
+    pub working_dir: WorkingDirMode,
+    pub custom_working_dir: Option<String>,
+    pub env_passthrough: bool,
+    pub stream_output: bool,
 }
 
 impl Default for ToolConfig {
@@ -321,8 +362,34 @@ impl Default for ToolConfig {
         Self {
             name: String::new(),
             enabled: true,
+            permission_mode: PermissionMode::Ask,
+            timeout_seconds: 30,
+            allowed_commands: Vec::new(),
+            denied_commands: Vec::new(),
+            working_dir: WorkingDirMode::Current,
+            custom_working_dir: None,
+            env_passthrough: true,
+            stream_output: true,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionMode {
+    Allow,
+    Deny,
+    #[default]
+    Ask,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkingDirMode {
+    Current,
+    #[default]
+    ProjectRoot,
+    CustomPath,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

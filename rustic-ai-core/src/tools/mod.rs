@@ -7,3 +7,6 @@ pub mod registry;
 pub mod shell;
 pub mod ssh;
 pub mod types;
+
+pub use manager::ToolManager;
+pub use types::{Tool, ToolResult};

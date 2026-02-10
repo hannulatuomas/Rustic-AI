@@ -64,6 +64,7 @@ pub fn merge(base: Config, override_config: Config) -> Config {
         },
         storage: merge_storage(base.storage, override_config.storage),
         summarization: merge_summarization(base.summarization, override_config.summarization),
+        permissions: override_config.permissions,
     }
 }
 
@@ -364,6 +365,10 @@ mod tests {
             provider: "base".to_owned(),
             tools: Vec::new(),
             skills: Vec::new(),
+            temperature: 0.7,
+            max_tokens: 4096,
+            context_window_size: 8192,
+            system_prompt_template: None,
         });
 
         let merged = merge(base, override_config);
