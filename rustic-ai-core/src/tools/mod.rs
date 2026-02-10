@@ -8,5 +8,5 @@ pub mod shell;
 pub mod ssh;
 pub mod types;
 
-pub use manager::ToolManager;
+pub use manager::{ToolManager, ToolManagerInit};
 pub use types::{Tool, ToolExecutionContext, ToolResult};

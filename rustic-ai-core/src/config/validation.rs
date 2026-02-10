@@ -373,6 +373,79 @@ pub fn validate_config(config: &Config) -> Result<()> {
         }
     }
 
+    if config.plugins.manifest_file_name.trim().is_empty() {
+        return Err(Error::Validation(
+            "plugins.manifest_file_name must be non-empty".to_owned(),
+        ));
+    }
+    if config.plugins.max_discovery_depth == 0 || config.plugins.max_discovery_depth > 32 {
+        return Err(Error::Validation(
+            "plugins.max_discovery_depth must be between 1 and 32".to_owned(),
+        ));
+    }
+    for (idx, dir) in config.plugins.directories.iter().enumerate() {
+        if dir.trim().is_empty() {
+            return Err(Error::Validation(format!(
+                "plugins.directories[{idx}] must be non-empty"
+            )));
+        }
+    }
+
+    if config.skills.max_discovery_depth == 0 || config.skills.max_discovery_depth > 32 {
+        return Err(Error::Validation(
+            "skills.max_discovery_depth must be between 1 and 32".to_owned(),
+        ));
+    }
+    if config.skills.default_timeout_seconds == 0 {
+        return Err(Error::Validation(
+            "skills.default_timeout_seconds must be greater than zero".to_owned(),
+        ));
+    }
+    for (idx, dir) in config.skills.directories.iter().enumerate() {
+        if dir.trim().is_empty() {
+            return Err(Error::Validation(format!(
+                "skills.directories[{idx}] must be non-empty"
+            )));
+        }
+    }
+    if config.skills.sandbox.enabled && config.skills.sandbox.sandbox_type.trim().is_empty() {
+        return Err(Error::Validation(
+            "skills.sandbox.sandbox_type must be non-empty when sandbox is enabled".to_owned(),
+        ));
+    }
+
+    if config.workflows.max_discovery_depth == 0 || config.workflows.max_discovery_depth > 32 {
+        return Err(Error::Validation(
+            "workflows.max_discovery_depth must be between 1 and 32".to_owned(),
+        ));
+    }
+    if config.workflows.default_timeout_seconds == 0 {
+        return Err(Error::Validation(
+            "workflows.default_timeout_seconds must be greater than zero".to_owned(),
+        ));
+    }
+    if let Some(depth) = config.workflows.max_recursion_depth {
+        if depth == 0 || depth > 256 {
+            return Err(Error::Validation(
+                "workflows.max_recursion_depth must be between 1 and 256 when set".to_owned(),
+            ));
+        }
+    }
+    if let Some(steps) = config.workflows.max_steps_per_run {
+        if steps == 0 || steps > 10_000 {
+            return Err(Error::Validation(
+                "workflows.max_steps_per_run must be between 1 and 10000 when set".to_owned(),
+            ));
+        }
+    }
+    for (idx, dir) in config.workflows.directories.iter().enumerate() {
+        if dir.trim().is_empty() {
+            return Err(Error::Validation(format!(
+                "workflows.directories[{idx}] must be non-empty"
+            )));
+        }
+    }
+
     for agent in &config.agents {
         let name = agent.name.trim();
         if name.is_empty() {

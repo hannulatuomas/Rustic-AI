@@ -1,9 +1,10 @@
-use crate::config::schema::{McpConfig, PermissionConfig, ToolConfig};
+use crate::config::schema::{McpConfig, PermissionConfig, PluginConfig, ToolConfig};
 use crate::error::{Error, Result};
 use crate::events::Event;
 use crate::permissions::{
     AskResolution, CommandPatternBucket, PermissionContext, PermissionDecision, PermissionPolicy,
 };
+use crate::tools::plugin::PluginLoader;
 use crate::tools::{
     filesystem::FilesystemTool, http::HttpTool, mcp::McpToolAdapter, shell::ShellTool,
     ssh::SshTool, Tool, ToolExecutionContext,
@@ -20,6 +21,17 @@ pub struct ToolManager {
     tool_configs: Arc<RwLock<HashMap<String, ToolConfig>>>,
     permission_policy: Arc<RwLock<Box<dyn PermissionPolicy + Send + Sync>>>,
     execution_context: ToolExecutionContext,
+}
+
+pub struct ToolManagerInit {
+    pub permission_policy: Box<dyn PermissionPolicy + Send + Sync>,
+    pub permission_config: Arc<PermissionConfig>,
+    pub mcp_enabled: bool,
+    pub mcp_config: Arc<McpConfig>,
+    pub plugins_enabled: bool,
+    pub plugin_config: Arc<PluginConfig>,
+    pub tool_configs: Vec<ToolConfig>,
+    pub execution_context: ToolExecutionContext,
 }
 
 impl ToolManager {
@@ -97,14 +109,18 @@ impl ToolManager {
         enriched
     }
 
-    pub fn new(
-        permission_policy: Box<dyn PermissionPolicy + Send + Sync>,
-        permission_config: Arc<PermissionConfig>,
-        mcp_enabled: bool,
-        mcp_config: Arc<McpConfig>,
-        tool_configs: Vec<ToolConfig>,
-        execution_context: ToolExecutionContext,
-    ) -> Self {
+    pub fn new(init: ToolManagerInit) -> Self {
+        let ToolManagerInit {
+            permission_policy,
+            permission_config,
+            mcp_enabled,
+            mcp_config,
+            plugins_enabled,
+            plugin_config,
+            tool_configs,
+            execution_context,
+        } = init;
+
         let mut tools = HashMap::new();
         let mut configs = HashMap::new();
 
@@ -135,6 +151,24 @@ impl ToolManager {
 
             tools.insert(config.name.clone(), tool);
             configs.insert(config.name.clone(), config);
+        }
+
+        if plugins_enabled {
+            match PluginLoader::load_plugins(
+                &plugin_config,
+                &execution_context,
+                permission_config.default_tool_permission,
+            ) {
+                Ok(loaded_plugins) => {
+                    for plugin in loaded_plugins {
+                        tools.insert(plugin.name.clone(), plugin.tool);
+                        configs.insert(plugin.name, plugin.config);
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(%err, "failed to load plugins; continuing without plugin tools");
+                }
+            }
         }
 
         Self {

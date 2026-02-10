@@ -637,6 +637,80 @@ impl Repl {
                 continue;
             }
 
+            if input == "/skills list" {
+                let skills = self.app.runtime().skills.list();
+                if skills.is_empty() {
+                    println!("No skills loaded.");
+                } else {
+                    println!("Loaded skills ({}):", skills.len());
+                    for name in skills {
+                        println!("  - {name}");
+                    }
+                }
+                continue;
+            }
+
+            if let Some(name) = input.strip_prefix("/skills show ") {
+                let name = name.trim();
+                if name.is_empty() {
+                    println!("Usage: /skills show <skill_name>");
+                    continue;
+                }
+                if let Some(skill) = self.app.runtime().skills.get(name) {
+                    let spec = skill.spec();
+                    println!("Skill: {}", spec.name);
+                    println!("Description: {}", spec.description);
+                    println!("Timeout: {}s", spec.timeout_seconds);
+                    println!("Schema: {}", spec.schema);
+                } else {
+                    println!("Skill '{name}' not found.");
+                }
+                continue;
+            }
+
+            if input == "/workflows list" || input == "/workflow list" {
+                let workflows = self.app.runtime().workflows.list();
+                if workflows.is_empty() {
+                    println!("No workflows loaded.");
+                } else {
+                    println!("Loaded workflows ({}):", workflows.len());
+                    for name in workflows {
+                        println!("  - {name}");
+                    }
+                }
+                continue;
+            }
+
+            if let Some(name) = input
+                .strip_prefix("/workflows show ")
+                .or_else(|| input.strip_prefix("/workflow show "))
+            {
+                let name = name.trim();
+                if name.is_empty() {
+                    println!("Usage: /workflows show <workflow_name>");
+                    continue;
+                }
+                if let Some(workflow) = self.app.runtime().workflows.get(name) {
+                    println!("Workflow: {}", workflow.name);
+                    println!("Description: {}", workflow.description);
+                    println!("Entrypoints: {}", workflow.entrypoints.len());
+                    for (entry, cfg) in &workflow.entrypoints {
+                        println!(
+                            "  - {} -> {} (cron: {}, events: {}, webhooks: {})",
+                            entry,
+                            cfg.step,
+                            cfg.triggers.cron.len(),
+                            cfg.triggers.events.len(),
+                            cfg.triggers.webhooks.len()
+                        );
+                    }
+                    println!("Steps: {}", workflow.steps.len());
+                } else {
+                    println!("Workflow '{name}' not found.");
+                }
+                continue;
+            }
+
             let agent = self.app.runtime().agents.get_agent(Some(&agent_name))?;
 
             let agent_clone = agent.clone();

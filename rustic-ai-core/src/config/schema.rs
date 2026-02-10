@@ -23,6 +23,9 @@ pub struct Config {
     pub mode: RuntimeMode,
     pub features: FeatureConfig,
     pub mcp: McpConfig,
+    pub plugins: PluginConfig,
+    pub skills: SkillsConfig,
+    pub workflows: WorkflowsConfig,
     pub project: Option<ProjectConfig>,
     pub rules: RuleConfig,
     pub providers: Vec<ProviderConfig>,
@@ -40,6 +43,9 @@ impl Default for Config {
             mode: RuntimeMode::Direct,
             features: FeatureConfig::default(),
             mcp: McpConfig::default(),
+            plugins: PluginConfig::default(),
+            skills: SkillsConfig::default(),
+            workflows: WorkflowsConfig::default(),
             project: None,
             rules: RuleConfig::default(),
             providers: Vec::new(),
@@ -81,6 +87,104 @@ impl Default for McpServerConfig {
             working_directory: None,
             startup_timeout_seconds: 20,
             protocol_version: "2024-11-05".to_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PluginConfig {
+    pub directories: Vec<String>,
+    pub manifest_file_name: String,
+    pub max_discovery_depth: usize,
+}
+
+impl Default for PluginConfig {
+    fn default() -> Self {
+        Self {
+            directories: vec![
+                "~/.rustic-ai/plugins".to_owned(),
+                ".rustic-ai/plugins".to_owned(),
+            ],
+            manifest_file_name: "plugin.json".to_owned(),
+            max_discovery_depth: 4,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SkillsConfig {
+    pub directories: Vec<String>,
+    pub max_discovery_depth: usize,
+    pub script_execution_mode: ScriptExecutionMode,
+    pub default_timeout_seconds: u64,
+    pub sandbox: SkillSandboxConfig,
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self {
+            directories: vec![
+                "~/.rustic-ai/skills".to_owned(),
+                ".rustic-ai/skills".to_owned(),
+                ".agents/skills".to_owned(),
+            ],
+            max_discovery_depth: 4,
+            script_execution_mode: ScriptExecutionMode::Disabled,
+            default_timeout_seconds: 60,
+            sandbox: SkillSandboxConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ScriptExecutionMode {
+    #[default]
+    Disabled,
+    Host,
+    Sandbox,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SkillSandboxConfig {
+    pub enabled: bool,
+    pub sandbox_type: String,
+}
+
+impl Default for SkillSandboxConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            sandbox_type: "none".to_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorkflowsConfig {
+    pub directories: Vec<String>,
+    pub max_discovery_depth: usize,
+    pub default_timeout_seconds: u64,
+    pub max_recursion_depth: Option<usize>,
+    pub max_steps_per_run: Option<usize>,
+}
+
+impl Default for WorkflowsConfig {
+    fn default() -> Self {
+        Self {
+            directories: vec![
+                "~/.rustic-ai/workflows".to_owned(),
+                ".rustic-ai/workflows".to_owned(),
+                ".agents/workflows".to_owned(),
+            ],
+            max_discovery_depth: 4,
+            default_timeout_seconds: 300,
+            max_recursion_depth: Some(16),
+            max_steps_per_run: Some(256),
         }
     }
 }

@@ -5,7 +5,9 @@ use crate::events::EventBus;
 use crate::permissions::{ConfigurablePermissionPolicy, PermissionPolicy};
 use crate::providers::create_provider_registry;
 use crate::providers::registry::ProviderRegistry;
-use crate::tools::{ToolExecutionContext, ToolManager};
+use crate::skills::{SkillLoader, SkillRegistry};
+use crate::tools::{ToolExecutionContext, ToolManager, ToolManagerInit};
+use crate::workflows::{WorkflowLoader, WorkflowRegistry};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -14,6 +16,8 @@ pub struct Runtime {
     pub providers: ProviderRegistry,
     pub agents: AgentCoordinator,
     pub tools: Arc<ToolManager>,
+    pub skills: Arc<SkillRegistry>,
+    pub workflows: Arc<WorkflowRegistry>,
     pub config: crate::config::Config,
 }
 
@@ -25,6 +29,17 @@ impl Runtime {
         let work_dir = std::env::current_dir()
             .map_err(|err| crate::Error::Config(format!("failed to resolve current dir: {err}")))?;
         let providers = create_provider_registry(&config, &work_dir)?;
+
+        let skills = if config.features.skills_enabled {
+            Arc::new(SkillLoader::load(&config.skills, &work_dir)?)
+        } else {
+            Arc::new(SkillRegistry::new())
+        };
+        let workflows = if config.features.workflows_enabled {
+            Arc::new(WorkflowLoader::load(&config.workflows, &work_dir)?)
+        } else {
+            Arc::new(WorkflowRegistry::new())
+        };
 
         // Create permission policy
         let tool_specific_modes: Vec<(String, crate::config::schema::PermissionMode)> = config
@@ -47,16 +62,18 @@ impl Runtime {
             ));
 
         // Create tool manager
-        let tools = Arc::new(ToolManager::new(
+        let tools = Arc::new(ToolManager::new(ToolManagerInit {
             permission_policy,
-            Arc::new(config.permissions.clone()),
-            config.features.mcp_enabled,
-            Arc::new(config.mcp.clone()),
-            config.tools.clone(),
-            ToolExecutionContext {
+            permission_config: Arc::new(config.permissions.clone()),
+            mcp_enabled: config.features.mcp_enabled,
+            mcp_config: Arc::new(config.mcp.clone()),
+            plugins_enabled: config.features.plugins_enabled,
+            plugin_config: Arc::new(config.plugins.clone()),
+            tool_configs: config.tools.clone(),
+            execution_context: ToolExecutionContext {
                 working_directory: work_dir,
             },
-        ));
+        }));
 
         // Create agent coordinator
         let agents = AgentCoordinator::new(
@@ -71,6 +88,8 @@ impl Runtime {
             providers,
             agents,
             tools,
+            skills,
+            workflows,
             config,
         })
     }

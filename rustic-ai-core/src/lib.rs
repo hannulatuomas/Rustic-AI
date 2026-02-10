@@ -12,8 +12,10 @@ pub mod project;
 pub mod providers;
 pub mod rules;
 pub mod runtime;
+pub mod skills;
 pub mod storage;
 pub mod tools;
+pub mod workflows;
 
 pub use agents::Agent;
 pub use auth::CredentialStore;

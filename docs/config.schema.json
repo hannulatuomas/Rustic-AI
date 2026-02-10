@@ -7,6 +7,9 @@
     "mode",
     "features",
     "mcp",
+    "plugins",
+    "skills",
+    "workflows",
     "storage",
     "summarization",
     "rules",
@@ -73,6 +76,69 @@
             "additionalProperties": false
           }
         }
+      },
+      "additionalProperties": false
+    },
+    "plugins": {
+      "type": "object",
+      "required": ["directories", "manifest_file_name", "max_discovery_depth"],
+      "properties": {
+        "directories": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "manifest_file_name": { "type": "string", "minLength": 1 },
+        "max_discovery_depth": { "type": "integer", "minimum": 1, "maximum": 32 }
+      },
+      "additionalProperties": false
+    },
+    "skills": {
+      "type": "object",
+      "required": [
+        "directories",
+        "max_discovery_depth",
+        "script_execution_mode",
+        "default_timeout_seconds",
+        "sandbox"
+      ],
+      "properties": {
+        "directories": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "max_discovery_depth": { "type": "integer", "minimum": 1, "maximum": 32 },
+        "script_execution_mode": { "type": "string", "enum": ["disabled", "host", "sandbox"] },
+        "default_timeout_seconds": { "type": "integer", "minimum": 1 },
+        "sandbox": {
+          "type": "object",
+          "required": ["enabled", "sandbox_type"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "sandbox_type": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "workflows": {
+      "type": "object",
+      "required": [
+        "directories",
+        "max_discovery_depth",
+        "default_timeout_seconds",
+        "max_recursion_depth",
+        "max_steps_per_run"
+      ],
+      "properties": {
+        "directories": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "max_discovery_depth": { "type": "integer", "minimum": 1, "maximum": 32 },
+        "default_timeout_seconds": { "type": "integer", "minimum": 1 },
+        "max_recursion_depth": { "type": ["integer", "null"], "minimum": 1, "maximum": 256 },
+        "max_steps_per_run": { "type": ["integer", "null"], "minimum": 1, "maximum": 10000 }
       },
       "additionalProperties": false
     },

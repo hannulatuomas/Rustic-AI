@@ -20,6 +20,39 @@
       }
     ]
   },
+  "plugins": {
+    "directories": [
+      "~/.rustic-ai/plugins",
+      ".rustic-ai/plugins"
+    ],
+    "manifest_file_name": "plugin.json",
+    "max_discovery_depth": 4
+  },
+  "skills": {
+    "directories": [
+      "~/.rustic-ai/skills",
+      ".rustic-ai/skills",
+      ".agents/skills"
+    ],
+    "max_discovery_depth": 4,
+    "script_execution_mode": "disabled",
+    "default_timeout_seconds": 60,
+    "sandbox": {
+      "enabled": false,
+      "sandbox_type": "none"
+    }
+  },
+  "workflows": {
+    "directories": [
+      "~/.rustic-ai/workflows",
+      ".rustic-ai/workflows",
+      ".agents/workflows"
+    ],
+    "max_discovery_depth": 4,
+    "default_timeout_seconds": 300,
+    "max_recursion_depth": 16,
+    "max_steps_per_run": 256
+  },
   "storage": {
     "backend": "sqlite",
     "default_root_dir_name": ".rustic-ai",

@@ -41,6 +41,14 @@ Last updated: 2026-02-10
   - [x] Add per-agent turn duration cap (`max_turn_duration_seconds`) with unlimited option (`0`)
   - [ ] Add provider-focused integration tests (auth modes, non-stream and stream responses)
 
+- [ ] Implement skills + workflows foundation (n8n-oriented)
+  - [x] Add config schema for skills/workflows (including script execution mode and recursion limits)
+  - [x] Implement skill discovery/registry with instruction + script skill loading
+  - [x] Implement workflow discovery/registry with JSON+YAML loading and entrypoint/step validation
+  - [x] Add CLI inspection commands (`/skills list|show`, `/workflows list|show`)
+  - [ ] Integrate workflow execution engine with named outputs and downstream step routing
+  - [ ] Add agent invocation support for skills/workflows
+
 - [ ] Permission ergonomics and policy scopes
   - [x] Add config-level global/project allowed path lists
   - [x] Add config-level global/project shell command pattern policies (`allow`/`ask`/`deny`)
@@ -66,12 +74,17 @@ Last updated: 2026-02-10
   - [x] Implement MCP stdio adapter operations (`list_servers`, `list_tools`, `call_tool`)
   - [x] Add config schema/example documentation updates
 
+- [x] Implement plugin tool loader wiring
+  - [x] Add plugins config schema (`plugins.directories`, `plugins.manifest_file_name`, `plugins.max_discovery_depth`)
+  - [x] Implement manifest discovery + validation for plugin command tools
+  - [x] Load and register plugin tools in `ToolManager` behind `features.plugins_enabled`
+
 - [x] Config ergonomics
   - [x] Support layered config fragments for global and project scopes
   - [x] Add explicit docs/examples for recommended split-file layouts (`agents.json`, `tools.json`, `providers.json`, `permissions.json`)
 
 ## Next
-- [ ] Implement plugin tool loader wiring
+- [ ] Add provider-focused integration tests (auth modes, non-stream and stream responses)
 
 ## Done
 - [x] Initialize workspace (`rustic-ai-core`, `frontend/rustic-ai-cli`)

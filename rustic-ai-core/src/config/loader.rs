@@ -61,6 +61,23 @@ pub fn merge(base: Config, override_config: Config) -> Config {
         } else {
             override_config.mcp
         },
+        plugins: if override_config.plugins.directories.is_empty()
+            && override_config.plugins.manifest_file_name.trim().is_empty()
+        {
+            base.plugins
+        } else {
+            override_config.plugins
+        },
+        skills: if override_config.skills.directories.is_empty() {
+            base.skills
+        } else {
+            override_config.skills
+        },
+        workflows: if override_config.workflows.directories.is_empty() {
+            base.workflows
+        } else {
+            override_config.workflows
+        },
         project: override_config.project.or(base.project),
         rules: merge_rules(base.rules, override_config.rules),
         providers: merge_vec(base.providers, override_config.providers),
