@@ -279,7 +279,7 @@
     {
       "name": "default",
       "provider": "openai-main",
-      "tools": ["shell", "filesystem", "http", "ssh"],
+      "tools": ["shell", "filesystem", "http", "ssh", "skill"],
       "skills": [],
       "system_prompt_template": "You are a helpful AI assistant with access to shell commands.",
       "temperature": 0.7,
@@ -342,6 +342,18 @@
     },
     {
       "name": "mcp",
+      "enabled": true,
+      "permission_mode": "ask",
+      "timeout_seconds": 60,
+      "allowed_commands": [],
+      "denied_commands": [],
+      "working_dir": "project_root",
+      "custom_working_dir": null,
+      "env_passthrough": false,
+      "stream_output": true
+    },
+    {
+      "name": "skill",
       "enabled": true,
       "permission_mode": "ask",
       "timeout_seconds": 60,

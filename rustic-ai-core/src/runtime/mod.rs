@@ -67,6 +67,8 @@ impl Runtime {
             permission_config: Arc::new(config.permissions.clone()),
             mcp_enabled: config.features.mcp_enabled,
             mcp_config: Arc::new(config.mcp.clone()),
+            skills_enabled: config.features.skills_enabled,
+            skills: skills.clone(),
             plugins_enabled: config.features.plugins_enabled,
             plugin_config: Arc::new(config.plugins.clone()),
             tool_configs: config.tools.clone(),

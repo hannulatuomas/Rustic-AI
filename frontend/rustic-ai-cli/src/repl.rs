@@ -3,6 +3,7 @@ use crate::renderer::Renderer;
 use rustic_ai_core::error::Result;
 use rustic_ai_core::events::Event;
 use rustic_ai_core::permissions::{AskResolution, CommandPatternBucket};
+use rustic_ai_core::workflows::{WorkflowExecutor, WorkflowExecutorConfig};
 use rustic_ai_core::RusticAI;
 use serde_json::Value;
 use std::io::{self, Write};
@@ -664,6 +665,59 @@ impl Repl {
                     println!("Schema: {}", spec.schema);
                 } else {
                     println!("Skill '{name}' not found.");
+                }
+                continue;
+            }
+
+            if let Some(rest) = input
+                .strip_prefix("/workflow run ")
+                .or_else(|| input.strip_prefix("/workflows run "))
+            {
+                let parts = rest.split_whitespace().collect::<Vec<_>>();
+                if parts.is_empty() {
+                    println!("Usage: /workflow run <workflow_name> [entrypoint]");
+                    continue;
+                }
+                let workflow_name = parts[0];
+                let entrypoint = parts.get(1).copied().unwrap_or("start");
+
+                let wf_cfg = &self.app.config().workflows;
+                let executor = WorkflowExecutor::new(
+                    self.app.runtime().workflows.clone(),
+                    self.app.runtime().skills.clone(),
+                    self.app.runtime().tools.clone(),
+                    std::sync::Arc::new(self.app.runtime().agents.clone()),
+                    self.app.session_manager().clone(),
+                    WorkflowExecutorConfig {
+                        max_recursion_depth: wf_cfg.max_recursion_depth,
+                        max_steps_per_run: wf_cfg.max_steps_per_run,
+                        working_directory: self.app.work_dir().to_path_buf(),
+                    },
+                );
+
+                match executor
+                    .run(
+                        workflow_name,
+                        entrypoint,
+                        session_id.to_string(),
+                        Some(agent_name.clone()),
+                        Value::Object(serde_json::Map::new()),
+                        event_tx.clone(),
+                    )
+                    .await
+                {
+                    Ok(result) => {
+                        println!(
+                            "Workflow '{}' completed: success={}, steps={}, outputs={}",
+                            workflow_name,
+                            result.success,
+                            result.steps_executed,
+                            result.outputs.len()
+                        );
+                    }
+                    Err(err) => {
+                        println!("Workflow '{}' failed: {}", workflow_name, err);
+                    }
                 }
                 continue;
             }

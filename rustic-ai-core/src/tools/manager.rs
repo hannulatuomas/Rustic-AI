@@ -4,10 +4,11 @@ use crate::events::Event;
 use crate::permissions::{
     AskResolution, CommandPatternBucket, PermissionContext, PermissionDecision, PermissionPolicy,
 };
+use crate::skills::SkillRegistry;
 use crate::tools::plugin::PluginLoader;
 use crate::tools::{
     filesystem::FilesystemTool, http::HttpTool, mcp::McpToolAdapter, shell::ShellTool,
-    ssh::SshTool, Tool, ToolExecutionContext,
+    skill::SkillTool, ssh::SshTool, Tool, ToolExecutionContext,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -28,6 +29,8 @@ pub struct ToolManagerInit {
     pub permission_config: Arc<PermissionConfig>,
     pub mcp_enabled: bool,
     pub mcp_config: Arc<McpConfig>,
+    pub skills_enabled: bool,
+    pub skills: Arc<SkillRegistry>,
     pub plugins_enabled: bool,
     pub plugin_config: Arc<PluginConfig>,
     pub tool_configs: Vec<ToolConfig>,
@@ -115,6 +118,8 @@ impl ToolManager {
             permission_config,
             mcp_enabled,
             mcp_config,
+            skills_enabled,
+            skills,
             plugins_enabled,
             plugin_config,
             tool_configs,
@@ -137,6 +142,12 @@ impl ToolManager {
                 "filesystem" => Arc::new(FilesystemTool::new(config.clone())),
                 "http" => Arc::new(HttpTool::new(config.clone())),
                 "ssh" => Arc::new(SshTool::new(config.clone())),
+                "skill" => {
+                    if !skills_enabled {
+                        continue;
+                    }
+                    Arc::new(SkillTool::new(config.clone(), skills.clone()))
+                }
                 "mcp" => {
                     if !mcp_enabled {
                         continue;

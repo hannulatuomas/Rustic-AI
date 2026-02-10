@@ -5,6 +5,7 @@ pub mod mcp;
 pub mod plugin;
 pub mod registry;
 pub mod shell;
+pub mod skill;
 pub mod ssh;
 pub mod types;
 

@@ -47,7 +47,13 @@ Last updated: 2026-02-10
   - [x] Implement workflow discovery/registry with JSON+YAML loading and entrypoint/step validation
   - [x] Add CLI inspection commands (`/skills list|show`, `/workflows list|show`)
   - [ ] Integrate workflow execution engine with named outputs and downstream step routing
+    - [x] Add initial executor for `tool`/`skill`/`condition` step kinds and named output mapping
+    - [x] Add CLI manual run command (`/workflow run <name> [entrypoint]`)
+    - [x] Add nested workflow step execution with recursion depth controls
+    - [x] Add `agent` step execution
   - [ ] Add agent invocation support for skills/workflows
+    - [x] Add `skill` tool adapter and registration (agent-callable)
+    - [ ] Add `workflow` tool adapter and registration (agent-callable)
 
 - [ ] Permission ergonomics and policy scopes
   - [x] Add config-level global/project allowed path lists
