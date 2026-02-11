@@ -380,6 +380,14 @@ impl WorkflowLoader {
                 )));
             }
         }
+        if let Some(policy) = workflow.execution.timeout_error_policy.as_deref() {
+            if !matches!(policy, "abort" | "route_as_failure") {
+                return Err(Error::Validation(format!(
+                    "workflow '{}' execution.timeout_error_policy must be abort or route_as_failure",
+                    workflow.name
+                )));
+            }
+        }
         if let Some(multiplier) = workflow.execution.default_retry_backoff_multiplier {
             if !(1.0..=10.0).contains(&multiplier) {
                 return Err(Error::Validation(format!(
@@ -456,6 +464,19 @@ impl WorkflowLoader {
                 }
             }
 
+            if let Some(policy) = step
+                .config
+                .get("timeout_error_policy")
+                .and_then(|value| value.as_str())
+            {
+                if !matches!(policy, "abort" | "route_as_failure") {
+                    return Err(Error::Validation(format!(
+                        "workflow '{}' step '{}' has unsupported timeout_error_policy '{}'; expected abort|route_as_failure",
+                        workflow.name, step.id, policy
+                    )));
+                }
+            }
+
             if let Some(routing) = step
                 .config
                 .get("continue_on_error_routing")
@@ -491,6 +512,19 @@ impl WorkflowLoader {
                     return Err(Error::Validation(format!(
                         "workflow '{}' step '{}' expression_max_length {} is invalid or exceeds effective max {}",
                         workflow.name, step.id, max_length, effective_expression_max_length
+                    )));
+                }
+            }
+
+            if let Some(step_timeout_seconds) = step
+                .config
+                .get("step_timeout_seconds")
+                .and_then(|value| value.as_u64())
+            {
+                if step_timeout_seconds == 0 {
+                    return Err(Error::Validation(format!(
+                        "workflow '{}' step '{}' step_timeout_seconds must be greater than 0",
+                        workflow.name, step.id
                     )));
                 }
             }

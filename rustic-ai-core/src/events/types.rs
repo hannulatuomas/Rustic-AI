@@ -42,10 +42,26 @@ pub enum Event {
         success: bool,
         output_count: usize,
     },
+    WorkflowStepRetry {
+        workflow: String,
+        step_id: String,
+        attempt: u32,
+        max_retries: u32,
+        backoff_ms: u64,
+        reason: String,
+    },
+    WorkflowTimeout {
+        workflow: String,
+        step_id: Option<String>,
+        timeout_seconds: u64,
+        scope: String,
+    },
     WorkflowCompleted {
         workflow: String,
         success: bool,
         steps_executed: usize,
+        retries: usize,
+        timeouts: usize,
     },
     PermissionRequest {
         session_id: String,

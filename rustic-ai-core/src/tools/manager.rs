@@ -21,6 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock as StdRwLock};
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 struct LazyToolSpec {
@@ -404,11 +405,13 @@ impl ToolManager {
         &self,
         session_id: &str,
         agent_name: Option<&str>,
+        cancellation_token: Option<CancellationToken>,
     ) -> ToolExecutionContext {
         let mut context = self.execution_context.clone();
         context.session_id = uuid::Uuid::parse_str(session_id).ok();
         context.agent_name = agent_name.map(ToOwned::to_owned);
         context.sub_agent_depth = 0;
+        context.cancellation_token = cancellation_token;
 
         if let Some(agent_name) = agent_name {
             if let Ok(guard) = self.agents.read() {
@@ -514,6 +517,7 @@ impl ToolManager {
                 max_recursion_depth: self.workflows_config.max_recursion_depth,
                 max_steps_per_run: self.workflows_config.max_steps_per_run,
                 working_directory: self.execution_context.working_directory.clone(),
+                default_timeout_seconds: self.workflows_config.default_timeout_seconds,
                 compatibility_preset: self.workflows_config.compatibility_preset,
                 switch_case_sensitive_default: self.workflows_config.switch_case_sensitive_default,
                 switch_pattern_priority: self.workflows_config.switch_pattern_priority.clone(),
@@ -527,6 +531,7 @@ impl ToolManager {
                 default_continue_on_error: self.workflows_config.default_continue_on_error,
                 continue_on_error_routing: self.workflows_config.continue_on_error_routing.clone(),
                 execution_error_policy: self.workflows_config.execution_error_policy.clone(),
+                timeout_error_policy: self.workflows_config.timeout_error_policy.clone(),
                 default_retry_count: self.workflows_config.default_retry_count,
                 default_retry_backoff_ms: self.workflows_config.default_retry_backoff_ms,
                 default_retry_backoff_multiplier: self
@@ -701,6 +706,19 @@ impl ToolManager {
         args: serde_json::Value,
         event_tx: mpsc::Sender<Event>,
     ) -> Result<Option<crate::tools::ToolResult>> {
+        self.execute_tool_with_cancel(session_id, agent_name, tool_name, args, event_tx, None)
+            .await
+    }
+
+    pub async fn execute_tool_with_cancel(
+        &self,
+        session_id: String,
+        agent_name: Option<String>,
+        tool_name: &str,
+        args: serde_json::Value,
+        event_tx: mpsc::Sender<Event>,
+        cancellation_token: Option<CancellationToken>,
+    ) -> Result<Option<crate::tools::ToolResult>> {
         let has_tool_config = {
             let configs = self.tool_configs.read().await;
             configs.contains_key(tool_name)
@@ -747,8 +765,11 @@ impl ToolManager {
                 } else {
                     args.clone()
                 };
-                let execution_context = self
-                    .build_execution_context(&session_id, permission_context.agent_name.as_deref());
+                let execution_context = self.build_execution_context(
+                    &session_id,
+                    permission_context.agent_name.as_deref(),
+                    cancellation_token,
+                );
                 let result = self
                     .run_tool_stream(tool_name, tool, tool_args, event_tx, &execution_context)
                     .await?;
@@ -827,8 +848,11 @@ impl ToolManager {
             args
         };
 
-        let execution_context =
-            self.build_execution_context(&session_id, permission_context.agent_name.as_deref());
+        let execution_context = self.build_execution_context(
+            &session_id,
+            permission_context.agent_name.as_deref(),
+            None,
+        );
         let result = self
             .run_tool_stream(tool_name, tool, tool_args, event_tx, &execution_context)
             .await?;
@@ -852,7 +876,7 @@ impl ToolManager {
         let tool = self.get_or_load_tool(tool_name).await?;
 
         let tool_args = Self::shell_args_with_secret(&args, &session_id, &password);
-        let execution_context = self.build_execution_context(&session_id, None);
+        let execution_context = self.build_execution_context(&session_id, None, None);
         let result = self
             .run_tool_stream(tool_name, tool, tool_args, event_tx, &execution_context)
             .await?;

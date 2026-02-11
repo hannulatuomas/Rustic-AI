@@ -177,8 +177,8 @@ Last updated: 2026-02-11
 
 13. **Workflow Edge Cases & Error Handling** (2-3 days)
     - [x] Handle empty arrays (loop, sum, avg)
-    - [ ] Handle null/undefined values gracefully
-    - [ ] Add null handling configuration (strict vs lenient)
+    - [x] Handle null/undefined values gracefully
+    - [x] Add null handling configuration (strict vs lenient)
     - [x] Add depth limit enforcement (conditions, expressions)
     - [x] Detect circular references in step graphs
     - [x] Detect mutual workflow recursion
@@ -478,9 +478,9 @@ Last updated: 2026-02-11
 
 ## Next (Immediate)
 
-- Add additional Claude-code style examples with loop + merge fan-in patterns
-- Add preset-level docs for webhook signing key rotation and replay-window operations
-- Add operational runbook snippets for retry/backoff tuning in production
+- [x] Add timeout policy controls to route step timeout as failure when configured
+- [x] Add per-step cancel-signal integration for long-running tool/plugin executions
+- [x] Surface workflow retry/timeout aggregates in CLI workflow run summaries
 
 ---
 

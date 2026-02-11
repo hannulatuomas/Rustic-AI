@@ -23,12 +23,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration, Instant};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 pub struct WorkflowExecutorConfig {
     pub max_recursion_depth: Option<usize>,
     pub max_steps_per_run: Option<usize>,
     pub working_directory: PathBuf,
+    pub default_timeout_seconds: u64,
     pub compatibility_preset: WorkflowCompatibilityPreset,
     pub switch_case_sensitive_default: Option<bool>,
     pub switch_pattern_priority: Option<String>,
@@ -38,6 +40,7 @@ pub struct WorkflowExecutorConfig {
     pub default_continue_on_error: Option<bool>,
     pub continue_on_error_routing: Option<String>,
     pub execution_error_policy: Option<String>,
+    pub timeout_error_policy: Option<String>,
     pub default_retry_count: Option<u32>,
     pub default_retry_backoff_ms: Option<u64>,
     pub default_retry_backoff_multiplier: Option<f64>,
@@ -73,10 +76,21 @@ struct EffectiveWorkflowConfig {
     default_continue_on_error: bool,
     continue_on_error_routing: String,
     execution_error_policy: String,
+    timeout_error_policy: String,
     default_retry_count: u32,
     default_retry_backoff_ms: u64,
     default_retry_backoff_multiplier: f64,
     default_retry_backoff_max_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct TimeoutCheckContext<'a> {
+    workflow_started_at: Instant,
+    workflow_timeout_seconds: u64,
+    step_started_at: Instant,
+    step_timeout_seconds: Option<u64>,
+    workflow_name: &'a str,
+    step_id: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -309,6 +323,21 @@ impl WorkflowExecutor {
             .unwrap_or(&workflow_config.execution_error_policy)
     }
 
+    fn timeout_error_policy<'a>(
+        step: &'a WorkflowStep,
+        workflow_config: &'a EffectiveWorkflowConfig,
+    ) -> &'a str {
+        step.config
+            .get("timeout_error_policy")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                step.config
+                    .get("execution_error_policy")
+                    .and_then(Value::as_str)
+            })
+            .unwrap_or(&workflow_config.timeout_error_policy)
+    }
+
     fn retry_settings(
         step: &WorkflowStep,
         workflow_config: &EffectiveWorkflowConfig,
@@ -354,6 +383,80 @@ impl WorkflowExecutor {
             current
         };
         scaled.clamp(1, max_ms)
+    }
+
+    fn ensure_within_timeout(
+        started_at: Instant,
+        timeout_seconds: u64,
+        workflow_name: &str,
+    ) -> Result<()> {
+        if started_at.elapsed() >= Duration::from_secs(timeout_seconds) {
+            return Err(Error::Timeout(format!(
+                "workflow '{}' exceeded timeout of {} seconds",
+                workflow_name, timeout_seconds
+            )));
+        }
+        Ok(())
+    }
+
+    fn ensure_within_timeouts(
+        event_tx: &mpsc::Sender<Event>,
+        timeout_counter: &mut usize,
+        ctx: &TimeoutCheckContext<'_>,
+        timeout_error_policy: &str,
+    ) -> Result<bool> {
+        if let Err(err) = Self::ensure_within_timeout(
+            ctx.workflow_started_at,
+            ctx.workflow_timeout_seconds,
+            ctx.workflow_name,
+        ) {
+            let _ = event_tx.try_send(Event::WorkflowTimeout {
+                workflow: ctx.workflow_name.to_owned(),
+                step_id: Some(ctx.step_id.to_owned()),
+                timeout_seconds: ctx.workflow_timeout_seconds,
+                scope: "workflow".to_owned(),
+            });
+            *timeout_counter += 1;
+            return Err(err);
+        }
+        if let Some(step_timeout_seconds) = ctx.step_timeout_seconds {
+            if ctx.step_started_at.elapsed() >= Duration::from_secs(step_timeout_seconds) {
+                let _ = event_tx.try_send(Event::WorkflowTimeout {
+                    workflow: ctx.workflow_name.to_owned(),
+                    step_id: Some(ctx.step_id.to_owned()),
+                    timeout_seconds: step_timeout_seconds,
+                    scope: "step".to_owned(),
+                });
+                *timeout_counter += 1;
+                if timeout_error_policy == "route_as_failure" {
+                    return Ok(true);
+                }
+                return Err(Error::Timeout(format!(
+                    "workflow '{}' step '{}' exceeded step timeout of {} seconds",
+                    ctx.workflow_name, ctx.step_id, step_timeout_seconds
+                )));
+            }
+        }
+        Ok(false)
+    }
+
+    fn emit_retry_event(
+        event_tx: &mpsc::Sender<Event>,
+        workflow: &str,
+        step_id: &str,
+        attempt: u32,
+        max_retries: u32,
+        backoff_ms: u64,
+        reason: &str,
+    ) {
+        let _ = event_tx.try_send(Event::WorkflowStepRetry {
+            workflow: workflow.to_owned(),
+            step_id: step_id.to_owned(),
+            attempt,
+            max_retries,
+            backoff_ms,
+            reason: reason.to_owned(),
+        });
     }
 
     fn effective_config_for_workflow(
@@ -403,6 +506,7 @@ impl WorkflowExecutor {
         } else {
             "abort"
         };
+        let preset_timeout_error_policy = preset_execution_error_policy;
         let preset_default_retry_count = if matches!(
             self.config.compatibility_preset,
             WorkflowCompatibilityPreset::N8n
@@ -496,6 +600,11 @@ impl WorkflowExecutor {
                 .clone()
                 .or_else(|| self.config.execution_error_policy.clone())
                 .unwrap_or_else(|| preset_execution_error_policy.to_owned()),
+            timeout_error_policy: overrides
+                .timeout_error_policy
+                .clone()
+                .or_else(|| self.config.timeout_error_policy.clone())
+                .unwrap_or_else(|| preset_timeout_error_policy.to_owned()),
             default_retry_count: overrides
                 .default_retry_count
                 .or(self.config.default_retry_count)
@@ -738,13 +847,17 @@ impl WorkflowExecutor {
             ConditionOperator::Exists => actual.is_some(),
             ConditionOperator::Equals => actual == expected,
             ConditionOperator::NotEquals => actual != expected,
-            ConditionOperator::GreaterThan => Self::compare_values(&actual, &expected, step, ">")?,
-            ConditionOperator::GreaterThanOrEqual => {
-                Self::compare_values(&actual, &expected, step, ">=")?
+            ConditionOperator::GreaterThan => {
+                Self::compare_values(&actual, &expected, step, ">", null_mode)?
             }
-            ConditionOperator::LessThan => Self::compare_values(&actual, &expected, step, "<")?,
+            ConditionOperator::GreaterThanOrEqual => {
+                Self::compare_values(&actual, &expected, step, ">=", null_mode)?
+            }
+            ConditionOperator::LessThan => {
+                Self::compare_values(&actual, &expected, step, "<", null_mode)?
+            }
             ConditionOperator::LessThanOrEqual => {
-                Self::compare_values(&actual, &expected, step, "<=")?
+                Self::compare_values(&actual, &expected, step, "<=", null_mode)?
             }
             ConditionOperator::Contains => match (actual, expected) {
                 (Some(a), Some(b)) => Self::contains_value(&a, &b),
@@ -813,12 +926,35 @@ impl WorkflowExecutor {
         expected: &Option<Value>,
         step: &WorkflowStep,
         operator: &str,
+        null_mode: NullHandlingMode,
     ) -> Result<bool> {
         let Some(actual) = actual else {
-            return Ok(false);
+            if null_mode == NullHandlingMode::Lenient {
+                return Ok(false);
+            }
+            return Err(Error::Tool(format!(
+                "workflow condition step '{}' cannot apply operator '{}' because actual value is missing",
+                step.id, operator
+            )));
         };
         let Some(expected) = expected else {
-            return Ok(false);
+            if null_mode == NullHandlingMode::Lenient {
+                return Ok(false);
+            }
+            return Err(Error::Tool(format!(
+                "workflow condition step '{}' cannot apply operator '{}' because expected value is missing",
+                step.id, operator
+            )));
+        };
+
+        if actual.is_null() || expected.is_null() {
+            if null_mode == NullHandlingMode::Lenient {
+                return Ok(false);
+            }
+            return Err(Error::Tool(format!(
+                "workflow condition step '{}' cannot apply operator '{}' to null values under strict null handling",
+                step.id, operator
+            )));
         };
 
         if let (Some(a), Some(b)) = (actual.as_f64(), expected.as_f64()) {
@@ -839,6 +975,10 @@ impl WorkflowExecutor {
                 "<=" => a <= b,
                 _ => false,
             });
+        }
+
+        if null_mode == NullHandlingMode::Lenient {
+            return Ok(false);
         }
 
         Err(Error::Tool(format!(
@@ -1337,6 +1477,10 @@ impl WorkflowExecutor {
                 })?
                 .clone();
             let workflow_config = self.effective_config_for_workflow(&workflow.execution);
+            let workflow_timeout_seconds = workflow
+                .timeout_seconds
+                .unwrap_or(self.config.default_timeout_seconds);
+            let started_at = Instant::now();
 
             if let Some(max_depth) = workflow_config.max_recursion_depth {
                 if request.recursion_depth > max_depth {
@@ -1378,6 +1522,8 @@ impl WorkflowExecutor {
             outputs.insert("input".to_owned(), request.input);
             let mut current = entry.step.clone();
             let mut step_count = 0usize;
+            let mut retry_events = 0usize;
+            let mut timeout_events = 0usize;
 
             let _ = event_tx.try_send(Event::WorkflowStarted {
                 workflow: request.workflow_name.clone(),
@@ -1386,6 +1532,28 @@ impl WorkflowExecutor {
             });
 
             loop {
+                if let Err(err) = Self::ensure_within_timeout(
+                    started_at,
+                    workflow_timeout_seconds,
+                    &request.workflow_name,
+                ) {
+                    let _ = event_tx.try_send(Event::WorkflowTimeout {
+                        workflow: request.workflow_name.clone(),
+                        step_id: None,
+                        timeout_seconds: workflow_timeout_seconds,
+                        scope: "workflow".to_owned(),
+                    });
+                    timeout_events += 1;
+                    let _ = event_tx.try_send(Event::WorkflowCompleted {
+                        workflow: request.workflow_name.clone(),
+                        success: false,
+                        steps_executed: step_count,
+                        retries: retry_events,
+                        timeouts: timeout_events,
+                    });
+                    return Err(err);
+                }
+
                 if let Some(max_steps) = workflow_config.max_steps_per_run {
                     if step_count >= max_steps {
                         return Err(Error::Tool(format!(
@@ -1402,6 +1570,19 @@ impl WorkflowExecutor {
                         request.workflow_name, current
                     ))
                 })?;
+                let step_started_at = Instant::now();
+                let step_timeout_seconds = step
+                    .config
+                    .get("step_timeout_seconds")
+                    .and_then(Value::as_u64);
+                let timeout_ctx = TimeoutCheckContext {
+                    workflow_started_at: started_at,
+                    workflow_timeout_seconds,
+                    step_started_at,
+                    step_timeout_seconds,
+                    workflow_name: &request.workflow_name,
+                    step_id: &step.id,
+                };
 
                 let _ = event_tx.try_send(Event::WorkflowStepStarted {
                     workflow: request.workflow_name.clone(),
@@ -1438,18 +1619,52 @@ impl WorkflowExecutor {
                             Self::retry_settings(&step, &workflow_config);
                         let execution_error_policy =
                             Self::execution_error_policy(&step, &workflow_config).to_owned();
+                        let timeout_error_policy =
+                            Self::timeout_error_policy(&step, &workflow_config).to_owned();
                         let mut attempt = 0u32;
                         let mut backoff_ms = retry_backoff_ms;
                         loop {
-                            let call_result = tools
-                                .execute_tool(
-                                    request.session_id.clone(),
-                                    request.agent_name.clone(),
-                                    tool_name,
-                                    args.clone(),
-                                    event_tx.clone(),
-                                )
-                                .await;
+                            let step_cancellation = CancellationToken::new();
+                            let call_future = tools.execute_tool_with_cancel(
+                                request.session_id.clone(),
+                                request.agent_name.clone(),
+                                tool_name,
+                                args.clone(),
+                                event_tx.clone(),
+                                Some(step_cancellation.clone()),
+                            );
+                            let call_result = if let Some(step_timeout_seconds) =
+                                step_timeout_seconds
+                            {
+                                tokio::select! {
+                                    result = call_future => result,
+                                    _ = sleep(Duration::from_secs(step_timeout_seconds)) => {
+                                        step_cancellation.cancel();
+                                        let _ = event_tx.try_send(Event::WorkflowTimeout {
+                                            workflow: request.workflow_name.clone(),
+                                            step_id: Some(step.id.clone()),
+                                            timeout_seconds: step_timeout_seconds,
+                                            scope: "step".to_owned(),
+                                        });
+                                        timeout_events += 1;
+                                        if timeout_error_policy == "route_as_failure" {
+                                            break (
+                                                false,
+                                                json!({
+                                                    "error": "step timeout",
+                                                    "policy": "route_as_failure"
+                                                }),
+                                            );
+                                        }
+                                        return Err(Error::Timeout(format!(
+                                            "workflow '{}' step '{}' exceeded step timeout of {} seconds",
+                                            request.workflow_name, step.id, step_timeout_seconds
+                                        )));
+                                    }
+                                }
+                            } else {
+                                call_future.await
+                            };
 
                             match call_result {
                                 Ok(Some(tool_result)) => {
@@ -1492,6 +1707,30 @@ impl WorkflowExecutor {
                             }
 
                             attempt += 1;
+                            retry_events += 1;
+                            Self::emit_retry_event(
+                                &event_tx,
+                                &request.workflow_name,
+                                &step.id,
+                                attempt,
+                                retry_count,
+                                backoff_ms,
+                                "tool_step",
+                            );
+                            if Self::ensure_within_timeouts(
+                                &event_tx,
+                                &mut timeout_events,
+                                &timeout_ctx,
+                                &timeout_error_policy,
+                            )? {
+                                break (
+                                    false,
+                                    json!({
+                                        "error": "step timeout",
+                                        "policy": "route_as_failure"
+                                    }),
+                                );
+                            }
                             sleep(Duration::from_millis(backoff_ms)).await;
                             backoff_ms = Self::next_backoff_ms(
                                 backoff_ms,
@@ -1529,6 +1768,8 @@ impl WorkflowExecutor {
                             Self::retry_settings(&step, &workflow_config);
                         let execution_error_policy =
                             Self::execution_error_policy(&step, &workflow_config).to_owned();
+                        let timeout_error_policy =
+                            Self::timeout_error_policy(&step, &workflow_config).to_owned();
                         let mut attempt = 0u32;
                         let mut backoff_ms = retry_backoff_ms;
                         loop {
@@ -1566,6 +1807,30 @@ impl WorkflowExecutor {
                             }
 
                             attempt += 1;
+                            retry_events += 1;
+                            Self::emit_retry_event(
+                                &event_tx,
+                                &request.workflow_name,
+                                &step.id,
+                                attempt,
+                                retry_count,
+                                backoff_ms,
+                                "skill_step",
+                            );
+                            if Self::ensure_within_timeouts(
+                                &event_tx,
+                                &mut timeout_events,
+                                &timeout_ctx,
+                                &timeout_error_policy,
+                            )? {
+                                break (
+                                    false,
+                                    json!({
+                                        "error": "step timeout",
+                                        "policy": "route_as_failure"
+                                    }),
+                                );
+                            }
                             sleep(Duration::from_millis(backoff_ms)).await;
                             backoff_ms = Self::next_backoff_ms(
                                 backoff_ms,
@@ -1606,6 +1871,8 @@ impl WorkflowExecutor {
                             Self::retry_settings(&step, &workflow_config);
                         let execution_error_policy =
                             Self::execution_error_policy(&step, &workflow_config).to_owned();
+                        let timeout_error_policy =
+                            Self::timeout_error_policy(&step, &workflow_config).to_owned();
                         let mut attempt = 0u32;
                         let mut backoff_ms = retry_backoff_ms;
                         loop {
@@ -1649,6 +1916,30 @@ impl WorkflowExecutor {
                             }
 
                             attempt += 1;
+                            retry_events += 1;
+                            Self::emit_retry_event(
+                                &event_tx,
+                                &request.workflow_name,
+                                &step.id,
+                                attempt,
+                                retry_count,
+                                backoff_ms,
+                                "workflow_step",
+                            );
+                            if Self::ensure_within_timeouts(
+                                &event_tx,
+                                &mut timeout_events,
+                                &timeout_ctx,
+                                &timeout_error_policy,
+                            )? {
+                                break (
+                                    false,
+                                    json!({
+                                        "error": "step timeout",
+                                        "policy": "route_as_failure"
+                                    }),
+                                );
+                            }
                             sleep(Duration::from_millis(backoff_ms)).await;
                             backoff_ms = Self::next_backoff_ms(
                                 backoff_ms,
@@ -1662,6 +1953,8 @@ impl WorkflowExecutor {
                             Self::retry_settings(&step, &workflow_config);
                         let execution_error_policy =
                             Self::execution_error_policy(&step, &workflow_config).to_owned();
+                        let timeout_error_policy =
+                            Self::timeout_error_policy(&step, &workflow_config).to_owned();
                         let retry_on_false = step
                             .config
                             .get("retry_on_false")
@@ -1674,6 +1967,24 @@ impl WorkflowExecutor {
                                 Ok(matched) => {
                                     if !matched && retry_on_false && attempts < retry_count {
                                         attempts += 1;
+                                        retry_events += 1;
+                                        Self::emit_retry_event(
+                                            &event_tx,
+                                            &request.workflow_name,
+                                            &step.id,
+                                            attempts,
+                                            retry_count,
+                                            backoff_ms,
+                                            "condition_false",
+                                        );
+                                        if Self::ensure_within_timeouts(
+                                            &event_tx,
+                                            &mut timeout_events,
+                                            &timeout_ctx,
+                                            &timeout_error_policy,
+                                        )? {
+                                            break false;
+                                        }
                                         sleep(Duration::from_millis(backoff_ms)).await;
                                         backoff_ms = Self::next_backoff_ms(
                                             backoff_ms,
@@ -1692,6 +2003,24 @@ impl WorkflowExecutor {
                                         return Err(err);
                                     }
                                     attempts += 1;
+                                    retry_events += 1;
+                                    Self::emit_retry_event(
+                                        &event_tx,
+                                        &request.workflow_name,
+                                        &step.id,
+                                        attempts,
+                                        retry_count,
+                                        backoff_ms,
+                                        "condition_error",
+                                    );
+                                    if Self::ensure_within_timeouts(
+                                        &event_tx,
+                                        &mut timeout_events,
+                                        &timeout_ctx,
+                                        &timeout_error_policy,
+                                    )? {
+                                        break false;
+                                    }
                                     sleep(Duration::from_millis(backoff_ms)).await;
                                     backoff_ms = Self::next_backoff_ms(
                                         backoff_ms,
@@ -1724,7 +2053,14 @@ impl WorkflowExecutor {
                             workflow: request.workflow_name.clone(),
                             success: matched,
                             steps_executed: step_count,
+                            retries: retry_events,
+                            timeouts: timeout_events,
                         });
+                        outputs.insert("workflow.metrics.retries".to_owned(), json!(retry_events));
+                        outputs.insert(
+                            "workflow.metrics.timeouts".to_owned(),
+                            json!(timeout_events),
+                        );
                         return Ok(WorkflowExecutionResult {
                             success: matched,
                             outputs,
@@ -1732,16 +2068,39 @@ impl WorkflowExecutor {
                         });
                     }
                     WorkflowStepKind::Wait => {
+                        let timeout_error_policy =
+                            Self::timeout_error_policy(&step, &workflow_config).to_owned();
                         let mut waited_ms = 0u64;
+                        let mut step_timed_out = false;
                         if let Some(seconds) =
                             step.config.get("duration_seconds").and_then(Value::as_u64)
                         {
                             let duration = Duration::from_secs(seconds);
-                            sleep(duration).await;
-                            waited_ms = waited_ms.saturating_add(duration.as_millis() as u64);
+                            if Self::ensure_within_timeouts(
+                                &event_tx,
+                                &mut timeout_events,
+                                &timeout_ctx,
+                                &timeout_error_policy,
+                            )? {
+                                step_timed_out = true;
+                            }
+                            if !step_timed_out {
+                                sleep(duration).await;
+                                waited_ms = waited_ms.saturating_add(duration.as_millis() as u64);
+                            }
                         }
 
-                        if let Some(expression) =
+                        if step_timed_out {
+                            (
+                                false,
+                                json!({
+                                    "waited_ms": waited_ms,
+                                    "timed_out": true,
+                                    "timeout_scope": "step",
+                                    "timeout_succeeds": false,
+                                }),
+                            )
+                        } else if let Some(expression) =
                             step.config.get("until_expression").and_then(Value::as_str)
                         {
                             let poll_interval_ms = step
@@ -1779,16 +2138,27 @@ impl WorkflowExecutor {
                                     break;
                                 }
 
+                                if Self::ensure_within_timeouts(
+                                    &event_tx,
+                                    &mut timeout_events,
+                                    &timeout_ctx,
+                                    &timeout_error_policy,
+                                )? {
+                                    step_timed_out = true;
+                                    break;
+                                }
                                 sleep(Duration::from_millis(poll_interval_ms)).await;
                                 waited_ms = waited_ms.saturating_add(poll_interval_ms);
                             }
 
                             (
-                                condition_met || (timed_out && timeout_succeeds),
+                                !step_timed_out
+                                    && (condition_met || (timed_out && timeout_succeeds)),
                                 json!({
                                     "waited_ms": waited_ms,
                                     "condition_met": condition_met,
                                     "timed_out": timed_out,
+                                    "step_timed_out": step_timed_out,
                                     "timeout_succeeds": timeout_succeeds,
                                 }),
                             )
@@ -1815,6 +2185,8 @@ impl WorkflowExecutor {
                             Self::retry_settings(&step, &workflow_config);
                         let execution_error_policy =
                             Self::execution_error_policy(&step, &workflow_config).to_owned();
+                        let timeout_error_policy =
+                            Self::timeout_error_policy(&step, &workflow_config).to_owned();
                         let retry_on_no_match = step
                             .config
                             .get("retry_on_no_match")
@@ -1846,6 +2218,28 @@ impl WorkflowExecutor {
                                                 && attempts < retry_count
                                             {
                                                 attempts += 1;
+                                                retry_events += 1;
+                                                Self::emit_retry_event(
+                                                    &event_tx,
+                                                    &request.workflow_name,
+                                                    &step.id,
+                                                    attempts,
+                                                    retry_count,
+                                                    backoff_ms,
+                                                    "switch_no_match",
+                                                );
+                                                if Self::ensure_within_timeouts(
+                                                    &event_tx,
+                                                    &mut timeout_events,
+                                                    &timeout_ctx,
+                                                    &timeout_error_policy,
+                                                )? {
+                                                    break (
+                                                        rendered_key,
+                                                        None,
+                                                        "timeout".to_owned(),
+                                                    );
+                                                }
                                                 sleep(Duration::from_millis(backoff_ms)).await;
                                                 backoff_ms = Self::next_backoff_ms(
                                                     backoff_ms,
@@ -1864,6 +2258,24 @@ impl WorkflowExecutor {
                                                 return Err(err);
                                             }
                                             attempts += 1;
+                                            retry_events += 1;
+                                            Self::emit_retry_event(
+                                                &event_tx,
+                                                &request.workflow_name,
+                                                &step.id,
+                                                attempts,
+                                                retry_count,
+                                                backoff_ms,
+                                                "switch_resolve_error",
+                                            );
+                                            if Self::ensure_within_timeouts(
+                                                &event_tx,
+                                                &mut timeout_events,
+                                                &timeout_ctx,
+                                                &timeout_error_policy,
+                                            )? {
+                                                break (rendered_key, None, "timeout".to_owned());
+                                            }
                                             sleep(Duration::from_millis(backoff_ms)).await;
                                             backoff_ms = Self::next_backoff_ms(
                                                 backoff_ms,
@@ -1881,6 +2293,24 @@ impl WorkflowExecutor {
                                         return Err(err);
                                     }
                                     attempts += 1;
+                                    retry_events += 1;
+                                    Self::emit_retry_event(
+                                        &event_tx,
+                                        &request.workflow_name,
+                                        &step.id,
+                                        attempts,
+                                        retry_count,
+                                        backoff_ms,
+                                        "switch_render_error",
+                                    );
+                                    if Self::ensure_within_timeouts(
+                                        &event_tx,
+                                        &mut timeout_events,
+                                        &timeout_ctx,
+                                        &timeout_error_policy,
+                                    )? {
+                                        break (String::new(), None, "timeout".to_owned());
+                                    }
                                     sleep(Duration::from_millis(backoff_ms)).await;
                                     backoff_ms = Self::next_backoff_ms(
                                         backoff_ms,
@@ -1920,7 +2350,14 @@ impl WorkflowExecutor {
                             workflow: request.workflow_name.clone(),
                             success: true,
                             steps_executed: step_count,
+                            retries: retry_events,
+                            timeouts: timeout_events,
                         });
+                        outputs.insert("workflow.metrics.retries".to_owned(), json!(retry_events));
+                        outputs.insert(
+                            "workflow.metrics.timeouts".to_owned(),
+                            json!(timeout_events),
+                        );
                         return Ok(WorkflowExecutionResult {
                             success: true,
                             outputs,
@@ -1969,6 +2406,8 @@ impl WorkflowExecutor {
                             Self::retry_settings(&step, &workflow_config);
                         let execution_error_policy =
                             Self::execution_error_policy(&step, &workflow_config).to_owned();
+                        let timeout_error_policy =
+                            Self::timeout_error_policy(&step, &workflow_config).to_owned();
                         let mut attempt = 0u32;
                         let mut backoff_ms = retry_backoff_ms;
                         loop {
@@ -2006,6 +2445,30 @@ impl WorkflowExecutor {
                             }
 
                             attempt += 1;
+                            retry_events += 1;
+                            Self::emit_retry_event(
+                                &event_tx,
+                                &request.workflow_name,
+                                &step.id,
+                                attempt,
+                                retry_count,
+                                backoff_ms,
+                                "agent_step",
+                            );
+                            if Self::ensure_within_timeouts(
+                                &event_tx,
+                                &mut timeout_events,
+                                &timeout_ctx,
+                                &timeout_error_policy,
+                            )? {
+                                break (
+                                    false,
+                                    json!({
+                                        "error": "step timeout",
+                                        "policy": "route_as_failure"
+                                    }),
+                                );
+                            }
                             sleep(Duration::from_millis(backoff_ms)).await;
                             backoff_ms = Self::next_backoff_ms(
                                 backoff_ms,
@@ -2050,7 +2513,15 @@ impl WorkflowExecutor {
                     workflow: request.workflow_name.clone(),
                     success,
                     steps_executed: step_count,
+                    retries: retry_events,
+                    timeouts: timeout_events,
                 });
+
+                outputs.insert("workflow.metrics.retries".to_owned(), json!(retry_events));
+                outputs.insert(
+                    "workflow.metrics.timeouts".to_owned(),
+                    json!(timeout_events),
+                );
 
                 return Ok(WorkflowExecutionResult {
                     success,

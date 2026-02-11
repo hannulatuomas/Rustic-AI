@@ -13,6 +13,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 
 const SAFE_PASSTHROUGH_ENV_VARS: &[&str] = &[
     "PATH", "HOME", "USER", "SHELL", "TMP", "TMPDIR", "TEMP", "LANG", "LC_ALL",
@@ -56,6 +57,7 @@ struct CommandExecutionInput<'a> {
     work_dir: &'a Path,
     per_call_override: Option<&'a Path>,
     tool_name: &'a str,
+    cancellation_token: Option<CancellationToken>,
 }
 
 #[derive(Debug, Clone)]
@@ -352,6 +354,7 @@ impl ShellTool {
         let work_dir = input.work_dir;
         let per_call_override = input.per_call_override;
         let tool_name = input.tool_name;
+        let cancellation_token = input.cancellation_token;
 
         self.cleanup_expired_sudo_passwords().await;
         let working_dir = self.resolve_working_dir(work_dir, per_call_override)?;
@@ -385,6 +388,7 @@ impl ShellTool {
         let shell_flag = if cfg!(windows) { "/C" } else { "-c" };
 
         let mut cmd = Command::new(shell);
+        cmd.kill_on_drop(true);
         cmd.arg(shell_flag).arg(&effective_command);
         cmd.current_dir(&working_dir);
         self.apply_environment(&mut cmd);
@@ -456,13 +460,27 @@ impl ShellTool {
         });
 
         let timeout_duration = Duration::from_secs(self.config.timeout_seconds);
-        let wait_result = timeout(timeout_duration, child.wait()).await;
+        let wait_result = if let Some(cancellation_token) = cancellation_token {
+            tokio::select! {
+                _ = cancellation_token.cancelled() => {
+                    let _ = child.start_kill();
+                    stdout_task.abort();
+                    stderr_task.abort();
+                    return Err(Error::Timeout("command cancelled by workflow timeout".to_owned()));
+                }
+                result = timeout(timeout_duration, child.wait()) => result,
+            }
+        } else {
+            timeout(timeout_duration, child.wait()).await
+        };
         let status = match wait_result {
             Ok(result) => {
                 result.map_err(|err| Error::Tool(format!("failed waiting for command: {err}")))?
             }
             Err(_) => {
                 let _ = child.start_kill();
+                stdout_task.abort();
+                stderr_task.abort();
                 return Err(Error::Tool(format!(
                     "command timed out after {} seconds",
                     self.config.timeout_seconds
@@ -553,6 +571,7 @@ impl super::Tool for ShellTool {
                     work_dir: &context.working_directory,
                     per_call_override: per_call_working_dir.as_deref(),
                     tool_name: &tool_name,
+                    cancellation_token: context.cancellation_token.clone(),
                 },
                 tx.clone(),
             )

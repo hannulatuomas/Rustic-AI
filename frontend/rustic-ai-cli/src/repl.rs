@@ -257,6 +257,7 @@ impl Repl {
                 max_recursion_depth: wf_cfg.max_recursion_depth,
                 max_steps_per_run: wf_cfg.max_steps_per_run,
                 working_directory: self.app.work_dir().to_path_buf(),
+                default_timeout_seconds: wf_cfg.default_timeout_seconds,
                 compatibility_preset: wf_cfg.compatibility_preset,
                 switch_case_sensitive_default: wf_cfg.switch_case_sensitive_default,
                 switch_pattern_priority: wf_cfg.switch_pattern_priority.clone(),
@@ -267,6 +268,7 @@ impl Repl {
                 default_continue_on_error: wf_cfg.default_continue_on_error,
                 continue_on_error_routing: wf_cfg.continue_on_error_routing.clone(),
                 execution_error_policy: wf_cfg.execution_error_policy.clone(),
+                timeout_error_policy: wf_cfg.timeout_error_policy.clone(),
                 default_retry_count: wf_cfg.default_retry_count,
                 default_retry_backoff_ms: wf_cfg.default_retry_backoff_ms,
                 default_retry_backoff_multiplier: wf_cfg.default_retry_backoff_multiplier,
@@ -299,6 +301,13 @@ impl Repl {
             .await
     }
 
+    fn workflow_metric_u64(
+        result: &rustic_ai_core::workflows::WorkflowExecutionResult,
+        key: &str,
+    ) -> u64 {
+        result.outputs.get(key).and_then(Value::as_u64).unwrap_or(0)
+    }
+
     async fn run_trigger_matches(
         &self,
         session_id: uuid::Uuid,
@@ -322,18 +331,34 @@ impl Repl {
                     rustic_ai_core::workflows::WorkflowTriggerReason::Event { event_name },
                     Ok(run),
                 ) => {
+                    let retries = Self::workflow_metric_u64(&run, "workflow.metrics.retries");
+                    let timeouts = Self::workflow_metric_u64(&run, "workflow.metrics.timeouts");
                     println!(
-                        "Triggered by event '{}' -> workflow '{}' (entrypoint '{}'): success={}, steps={}",
-                        event_name, matched.workflow_name, matched.entrypoint, run.success, run.steps_executed
+                        "Triggered by event '{}' -> workflow '{}' (entrypoint '{}'): success={}, steps={}, retries={}, timeouts={}",
+                        event_name,
+                        matched.workflow_name,
+                        matched.entrypoint,
+                        run.success,
+                        run.steps_executed,
+                        retries,
+                        timeouts
                     );
                 }
                 (
                     rustic_ai_core::workflows::WorkflowTriggerReason::Cron { expression },
                     Ok(run),
                 ) => {
+                    let retries = Self::workflow_metric_u64(&run, "workflow.metrics.retries");
+                    let timeouts = Self::workflow_metric_u64(&run, "workflow.metrics.timeouts");
                     println!(
-                        "Triggered by cron '{}' -> workflow '{}' (entrypoint '{}'): success={}, steps={}",
-                        expression, matched.workflow_name, matched.entrypoint, run.success, run.steps_executed
+                        "Triggered by cron '{}' -> workflow '{}' (entrypoint '{}'): success={}, steps={}, retries={}, timeouts={}",
+                        expression,
+                        matched.workflow_name,
+                        matched.entrypoint,
+                        run.success,
+                        run.steps_executed,
+                        retries,
+                        timeouts
                     );
                 }
                 (_, Err(err)) => {
@@ -819,11 +844,17 @@ impl Repl {
                     .await
                 {
                     Ok(result) => {
+                        let retries =
+                            Self::workflow_metric_u64(&result, "workflow.metrics.retries");
+                        let timeouts =
+                            Self::workflow_metric_u64(&result, "workflow.metrics.timeouts");
                         println!(
-                            "Workflow '{}' completed: success={}, steps={}, outputs={}",
+                            "Workflow '{}' completed: success={}, steps={}, retries={}, timeouts={}, outputs={}",
                             workflow_name,
                             result.success,
                             result.steps_executed,
+                            retries,
+                            timeouts,
                             result.outputs.len()
                         );
                     }

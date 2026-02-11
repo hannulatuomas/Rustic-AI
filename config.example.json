@@ -59,6 +59,7 @@
     "default_continue_on_error": null,
     "continue_on_error_routing": null,
     "execution_error_policy": null,
+    "timeout_error_policy": null,
     "default_retry_count": null,
     "default_retry_backoff_ms": null,
     "default_retry_backoff_multiplier": null,

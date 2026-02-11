@@ -44,6 +44,7 @@ pub struct WorkflowExecutionConfig {
     pub default_continue_on_error: Option<bool>,
     pub continue_on_error_routing: Option<String>,
     pub execution_error_policy: Option<String>,
+    pub timeout_error_policy: Option<String>,
     pub default_retry_count: Option<u32>,
     pub default_retry_backoff_ms: Option<u64>,
     pub default_retry_backoff_multiplier: Option<f64>,

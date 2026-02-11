@@ -19,6 +19,9 @@ pub enum Error {
     #[error("tool error: {0}")]
     Tool(String),
 
+    #[error("timeout error: {0}")]
+    Timeout(String),
+
     #[error("storage error: {0}")]
     Storage(String),
 

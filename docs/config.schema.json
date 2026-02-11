@@ -167,6 +167,10 @@
           "type": ["string", "null"],
           "enum": ["abort", "route_as_failure", null]
         },
+        "timeout_error_policy": {
+          "type": ["string", "null"],
+          "enum": ["abort", "route_as_failure", null]
+        },
         "default_retry_count": { "type": ["integer", "null"], "minimum": 0, "maximum": 20 },
         "default_retry_backoff_ms": { "type": ["integer", "null"], "minimum": 1, "maximum": 600000 },
         "default_retry_backoff_multiplier": { "type": ["number", "null"], "minimum": 1.0, "maximum": 10.0 },

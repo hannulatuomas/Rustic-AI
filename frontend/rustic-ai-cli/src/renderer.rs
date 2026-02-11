@@ -85,13 +85,43 @@ impl Renderer {
                     "[workflow:{workflow}] step {step_id} {status} (mapped outputs: {output_count})"
                 );
             }
+            Event::WorkflowStepRetry {
+                workflow,
+                step_id,
+                attempt,
+                max_retries,
+                backoff_ms,
+                reason,
+            } => {
+                println!(
+                    "[workflow:{workflow}] step {step_id} retry {attempt}/{max_retries} in {backoff_ms}ms ({reason})"
+                );
+            }
+            Event::WorkflowTimeout {
+                workflow,
+                step_id,
+                timeout_seconds,
+                scope,
+            } => {
+                if let Some(step_id) = step_id {
+                    println!(
+                        "[workflow:{workflow}] timeout on step {step_id} ({scope}, {timeout_seconds}s)"
+                    );
+                } else {
+                    println!("[workflow:{workflow}] timeout ({scope}, {timeout_seconds}s)");
+                }
+            }
             Event::WorkflowCompleted {
                 workflow,
                 success,
                 steps_executed,
+                retries,
+                timeouts,
             } => {
                 let status = if *success { "OK" } else { "FAILED" };
-                println!("[workflow:{workflow}] {status} (steps executed: {steps_executed})");
+                println!(
+                    "[workflow:{workflow}] {status} (steps: {steps_executed}, retries: {retries}, timeouts: {timeouts})"
+                );
             }
             Event::PermissionRequest { tool, args, .. } => {
                 println!();
@@ -222,15 +252,47 @@ impl Renderer {
                 "success": success,
                 "output_count": output_count,
             }),
+            Event::WorkflowStepRetry {
+                workflow,
+                step_id,
+                attempt,
+                max_retries,
+                backoff_ms,
+                reason,
+            } => serde_json::json!({
+                "type": "workflow_step_retry",
+                "workflow": workflow,
+                "step_id": step_id,
+                "attempt": attempt,
+                "max_retries": max_retries,
+                "backoff_ms": backoff_ms,
+                "reason": reason,
+            }),
+            Event::WorkflowTimeout {
+                workflow,
+                step_id,
+                timeout_seconds,
+                scope,
+            } => serde_json::json!({
+                "type": "workflow_timeout",
+                "workflow": workflow,
+                "step_id": step_id,
+                "timeout_seconds": timeout_seconds,
+                "scope": scope,
+            }),
             Event::WorkflowCompleted {
                 workflow,
                 success,
                 steps_executed,
+                retries,
+                timeouts,
             } => serde_json::json!({
                 "type": "workflow_completed",
                 "workflow": workflow,
                 "success": success,
                 "steps_executed": steps_executed,
+                "retries": retries,
+                "timeouts": timeouts,
             }),
             Event::PermissionRequest {
                 session_id,

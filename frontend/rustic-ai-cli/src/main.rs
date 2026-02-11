@@ -742,6 +742,7 @@ fn error_code(error: &rustic_ai_core::Error) -> &'static str {
         rustic_ai_core::Error::NotFound(_) => "not_found",
         rustic_ai_core::Error::Provider(_) => "provider_error",
         rustic_ai_core::Error::Tool(_) => "tool_error",
+        rustic_ai_core::Error::Timeout(_) => "timeout_error",
         rustic_ai_core::Error::Storage(_) => "storage_error",
         rustic_ai_core::Error::Io(_) => "io_error",
         rustic_ai_core::Error::Sqlx(_) => "sqlx_error",

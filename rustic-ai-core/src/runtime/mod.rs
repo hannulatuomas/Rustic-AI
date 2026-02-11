@@ -97,6 +97,7 @@ impl Runtime {
                 agent_name: None,
                 agent_permission_mode: AgentPermissionMode::ReadWrite,
                 sub_agent_depth: 0,
+                cancellation_token: None,
             },
         }));
 

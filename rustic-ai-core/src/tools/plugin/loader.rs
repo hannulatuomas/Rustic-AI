@@ -95,6 +95,7 @@ impl ExternalPluginTool {
         let work_dir = self.resolve_work_dir(context);
 
         let mut cmd = Command::new(&command_path);
+        cmd.kill_on_drop(true);
         cmd.args(&self.manifest.args)
             .current_dir(&work_dir)
             .stdin(Stdio::piped())
@@ -177,10 +178,27 @@ impl ExternalPluginTool {
         });
 
         let timeout_secs = self.effective_timeout();
-        let wait_result = timeout(std::time::Duration::from_secs(timeout_secs), child.wait())
-            .await
+        let wait_result = if let Some(cancellation_token) = context.cancellation_token.clone() {
+            tokio::select! {
+                _ = cancellation_token.cancelled() => {
+                    let _ = child.start_kill();
+                    stdout_task.abort();
+                    stderr_task.abort();
+                    return Err(Error::Timeout(format!(
+                        "plugin '{}' cancelled by workflow timeout",
+                        self.manifest.tool_name
+                    )));
+                }
+                result = timeout(std::time::Duration::from_secs(timeout_secs), child.wait()) => result,
+            }
+        } else {
+            timeout(std::time::Duration::from_secs(timeout_secs), child.wait()).await
+        };
+        let wait_result = wait_result
             .map_err(|_| {
                 let _ = child.start_kill();
+                stdout_task.abort();
+                stderr_task.abort();
                 Error::Tool(format!(
                     "plugin '{}' timed out after {timeout_secs} seconds",
                     self.manifest.tool_name

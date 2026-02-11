@@ -70,6 +70,11 @@ Per-step overrides:
   - `config.expression_max_depth`
   - `config.null_handling`
 
+`null_handling` behavior notes:
+
+- `strict`: comparison operators (`greater_than`, `greater_than_or_equal`, `less_than`, `less_than_or_equal`) fail when operands are missing/null or type-incompatible.
+- `lenient`: those same comparison cases evaluate to `false` instead of failing, which is useful for sparse webhook/event payloads.
+
 ## Reference Examples
 
 See:

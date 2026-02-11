@@ -5,6 +5,7 @@ use uuid::Uuid;
 use crate::config::schema::AgentPermissionMode;
 use crate::error::Result;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 pub struct ToolResult {
@@ -20,6 +21,7 @@ pub struct ToolExecutionContext {
     pub agent_name: Option<String>,
     pub agent_permission_mode: AgentPermissionMode,
     pub sub_agent_depth: usize,
+    pub cancellation_token: Option<CancellationToken>,
 }
 
 #[async_trait]

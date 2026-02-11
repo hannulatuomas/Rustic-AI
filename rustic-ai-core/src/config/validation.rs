@@ -490,6 +490,14 @@ pub fn validate_config(config: &Config) -> Result<()> {
             ));
         }
     }
+    if let Some(policy) = config.workflows.timeout_error_policy.as_deref() {
+        if !matches!(policy, "abort" | "route_as_failure") {
+            return Err(Error::Validation(
+                "workflows.timeout_error_policy must be abort or route_as_failure when set"
+                    .to_owned(),
+            ));
+        }
+    }
     if let Some(multiplier) = config.workflows.default_retry_backoff_multiplier {
         if !(1.0..=10.0).contains(&multiplier) {
             return Err(Error::Validation(
