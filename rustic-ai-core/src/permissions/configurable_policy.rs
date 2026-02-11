@@ -1,5 +1,5 @@
 use crate::config::schema::{
-    CommandPatternConfig, DecisionScope, PermissionConfig, PermissionMode,
+    AgentPermissionMode, CommandPatternConfig, DecisionScope, PermissionConfig, PermissionMode,
 };
 use crate::permissions::policy::{
     AskResolution, CommandPatternBucket, PermissionContext, PermissionDecision, PermissionPolicy,
@@ -9,6 +9,30 @@ use crate::rules::discovery::simple_glob_match;
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolAccessKind {
+    Read,
+    Write,
+    Unknown,
+}
+
+const DEFAULT_READ_ONLY_SHELL_WRITE_PATTERNS: &[&str] = &[
+    " rm ",
+    " mv ",
+    " cp ",
+    " mkdir ",
+    " rmdir ",
+    " touch ",
+    " chmod ",
+    " chown ",
+    " tee ",
+    " sed -i",
+    " >",
+    " >>",
+    " git commit",
+    " git push",
+];
 
 #[derive(Debug, Clone)]
 pub struct ConfigurablePermissionPolicy {
@@ -62,9 +86,7 @@ impl ConfigurablePermissionPolicy {
     }
 
     fn args_signature(&self, args: &serde_json::Value) -> String {
-        // Create a simple signature of args for caching
-        // For now, we just serialize to string; in production, hash it
-        format!("{:?}", args)
+        serde_json::to_string(args).unwrap_or_else(|_| format!("{:?}", args))
     }
 
     fn normalize_path(path: &Path) -> PathBuf {
@@ -225,11 +247,7 @@ impl ConfigurablePermissionPolicy {
 
         for path in paths {
             let resolved = Self::resolve_candidate_path(&path, &canonical_working_dir);
-            let candidate = if resolved.exists() {
-                resolved.canonicalize().unwrap_or(resolved)
-            } else {
-                resolved
-            };
+            let candidate = resolved.canonicalize().unwrap_or(resolved);
 
             if !canonical_roots
                 .iter()
@@ -352,6 +370,147 @@ impl ConfigurablePermissionPolicy {
         }
         None
     }
+
+    fn infer_tool_access_kind(tool: &str, args: &serde_json::Value) -> ToolAccessKind {
+        match tool {
+            "filesystem" => {
+                let operation = args
+                    .get("operation")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default();
+                match operation {
+                    "read" | "list" | "info" | "glob" | "hash" => ToolAccessKind::Read,
+                    "write" | "edit" | "mkdir" | "delete" | "copy" | "move" => {
+                        ToolAccessKind::Write
+                    }
+                    _ => ToolAccessKind::Unknown,
+                }
+            }
+            "http" => {
+                let method = args
+                    .get("method")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("GET")
+                    .to_ascii_uppercase();
+                match method.as_str() {
+                    "GET" | "HEAD" | "OPTIONS" => ToolAccessKind::Read,
+                    "POST" | "PUT" | "PATCH" | "DELETE" => ToolAccessKind::Write,
+                    _ => ToolAccessKind::Unknown,
+                }
+            }
+            "ssh" => {
+                let operation = args
+                    .get("operation")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default();
+                match operation {
+                    "list_sessions" | "scp_download" => ToolAccessKind::Read,
+                    "connect" | "disconnect" | "close_all" | "scp_upload" => ToolAccessKind::Write,
+                    "exec" => ToolAccessKind::Unknown,
+                    _ => ToolAccessKind::Unknown,
+                }
+            }
+            "shell" => {
+                let command = args
+                    .get("command")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                if command.trim().is_empty() {
+                    return ToolAccessKind::Unknown;
+                }
+
+                if command.contains(" >")
+                    || command.contains(">>")
+                    || command.contains(" tee ")
+                    || command.contains(" install ")
+                {
+                    return ToolAccessKind::Write;
+                }
+
+                let write_verbs = [
+                    "rm", "mv", "cp", "mkdir", "rmdir", "touch", "chmod", "chown", "sed", "apt",
+                    "apt-get", "yum", "dnf", "apk", "pip", "npm", "pnpm", "yarn", "cargo",
+                ];
+                let normalized = format!(" {command} ");
+                if write_verbs
+                    .iter()
+                    .any(|verb| normalized.contains(&format!(" {verb} ")))
+                {
+                    ToolAccessKind::Write
+                } else {
+                    ToolAccessKind::Read
+                }
+            }
+            "workflow" | "sub_agent" => ToolAccessKind::Write,
+            "skill" | "mcp" => ToolAccessKind::Unknown,
+            _ => ToolAccessKind::Unknown,
+        }
+    }
+
+    fn allow_decision_for_access(access: ToolAccessKind) -> PermissionDecision {
+        match access {
+            ToolAccessKind::Read => PermissionDecision::AllowRead,
+            ToolAccessKind::Write => PermissionDecision::AllowWrite,
+            ToolAccessKind::Unknown => PermissionDecision::AllowRead,
+        }
+    }
+
+    fn shell_access_from_patterns(&self, args: &serde_json::Value) -> ToolAccessKind {
+        let command = args
+            .get("command")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if command.trim().is_empty() {
+            return ToolAccessKind::Unknown;
+        }
+
+        let normalized = format!(" {command} ");
+        let patterns = if self.config.read_only_shell_write_patterns.is_empty() {
+            DEFAULT_READ_ONLY_SHELL_WRITE_PATTERNS
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+        } else {
+            self.config
+                .read_only_shell_write_patterns
+                .iter()
+                .map(|pattern| pattern.to_ascii_lowercase())
+                .collect::<Vec<_>>()
+        };
+
+        if patterns.iter().any(|pattern| normalized.contains(pattern)) {
+            ToolAccessKind::Write
+        } else {
+            ToolAccessKind::Read
+        }
+    }
+
+    fn enforce_cache_bounds(&mut self) {
+        let max_entries = self.config.permission_cache_max_entries;
+        if max_entries == 0 {
+            self.denied_cache.clear();
+            self.allowed_cache.clear();
+            return;
+        }
+
+        while self.denied_cache.len() > max_entries {
+            if let Some(key) = self.denied_cache.keys().next().cloned() {
+                self.denied_cache.remove(&key);
+            } else {
+                break;
+            }
+        }
+
+        while self.allowed_cache.len() > max_entries {
+            if let Some(key) = self.allowed_cache.keys().next().cloned() {
+                self.allowed_cache.remove(&key);
+            } else {
+                break;
+            }
+        }
+    }
 }
 
 impl PermissionPolicy for ConfigurablePermissionPolicy {
@@ -361,6 +520,18 @@ impl PermissionPolicy for ConfigurablePermissionPolicy {
         args: &serde_json::Value,
         context: &PermissionContext,
     ) -> PermissionDecision {
+        let access_kind = if tool == "shell" {
+            self.shell_access_from_patterns(args)
+        } else {
+            Self::infer_tool_access_kind(tool, args)
+        };
+
+        if context.agent_permission_mode == AgentPermissionMode::ReadOnly
+            && matches!(access_kind, ToolAccessKind::Write | ToolAccessKind::Unknown)
+        {
+            return PermissionDecision::Deny;
+        }
+
         if let Some(agent_name) = &context.agent_name {
             if let Some(allowed_tools) = self.agent_tool_allowlist.get(agent_name) {
                 if !allowed_tools.contains(tool) {
@@ -373,7 +544,9 @@ impl PermissionPolicy for ConfigurablePermissionPolicy {
             match pattern_decision {
                 PermissionDecision::Deny => return PermissionDecision::Deny,
                 PermissionDecision::Ask => return PermissionDecision::Ask,
-                PermissionDecision::Allow => {}
+                PermissionDecision::Allow
+                | PermissionDecision::AllowRead
+                | PermissionDecision::AllowWrite => {}
             }
         }
 
@@ -384,7 +557,7 @@ impl PermissionPolicy for ConfigurablePermissionPolicy {
         let mode = self.get_tool_mode(tool);
 
         match mode {
-            PermissionMode::Allow => PermissionDecision::Allow,
+            PermissionMode::Allow => Self::allow_decision_for_access(access_kind),
             PermissionMode::Deny => PermissionDecision::Deny,
             PermissionMode::Ask => {
                 let args_sig = self.args_signature(args);
@@ -397,8 +570,10 @@ impl PermissionPolicy for ConfigurablePermissionPolicy {
                 // Check allowed cache
                 if let Some(resolution) = self.check_allowed_cache(context, tool, &args_sig) {
                     return match resolution {
-                        AskResolution::AllowOnce => PermissionDecision::Allow,
-                        AskResolution::AllowInSession => PermissionDecision::Allow,
+                        AskResolution::AllowOnce => Self::allow_decision_for_access(access_kind),
+                        AskResolution::AllowInSession => {
+                            Self::allow_decision_for_access(access_kind)
+                        }
                         AskResolution::Deny => PermissionDecision::Deny,
                     };
                 }
@@ -436,6 +611,8 @@ impl PermissionPolicy for ConfigurablePermissionPolicy {
                 self.denied_cache.insert(cache_key, expiry);
             }
         }
+
+        self.enforce_cache_bounds();
     }
 
     fn add_session_allowed_path(&mut self, session_id: &str, path: &str) {

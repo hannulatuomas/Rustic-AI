@@ -1,4 +1,5 @@
 use crate::agents::AgentCoordinator;
+use crate::config::schema::AgentPermissionMode;
 use crate::conversation::session_manager::SessionManager;
 use crate::error::Result;
 use crate::events::EventBus;
@@ -78,6 +79,10 @@ impl Runtime {
             tool_configs: config.tools.clone(),
             execution_context: ToolExecutionContext {
                 working_directory: work_dir,
+                session_id: None,
+                agent_name: None,
+                agent_permission_mode: AgentPermissionMode::ReadWrite,
+                sub_agent_depth: 0,
             },
         }));
 

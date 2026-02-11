@@ -371,6 +371,7 @@ impl PluginLoader {
             stream_output: true,
             require_sudo: false,
             privileged_command_patterns: Vec::new(),
+            read_only_blocked_patterns: Vec::new(),
         }
     }
 

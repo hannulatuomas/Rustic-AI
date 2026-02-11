@@ -458,6 +458,36 @@ pub fn validate_config(config: &Config) -> Result<()> {
                 agent.provider
             )));
         }
+
+        if agent.allow_sub_agent_calls && !agent.tools.iter().any(|tool| tool == "sub_agent") {
+            return Err(Error::Validation(format!(
+                "agent '{name}' has allow_sub_agent_calls=true but does not include 'sub_agent' in tools"
+            )));
+        }
+
+        if let Some(depth) = agent.max_sub_agent_depth {
+            if depth == 0 {
+                return Err(Error::Validation(format!(
+                    "agent '{name}' max_sub_agent_depth must be greater than zero when set"
+                )));
+            }
+        }
+
+        if let Some(size) = agent.sub_agent_context_window_size {
+            if size == 0 {
+                return Err(Error::Validation(format!(
+                    "agent '{name}' sub_agent_context_window_size must be greater than zero when set"
+                )));
+            }
+        }
+
+        if let Some(tokens) = agent.sub_agent_max_context_tokens {
+            if tokens == 0 {
+                return Err(Error::Validation(format!(
+                    "agent '{name}' sub_agent_max_context_tokens must be greater than zero when set"
+                )));
+            }
+        }
     }
 
     if config.rules.max_discovery_depth > 32 {

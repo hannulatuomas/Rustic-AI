@@ -323,7 +323,11 @@
         "globally_allowed_paths",
         "project_allowed_paths",
         "global_command_patterns",
-        "project_command_patterns"
+        "project_command_patterns",
+        "pending_tool_timeout_secs",
+        "sudo_cache_ttl_secs",
+        "permission_cache_max_entries",
+        "read_only_shell_write_patterns"
       ],
       "properties": {
         "default_tool_permission": {
@@ -351,6 +355,22 @@
         },
         "project_command_patterns": {
           "$ref": "#/$defs/command_pattern_config"
+        },
+        "pending_tool_timeout_secs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sudo_cache_ttl_secs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "permission_cache_max_entries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "read_only_shell_write_patterns": {
+          "type": "array",
+          "items": { "type": "string" }
         }
       },
       "additionalProperties": false
@@ -430,7 +450,12 @@
           "max_tool_rounds": { "type": ["integer", "null"], "minimum": 0 },
           "max_tools_per_round": { "type": ["integer", "null"], "minimum": 0 },
           "max_total_tool_calls_per_turn": { "type": ["integer", "null"], "minimum": 0 },
-          "max_turn_duration_seconds": { "type": ["integer", "null"], "minimum": 0 }
+          "max_turn_duration_seconds": { "type": ["integer", "null"], "minimum": 0 },
+          "permission_mode": { "type": "string", "enum": ["read_only", "read_write"] },
+          "allow_sub_agent_calls": { "type": "boolean" },
+          "max_sub_agent_depth": { "type": ["integer", "null"], "minimum": 1 },
+          "sub_agent_context_window_size": { "type": ["integer", "null"], "minimum": 1 },
+          "sub_agent_max_context_tokens": { "type": ["integer", "null"], "minimum": 1 }
         },
         "additionalProperties": false
       }
@@ -449,7 +474,10 @@
           "working_dir",
           "custom_working_dir",
           "env_passthrough",
-          "stream_output"
+          "stream_output",
+          "require_sudo",
+          "privileged_command_patterns",
+          "read_only_blocked_patterns"
         ],
         "properties": {
           "name": { "type": "string" },
@@ -470,7 +498,16 @@
           },
           "custom_working_dir": { "type": ["string", "null"] },
           "env_passthrough": { "type": "boolean" },
-          "stream_output": { "type": "boolean" }
+          "stream_output": { "type": "boolean" },
+          "require_sudo": { "type": "boolean" },
+          "privileged_command_patterns": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "read_only_blocked_patterns": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
         },
         "additionalProperties": false
       }

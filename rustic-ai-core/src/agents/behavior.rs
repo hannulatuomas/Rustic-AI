@@ -872,6 +872,48 @@ impl Agent {
         )
         .await
     }
+
+    pub async fn generate_from_context(
+        &self,
+        mut context: Vec<ChatMessage>,
+        task: &str,
+        session_id: String,
+        event_tx: mpsc::Sender<Event>,
+    ) -> Result<String> {
+        let system_prompt = self.system_prompt();
+        if !context.iter().any(|message| message.role == "system") {
+            context.insert(
+                0,
+                ChatMessage {
+                    role: "system".to_owned(),
+                    content: system_prompt,
+                    name: None,
+                    tool_calls: None,
+                },
+            );
+        }
+
+        context.push(ChatMessage {
+            role: "user".to_owned(),
+            content: task.to_owned(),
+            name: None,
+            tool_calls: None,
+        });
+
+        self.generate_response_with_events(
+            &context,
+            &self.generation_options(),
+            &session_id,
+            &self.config.name,
+            event_tx,
+            None,
+        )
+        .await
+    }
+
+    pub fn config(&self) -> &AgentConfig {
+        &self.config
+    }
 }
 
 impl std::fmt::Debug for Agent {

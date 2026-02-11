@@ -207,6 +207,26 @@ impl FilesystemTool {
         }
     }
 
+    fn enforce_agent_permission(
+        &self,
+        operation: &str,
+        context: &ToolExecutionContext,
+    ) -> Result<()> {
+        if context.agent_permission_mode == crate::config::schema::AgentPermissionMode::ReadWrite {
+            return Ok(());
+        }
+
+        let allowed = matches!(operation, "read" | "list" | "info" | "glob" | "hash");
+        if allowed {
+            return Ok(());
+        }
+
+        Err(Error::Tool(format!(
+            "filesystem operation '{}' is not allowed in read_only agent mode",
+            operation
+        )))
+    }
+
     fn hash_file(&self, path: &Path, algorithm: &str) -> Result<String> {
         let metadata = fs::metadata(path).map_err(|err| {
             Error::Tool(format!(
@@ -406,6 +426,7 @@ impl FilesystemTool {
         let operation = self
             .required_string(&args, "operation")?
             .to_ascii_lowercase();
+        self.enforce_agent_permission(&operation, context)?;
         let working_dir = self.resolve_working_dir(context, &args)?;
 
         match operation.as_str() {

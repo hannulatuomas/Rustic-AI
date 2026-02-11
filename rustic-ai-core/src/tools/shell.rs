@@ -18,6 +18,30 @@ const SAFE_PASSTHROUGH_ENV_VARS: &[&str] = &[
     "PATH", "HOME", "USER", "SHELL", "TMP", "TMPDIR", "TEMP", "LANG", "LC_ALL",
 ];
 const OUTPUT_CAPTURE_LIMIT_BYTES: usize = 10 * 1024;
+const READ_ONLY_BLOCKED_TOKENS: &[&str] = &[
+    " rm ",
+    " rm-",
+    " mv ",
+    " cp ",
+    " mkdir ",
+    " rmdir ",
+    " touch ",
+    " chmod ",
+    " chown ",
+    " tee ",
+    " sed -i",
+    " >",
+    " >>",
+    " git commit",
+    " git push",
+    " cargo build",
+    " cargo run",
+    " npm install",
+    " apt ",
+    " apt-get ",
+    " yum ",
+    " dnf ",
+];
 
 #[derive(Debug, Clone)]
 struct SudoPasswordEntry {
@@ -178,6 +202,41 @@ impl ShellTool {
                     "command not in allowed list: '{program}'"
                 )));
             }
+        }
+
+        Ok(())
+    }
+
+    fn enforce_agent_permission(
+        &self,
+        command: &str,
+        context: &ToolExecutionContext,
+    ) -> Result<()> {
+        if context.agent_permission_mode == crate::config::schema::AgentPermissionMode::ReadWrite {
+            return Ok(());
+        }
+
+        let normalized = format!(" {} ", command.to_ascii_lowercase());
+        let configured_patterns = if self.config.read_only_blocked_patterns.is_empty() {
+            READ_ONLY_BLOCKED_TOKENS
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+        } else {
+            self.config
+                .read_only_blocked_patterns
+                .iter()
+                .map(|value| value.to_ascii_lowercase())
+                .collect::<Vec<_>>()
+        };
+        if configured_patterns
+            .iter()
+            .any(|pattern| normalized.contains(pattern))
+        {
+            return Err(Error::Tool(format!(
+                "shell command is not allowed in read_only agent mode: {}",
+                command
+            )));
         }
 
         Ok(())
@@ -476,6 +535,7 @@ impl super::Tool for ShellTool {
         let sudo_password = args.get("_sudo_password").and_then(|value| value.as_str());
 
         self.validate_command(command)?;
+        self.enforce_agent_permission(command, context)?;
 
         let display_args = Self::args_with_redacted_secrets(&args);
 

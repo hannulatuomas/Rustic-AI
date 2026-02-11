@@ -213,6 +213,26 @@ impl SshTool {
         base_dir.join(format!("{safe}.sock"))
     }
 
+    fn enforce_agent_permission(
+        &self,
+        operation: &str,
+        context: &ToolExecutionContext,
+    ) -> Result<()> {
+        if context.agent_permission_mode == crate::config::schema::AgentPermissionMode::ReadWrite {
+            return Ok(());
+        }
+
+        let allowed = matches!(operation, "exec" | "list_sessions" | "scp_download");
+        if allowed {
+            return Ok(());
+        }
+
+        Err(Error::Tool(format!(
+            "ssh operation '{}' is not allowed in read_only agent mode",
+            operation
+        )))
+    }
+
     async fn run_ssh_streaming(
         &self,
         mut cmd: Command,
@@ -746,6 +766,7 @@ impl Tool for SshTool {
         context: &ToolExecutionContext,
     ) -> Result<ToolResult> {
         let operation = self.required_string(&args, "operation")?.to_owned();
+        self.enforce_agent_permission(&operation, context)?;
 
         let _ = tx.try_send(Event::ToolStarted {
             tool: self.config.name.clone(),

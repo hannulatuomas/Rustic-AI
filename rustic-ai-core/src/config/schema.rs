@@ -294,6 +294,12 @@ pub struct PermissionConfig {
     /// Time-to-live for sudo password cache in RAM (default: 300 = 5 minutes)
     /// Never persisted to disk/session history/logs; only in-memory for security
     pub sudo_cache_ttl_secs: u64,
+    /// Maximum number of cached allow/deny permission decisions in memory.
+    /// Prevents unbounded cache growth in long-running sessions.
+    pub permission_cache_max_entries: usize,
+    /// Patterns considered write-like for shell commands in read-only agent mode.
+    /// Operators can tune this list for stricter or looser behavior.
+    pub read_only_shell_write_patterns: Vec<String>,
 }
 
 impl Default for PermissionConfig {
@@ -308,6 +314,25 @@ impl Default for PermissionConfig {
             project_command_patterns: CommandPatternConfig::default(),
             pending_tool_timeout_secs: 300,
             sudo_cache_ttl_secs: 300,
+            permission_cache_max_entries: 4_096,
+            read_only_shell_write_patterns: vec![
+                " rm ".to_owned(),
+                " mv ".to_owned(),
+                " cp ".to_owned(),
+                " mkdir ".to_owned(),
+                " rmdir ".to_owned(),
+                " touch ".to_owned(),
+                " chmod ".to_owned(),
+                " chown ".to_owned(),
+                " tee ".to_owned(),
+                " sed -i".to_owned(),
+                " >".to_owned(),
+                " >>".to_owned(),
+                " git commit".to_owned(),
+                " git push".to_owned(),
+                " apt ".to_owned(),
+                " apt-get ".to_owned(),
+            ],
         }
     }
 }
@@ -507,6 +532,19 @@ pub struct AgentConfig {
     pub max_tools_per_round: Option<usize>,
     pub max_total_tool_calls_per_turn: Option<usize>,
     pub max_turn_duration_seconds: Option<u64>,
+    pub permission_mode: AgentPermissionMode,
+    pub allow_sub_agent_calls: bool,
+    pub max_sub_agent_depth: Option<usize>,
+    pub sub_agent_context_window_size: Option<usize>,
+    pub sub_agent_max_context_tokens: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentPermissionMode {
+    ReadOnly,
+    #[default]
+    ReadWrite,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -528,6 +566,9 @@ pub struct ToolConfig {
     /// Command patterns that always require sudo privilege (optional, default empty)
     /// Shell commands matching these patterns will always trigger sudo prompt
     pub privileged_command_patterns: Vec<String>,
+    /// Shell-only: command patterns blocked in read-only agent mode.
+    /// Empty uses defaults from code; set explicitly to tune behavior.
+    pub read_only_blocked_patterns: Vec<String>,
 }
 
 impl Default for ToolConfig {
@@ -545,6 +586,22 @@ impl Default for ToolConfig {
             stream_output: true,
             require_sudo: false,
             privileged_command_patterns: Vec::new(),
+            read_only_blocked_patterns: vec![
+                " rm ".to_owned(),
+                " mv ".to_owned(),
+                " cp ".to_owned(),
+                " mkdir ".to_owned(),
+                " rmdir ".to_owned(),
+                " touch ".to_owned(),
+                " chmod ".to_owned(),
+                " chown ".to_owned(),
+                " tee ".to_owned(),
+                " sed -i".to_owned(),
+                " >".to_owned(),
+                " >>".to_owned(),
+                " git commit".to_owned(),
+                " git push".to_owned(),
+            ],
         }
     }
 }

@@ -356,6 +356,49 @@ fn run() -> rustic_ai_core::Result<()> {
                         println!("Topics: {}", topics.join(", "));
                         return Ok(());
                     }
+                    cli::Command::Agents => {
+                        let names = app.runtime().agents.list_agents();
+                        if names.is_empty() {
+                            println!("No agents configured.");
+                            return Ok(());
+                        }
+
+                        println!("Configured agents:");
+                        for name in names {
+                            if let Some(config) = app.runtime().agents.get_agent_config(&name) {
+                                println!(
+                                    "- {} (provider={}, permission_mode={:?}, allow_sub_agent_calls={}, max_sub_agent_depth={}, sub_agent_context_window_size={}, sub_agent_max_context_tokens={})",
+                                    config.name,
+                                    config.provider,
+                                    config.permission_mode,
+                                    config.allow_sub_agent_calls,
+                                    config
+                                        .max_sub_agent_depth
+                                        .map(|v| v.to_string())
+                                        .unwrap_or_else(|| "<default>".to_owned()),
+                                    config
+                                        .sub_agent_context_window_size
+                                        .map(|v| v.to_string())
+                                        .unwrap_or_else(|| "<default>".to_owned()),
+                                    config
+                                        .sub_agent_max_context_tokens
+                                        .map(|v| v.to_string())
+                                        .unwrap_or_else(|| "<default>".to_owned())
+                                );
+                                if config.tools.is_empty() {
+                                    println!("  tools: <none>");
+                                } else {
+                                    println!("  tools: {}", config.tools.join(", "));
+                                }
+                                if config.skills.is_empty() {
+                                    println!("  skills: <none>");
+                                } else {
+                                    println!("  skills: {}", config.skills.join(", "));
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
                     cli::Command::Session { command } => {
                         handle_session_command(&app, command)?;
                         return Ok(());

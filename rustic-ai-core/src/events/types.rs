@@ -66,6 +66,18 @@ pub enum Event {
         command: String,
         reason: String,
     },
+    SubAgentCallStarted {
+        session_id: String,
+        caller_agent: String,
+        target_agent: String,
+        max_context_messages: usize,
+    },
+    SubAgentCallCompleted {
+        session_id: String,
+        caller_agent: String,
+        target_agent: String,
+        success: bool,
+    },
     SessionUpdated(String),
     Error(String),
 }

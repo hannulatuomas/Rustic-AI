@@ -1,5 +1,5 @@
 use crate::config::schema::{
-    McpConfig, PermissionConfig, PluginConfig, ToolConfig, WorkflowsConfig,
+    AgentPermissionMode, McpConfig, PermissionConfig, PluginConfig, ToolConfig, WorkflowsConfig,
 };
 use crate::error::{Error, Result};
 use crate::events::Event;
@@ -10,7 +10,7 @@ use crate::skills::SkillRegistry;
 use crate::tools::plugin::PluginLoader;
 use crate::tools::{
     filesystem::FilesystemTool, http::HttpTool, mcp::McpToolAdapter, shell::ShellTool,
-    skill::SkillTool, ssh::SshTool, Tool, ToolExecutionContext,
+    skill::SkillTool, ssh::SshTool, sub_agent::SubAgentTool, Tool, ToolExecutionContext,
 };
 use crate::workflows::{
     WorkflowExecutor, WorkflowExecutorConfig, WorkflowRegistry, WorkflowRunRequest,
@@ -148,6 +148,7 @@ impl ToolManager {
 
         let mut tools = HashMap::new();
         let mut configs = HashMap::new();
+        let agents = Arc::new(StdRwLock::new(None));
 
         for config in tool_configs {
             if !config.enabled {
@@ -174,6 +175,7 @@ impl ToolManager {
                     }
                     Arc::new(McpToolAdapter::new(config.clone(), mcp_config.clone()))
                 }
+                "sub_agent" => Arc::new(SubAgentTool::new(config.clone(), agents.clone())),
                 _ => {
                     // For now, skip unknown tools
                     continue;
@@ -211,9 +213,57 @@ impl ToolManager {
             workflows,
             workflows_config,
             skills,
-            agents: Arc::new(StdRwLock::new(None)),
+            agents,
             session_manager,
         }
+    }
+
+    fn build_execution_context(
+        &self,
+        session_id: &str,
+        agent_name: Option<&str>,
+    ) -> ToolExecutionContext {
+        let mut context = self.execution_context.clone();
+        context.session_id = uuid::Uuid::parse_str(session_id).ok();
+        context.agent_name = agent_name.map(ToOwned::to_owned);
+        context.sub_agent_depth = 0;
+
+        if let Some(agent_name) = agent_name {
+            if let Ok(guard) = self.agents.read() {
+                if let Some(coordinator) = guard.as_ref() {
+                    if let Some(config) = coordinator.get_agent_config(agent_name) {
+                        context.agent_permission_mode = config.permission_mode;
+                    }
+                }
+            }
+        }
+
+        context
+    }
+
+    fn build_permission_context(
+        &self,
+        session_id: String,
+        agent_name: Option<String>,
+    ) -> PermissionContext {
+        let mut context = PermissionContext {
+            session_id,
+            agent_name,
+            working_directory: self.execution_context.working_directory.clone(),
+            agent_permission_mode: AgentPermissionMode::ReadWrite,
+        };
+
+        if let Some(ref agent_name) = context.agent_name {
+            if let Ok(guard) = self.agents.read() {
+                if let Some(coordinator) = guard.as_ref() {
+                    if let Some(config) = coordinator.get_agent_config(agent_name) {
+                        context.agent_permission_mode = config.permission_mode;
+                    }
+                }
+            }
+        }
+
+        context
     }
 
     pub fn attach_agents(&self, agents: Arc<AgentCoordinator>) {
@@ -222,6 +272,18 @@ impl ToolManager {
             .write()
             .expect("tool manager agents lock poisoned");
         *guard = Some(agents);
+
+        let sub_agent_config = {
+            let configs = self.tool_configs.blocking_read();
+            configs.get("sub_agent").cloned()
+        };
+        if let Some(config) = sub_agent_config {
+            let mut tools = self.tools.blocking_write();
+            tools.insert(
+                "sub_agent".to_owned(),
+                Arc::new(SubAgentTool::new(config, self.agents.clone())),
+            );
+        }
     }
 
     async fn execute_workflow_call(
@@ -335,11 +397,7 @@ impl ToolManager {
             return Err(Error::Tool(format!("tool '{tool_name}' not found")));
         }
 
-        let permission_context = PermissionContext {
-            session_id: session_id.clone(),
-            agent_name,
-            working_directory: self.execution_context.working_directory.clone(),
-        };
+        let permission_context = self.build_permission_context(session_id.clone(), agent_name);
 
         // Check permission
         let permission = {
@@ -348,7 +406,9 @@ impl ToolManager {
         };
 
         match permission {
-            PermissionDecision::Allow => {
+            PermissionDecision::Allow
+            | PermissionDecision::AllowRead
+            | PermissionDecision::AllowWrite => {
                 if tool_name == "workflow" {
                     return self
                         .execute_workflow_call(
@@ -402,8 +462,10 @@ impl ToolManager {
                 } else {
                     args.clone()
                 };
+                let execution_context = self
+                    .build_execution_context(&session_id, permission_context.agent_name.as_deref());
                 let result = tool
-                    .stream_execute(tool_args, event_tx, &self.execution_context)
+                    .stream_execute(tool_args, event_tx, &execution_context)
                     .await?;
                 Ok(Some(result))
             }
@@ -438,11 +500,7 @@ impl ToolManager {
         decision: AskResolution,
         event_tx: mpsc::Sender<Event>,
     ) -> Result<Option<crate::tools::ToolResult>> {
-        let permission_context = PermissionContext {
-            session_id: session_id.clone(),
-            agent_name,
-            working_directory: self.execution_context.working_directory.clone(),
-        };
+        let permission_context = self.build_permission_context(session_id.clone(), agent_name);
 
         // Record decision in policy
         {
@@ -511,8 +569,10 @@ impl ToolManager {
             args
         };
 
+        let execution_context =
+            self.build_execution_context(&session_id, permission_context.agent_name.as_deref());
         let result = tool
-            .stream_execute(tool_args, event_tx, &self.execution_context)
+            .stream_execute(tool_args, event_tx, &execution_context)
             .await?;
         Ok(Some(result))
     }
@@ -538,8 +598,9 @@ impl ToolManager {
         let tool = tool.ok_or_else(|| Error::Tool(format!("tool '{tool_name}' not found")))?;
 
         let tool_args = Self::shell_args_with_secret(&args, &session_id, &password);
+        let execution_context = self.build_execution_context(&session_id, None);
         let result = tool
-            .stream_execute(tool_args, event_tx, &self.execution_context)
+            .stream_execute(tool_args, event_tx, &execution_context)
             .await?;
         Ok(Some(result))
     }

@@ -17,6 +17,7 @@ pub struct Cli {
 pub enum Command {
     Discover,
     Topics,
+    Agents,
     ValidateConfig {
         #[arg(long, default_value = "docs/config.schema.json")]
         schema: String,

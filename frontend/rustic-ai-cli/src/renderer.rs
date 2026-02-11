@@ -118,6 +118,25 @@ impl Renderer {
                 println!("[sudo] {reason}: {command}");
                 println!("[sudo] Waiting for secure password input.");
             }
+            Event::SubAgentCallStarted {
+                caller_agent,
+                target_agent,
+                max_context_messages,
+                ..
+            } => {
+                println!(
+                    "[sub-agent] {caller_agent} -> {target_agent} (context messages: {max_context_messages})"
+                );
+            }
+            Event::SubAgentCallCompleted {
+                caller_agent,
+                target_agent,
+                success,
+                ..
+            } => {
+                let status = if *success { "OK" } else { "FAILED" };
+                println!("[sub-agent] {caller_agent} <- {target_agent} {status}");
+            }
             Event::SessionUpdated(_) => {
                 // Silent for now, useful for debugging
             }
@@ -246,6 +265,30 @@ impl Renderer {
                 "args": args,
                 "command": command,
                 "reason": reason
+            }),
+            Event::SubAgentCallStarted {
+                session_id,
+                caller_agent,
+                target_agent,
+                max_context_messages,
+            } => serde_json::json!({
+                "type": "sub_agent_call_started",
+                "session_id": session_id,
+                "caller_agent": caller_agent,
+                "target_agent": target_agent,
+                "max_context_messages": max_context_messages,
+            }),
+            Event::SubAgentCallCompleted {
+                session_id,
+                caller_agent,
+                target_agent,
+                success,
+            } => serde_json::json!({
+                "type": "sub_agent_call_completed",
+                "session_id": session_id,
+                "caller_agent": caller_agent,
+                "target_agent": target_agent,
+                "success": success,
             }),
             Event::SessionUpdated(id) => serde_json::json!({
                 "type": "session_updated",

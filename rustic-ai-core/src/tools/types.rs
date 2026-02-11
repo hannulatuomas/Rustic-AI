@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use std::path::PathBuf;
+use uuid::Uuid;
 
+use crate::config::schema::AgentPermissionMode;
 use crate::error::Result;
 use tokio::sync::mpsc;
 
@@ -14,6 +16,10 @@ pub struct ToolResult {
 #[derive(Debug, Clone)]
 pub struct ToolExecutionContext {
     pub working_directory: PathBuf,
+    pub session_id: Option<Uuid>,
+    pub agent_name: Option<String>,
+    pub agent_permission_mode: AgentPermissionMode,
+    pub sub_agent_depth: usize,
 }
 
 #[async_trait]

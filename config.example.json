@@ -125,7 +125,26 @@
       "allow": [],
       "ask": [],
       "deny": []
-    }
+    },
+    "pending_tool_timeout_secs": 300,
+    "sudo_cache_ttl_secs": 300,
+    "permission_cache_max_entries": 4096,
+    "read_only_shell_write_patterns": [
+      " rm ",
+      " mv ",
+      " cp ",
+      " mkdir ",
+      " rmdir ",
+      " touch ",
+      " chmod ",
+      " chown ",
+      " tee ",
+      " sed -i",
+      " >",
+      " >>",
+      " git commit",
+      " git push"
+    ]
   },
   "providers": [
     {
@@ -279,7 +298,7 @@
     {
       "name": "default",
       "provider": "openai-main",
-      "tools": ["shell", "filesystem", "http", "ssh", "skill", "workflow"],
+      "tools": ["shell", "filesystem", "http", "ssh", "skill", "workflow", "sub_agent"],
       "skills": [],
       "system_prompt_template": "You are a helpful AI assistant with access to shell commands.",
       "temperature": 0.7,
@@ -288,7 +307,12 @@
       "max_tool_rounds": 4,
       "max_tools_per_round": 8,
       "max_total_tool_calls_per_turn": 24,
-      "max_turn_duration_seconds": 300
+      "max_turn_duration_seconds": 300,
+      "permission_mode": "read_write",
+      "allow_sub_agent_calls": true,
+      "max_sub_agent_depth": 4,
+      "sub_agent_context_window_size": 24,
+      "sub_agent_max_context_tokens": 4000
     }
   ],
   "tools": [
@@ -302,7 +326,25 @@
       "working_dir": "project_root",
       "custom_working_dir": null,
       "env_passthrough": true,
-      "stream_output": true
+      "stream_output": true,
+      "require_sudo": false,
+      "privileged_command_patterns": [],
+      "read_only_blocked_patterns": [
+        " rm ",
+        " mv ",
+        " cp ",
+        " mkdir ",
+        " rmdir ",
+        " touch ",
+        " chmod ",
+        " chown ",
+        " tee ",
+        " sed -i",
+        " >",
+        " >>",
+        " git commit",
+        " git push"
+      ]
     },
     {
       "name": "filesystem",
@@ -314,7 +356,10 @@
       "working_dir": "project_root",
       "custom_working_dir": null,
       "env_passthrough": false,
-      "stream_output": true
+      "stream_output": true,
+      "require_sudo": false,
+      "privileged_command_patterns": [],
+      "read_only_blocked_patterns": []
     },
     {
       "name": "http",
@@ -326,7 +371,10 @@
       "working_dir": "project_root",
       "custom_working_dir": null,
       "env_passthrough": false,
-      "stream_output": true
+      "stream_output": true,
+      "require_sudo": false,
+      "privileged_command_patterns": [],
+      "read_only_blocked_patterns": []
     },
     {
       "name": "ssh",
@@ -338,7 +386,10 @@
       "working_dir": "project_root",
       "custom_working_dir": null,
       "env_passthrough": false,
-      "stream_output": true
+      "stream_output": true,
+      "require_sudo": false,
+      "privileged_command_patterns": [],
+      "read_only_blocked_patterns": []
     },
     {
       "name": "mcp",
@@ -350,7 +401,10 @@
       "working_dir": "project_root",
       "custom_working_dir": null,
       "env_passthrough": false,
-      "stream_output": true
+      "stream_output": true,
+      "require_sudo": false,
+      "privileged_command_patterns": [],
+      "read_only_blocked_patterns": []
     },
     {
       "name": "skill",
@@ -362,7 +416,10 @@
       "working_dir": "project_root",
       "custom_working_dir": null,
       "env_passthrough": false,
-      "stream_output": true
+      "stream_output": true,
+      "require_sudo": false,
+      "privileged_command_patterns": [],
+      "read_only_blocked_patterns": []
     },
     {
       "name": "workflow",
@@ -374,7 +431,25 @@
       "working_dir": "project_root",
       "custom_working_dir": null,
       "env_passthrough": false,
-      "stream_output": true
+      "stream_output": true,
+      "require_sudo": false,
+      "privileged_command_patterns": [],
+      "read_only_blocked_patterns": []
+    },
+    {
+      "name": "sub_agent",
+      "enabled": true,
+      "permission_mode": "ask",
+      "timeout_seconds": 120,
+      "allowed_commands": [],
+      "denied_commands": [],
+      "working_dir": "project_root",
+      "custom_working_dir": null,
+      "env_passthrough": false,
+      "stream_output": true,
+      "require_sudo": false,
+      "privileged_command_patterns": [],
+      "read_only_blocked_patterns": []
     }
   ],
   "taxonomy": {

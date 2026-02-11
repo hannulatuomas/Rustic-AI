@@ -6,3 +6,4 @@ pub mod state;
 
 pub use behavior::Agent;
 pub use coordinator::AgentCoordinator;
+pub use registry::{AgentRegistry, AgentSuggestion};

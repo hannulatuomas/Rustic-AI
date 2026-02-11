@@ -1,9 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::config::schema::AgentPermissionMode;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionDecision {
     Allow,
+    AllowRead,
+    AllowWrite,
     Deny,
     Ask,
 }
@@ -29,6 +33,7 @@ pub struct PermissionContext {
     pub session_id: String,
     pub agent_name: Option<String>,
     pub working_directory: PathBuf,
+    pub agent_permission_mode: AgentPermissionMode,
 }
 
 pub trait PermissionPolicy: Send + Sync {

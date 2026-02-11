@@ -34,21 +34,21 @@ Last updated: 2026-02-11
 
 2. **Gap 1: Agent Permission Model (Read-Only vs Read-Write)** (4-5 days)
     - [x] Extend PermissionPolicy with AgentPermissionMode
-    - [ ] Add PermissionAction::AllowRead/AllowWrite variants
+    - [x] Add PermissionAction::AllowRead/AllowWrite variants
     - [x] Add agent-level permission_mode config field
     - [x] Enforce read-only in Filesystem tool (read operations only)
     - [x] Enforce read-only in Shell tool (no write commands)
     - [x] Enforce read-only in SSH tool (read-only mode)
     - [x] Update ToolManager to pass permission mode to context
-    - [ ] Update CLI to show agent permission modes
+    - [x] Update CLI to show agent permission modes
 
 3. **Gap 6: Agent-to-Agent Calling Protocol** (5 days)
     - [x] Create SubAgentTool with filtered context support
     - [x] Implement filtered context building (OpenCode-style)
-    - [ ] Implement workspace context summarization
+    - [x] Implement workspace context summarization
     - [x] Add sub-agent execution in AgentCoordinator
-    - [ ] Add ContextFilter types (last_messages, include_keys, include_workspace)
-    - [ ] Add max_context_tokens control
+    - [x] Add ContextFilter types (last_messages, include_roles, include_keywords, include_workspace)
+    - [x] Add max_context_tokens control
     - [x] Register sub_agent tool in ToolManager
     - [x] Add allow_sub_agent_calls config to AgentConfig
     - [x] Update CLI to render sub-agent call events

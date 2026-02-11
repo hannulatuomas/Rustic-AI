@@ -7,6 +7,7 @@ pub mod registry;
 pub mod shell;
 pub mod skill;
 pub mod ssh;
+pub mod sub_agent;
 pub mod types;
 
 pub use manager::{ToolManager, ToolManagerInit};
