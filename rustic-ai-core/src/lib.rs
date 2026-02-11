@@ -6,16 +6,19 @@ pub mod config;
 pub mod conversation;
 pub mod error;
 pub mod events;
+pub mod indexing;
 pub mod learning;
 pub mod logging;
 pub mod permissions;
 pub mod project;
 pub mod providers;
+pub mod rag;
 pub mod rules;
 pub mod runtime;
 pub mod skills;
 pub mod storage;
 pub mod tools;
+pub mod vector;
 pub mod workflows;
 
 pub use agents::Agent;
@@ -25,13 +28,16 @@ pub use config::Config;
 pub use conversation::session_manager::SessionManager;
 pub use error::{Error, Result};
 pub use events::EventBus;
+pub use indexing::CodeIndexer;
 pub use learning::types::{
     FeedbackContext, FeedbackType, MistakeType, PatternCategory, PreferenceValue,
 };
 pub use learning::LearningManager;
 pub use providers::create_provider_registry;
+pub use rag::HybridRetriever;
 pub use storage::create_storage_backend;
 pub use tools::ToolManager;
+pub use vector::{DeterministicHashEmbedding, Embedding, SearchQuery, SearchResult, VectorDb};
 
 pub struct RusticAI {
     config: Config,
@@ -90,8 +96,14 @@ impl RusticAI {
                 project_profile,
             ));
         let learning = std::sync::Arc::new(learning::LearningManager::new(
-            storage_backend,
+            storage_backend.clone(),
             config.features.learning_enabled,
+        ));
+        let retriever = std::sync::Arc::new(rag::HybridRetriever::new(
+            storage_backend,
+            work_dir.to_string_lossy().to_string(),
+            config.features.clone(),
+            config.retrieval.clone(),
         ));
 
         // Cleanup stale pending tool states on startup using a dedicated runtime
@@ -104,8 +116,12 @@ impl RusticAI {
             }
         });
 
-        let runtime =
-            runtime::Runtime::new(config.clone(), session_manager.clone(), learning.clone())?;
+        let runtime = runtime::Runtime::new(
+            config.clone(),
+            session_manager.clone(),
+            learning.clone(),
+            retriever,
+        )?;
         let inference_provider = config.summarization.provider_name.clone().ok_or_else(|| {
             Error::Config(
                 "summarization.provider_name must be set (no implicit provider fallback)"
@@ -153,5 +169,53 @@ impl RusticAI {
 
     pub fn work_dir(&self) -> &std::path::Path {
         &self.work_dir
+    }
+
+    pub fn code_indexer(&self) -> indexing::CodeIndexer {
+        indexing::CodeIndexer::new(
+            self.session_manager.storage(),
+            self.work_dir.clone(),
+            self.config.features.indexing_enabled,
+            self.config.features.vector_enabled,
+            self.config.retrieval.clone(),
+        )
+    }
+
+    pub async fn build_code_index(&self) -> Result<indexing::CodeIndex> {
+        self.code_indexer().build_index().await
+    }
+
+    pub async fn search_code_symbols(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<indexing::SymbolIndex>> {
+        self.code_indexer().search_symbols(query, limit).await
+    }
+
+    pub async fn load_code_index_snapshot(&self) -> Result<indexing::CodeIndex> {
+        self.code_indexer().load_index_snapshot().await
+    }
+
+    pub async fn retrieve_code_context(
+        &self,
+        query: &str,
+        top_k: usize,
+        min_score: Option<f32>,
+        filters: Option<serde_json::Value>,
+    ) -> Result<rag::RetrievalResponse> {
+        let retriever = rag::HybridRetriever::new(
+            self.session_manager.storage(),
+            self.work_dir.to_string_lossy().to_string(),
+            self.config.features.clone(),
+            self.config.retrieval.clone(),
+        );
+        let request = rag::RetrievalRequest {
+            query: query.to_owned(),
+            top_k,
+            min_score: min_score.unwrap_or(self.config.retrieval.min_vector_score),
+            filters,
+        };
+        retriever.retrieve_for_request(&request).await
     }
 }

@@ -8,6 +8,7 @@ use crate::learning::LearningManager;
 use crate::permissions::{ConfigurablePermissionPolicy, PermissionPolicy};
 use crate::providers::create_provider_registry;
 use crate::providers::registry::ProviderRegistry;
+use crate::rag::HybridRetriever;
 use crate::skills::{SkillLoader, SkillRegistry};
 use crate::tools::{ToolExecutionContext, ToolManager, ToolManagerInit};
 use crate::workflows::{WorkflowLoader, WorkflowRegistry};
@@ -30,6 +31,7 @@ impl Runtime {
         config: crate::config::Config,
         session_manager: Arc<SessionManager>,
         learning: Arc<LearningManager>,
+        retriever: Arc<HybridRetriever>,
     ) -> Result<Self> {
         let work_dir = std::env::current_dir()
             .map_err(|err| crate::Error::Config(format!("failed to resolve current dir: {err}")))?;
@@ -110,6 +112,7 @@ impl Runtime {
             tools.clone(),
             session_manager.clone(),
             learning,
+            retriever,
         )?;
         tools.attach_agents(Arc::new(agents.clone()));
 

@@ -6,6 +6,7 @@
   "required": [
     "mode",
     "features",
+    "retrieval",
     "mcp",
     "plugins",
     "skills",
@@ -30,7 +31,11 @@
         "skills_enabled",
         "plugins_enabled",
         "workflows_enabled",
-        "triggers_enabled"
+        "triggers_enabled",
+        "learning_enabled",
+        "indexing_enabled",
+        "vector_enabled",
+        "rag_enabled"
       ],
       "properties": {
         "mcp_enabled": { "type": "boolean" },
@@ -38,7 +43,58 @@
         "plugins_enabled": { "type": "boolean" },
         "workflows_enabled": { "type": "boolean" },
         "triggers_enabled": { "type": "boolean" },
-        "learning_enabled": { "type": "boolean" }
+        "learning_enabled": { "type": "boolean" },
+        "indexing_enabled": { "type": "boolean" },
+        "vector_enabled": { "type": "boolean" },
+        "rag_enabled": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "retrieval": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "keyword_top_k",
+        "vector_top_k",
+        "max_snippets",
+        "max_snippet_chars",
+        "vector_dimension",
+        "min_vector_score",
+        "inject_as_system_message",
+        "context_expansion_lines",
+        "ranking_recency_weight",
+        "ranking_importance_weight",
+        "rag_prompt_token_budget",
+        "embedding_backend",
+        "embedding_model",
+        "embedding_base_url",
+        "embedding_api_key_env"
+      ],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "keyword_top_k": { "type": "integer", "minimum": 0 },
+        "vector_top_k": { "type": "integer", "minimum": 0 },
+        "max_snippets": { "type": "integer", "minimum": 0 },
+        "max_snippet_chars": { "type": "integer", "minimum": 1 },
+        "vector_dimension": { "type": "integer", "minimum": 8 },
+        "min_vector_score": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "inject_as_system_message": { "type": "boolean" },
+        "context_expansion_lines": { "type": "integer", "minimum": 0 },
+        "ranking_recency_weight": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "ranking_importance_weight": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "rag_prompt_token_budget": { "type": "integer", "minimum": 64 },
+        "embedding_backend": {
+          "type": "string",
+          "enum": [
+            "deterministic_hash",
+            "open_ai",
+            "open_ai_compatible",
+            "sentence_transformers"
+          ]
+        },
+        "embedding_model": { "type": ["string", "null"] },
+        "embedding_base_url": { "type": ["string", "null"] },
+        "embedding_api_key_env": { "type": ["string", "null"] }
       },
       "additionalProperties": false
     },
@@ -221,13 +277,21 @@
             "busy_timeout_ms",
             "journal_mode",
             "synchronous",
-            "foreign_keys"
+            "foreign_keys",
+            "vector_extension_enabled",
+            "vector_extension_path",
+            "vector_extension_entrypoint",
+            "vector_extension_strict"
           ],
           "properties": {
             "busy_timeout_ms": { "type": "integer", "minimum": 1 },
             "journal_mode": { "type": "string", "minLength": 1 },
             "synchronous": { "type": "string", "minLength": 1 },
-            "foreign_keys": { "type": "boolean" }
+            "foreign_keys": { "type": "boolean" },
+            "vector_extension_enabled": { "type": "boolean" },
+            "vector_extension_path": { "type": ["string", "null"] },
+            "vector_extension_entrypoint": { "type": ["string", "null"] },
+            "vector_extension_strict": { "type": "boolean" }
           },
           "additionalProperties": false
         },

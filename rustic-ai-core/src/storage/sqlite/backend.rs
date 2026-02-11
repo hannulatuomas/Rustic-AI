@@ -7,12 +7,17 @@ use uuid::Uuid;
 
 use crate::config::schema::SqliteStorageConfig;
 use crate::error::{Error, Result};
+use crate::indexing::{
+    CallEdge, IndexedCallEdgeRecord, IndexedFileRecord, IndexedSymbolRecord, SymbolIndex,
+    SymbolType,
+};
 use crate::learning::{
     FeedbackType, MistakePattern, MistakeType, PatternCategory, PreferenceValue, SuccessPattern,
     UserFeedback, UserPreference,
 };
 use crate::storage::model::{Message, PendingToolState, Session, SessionConfig};
 use crate::storage::StorageBackend;
+use crate::vector::StoredVector;
 
 const SCHEMA_V1: [&str; 12] = [
     "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL PRIMARY KEY)",
@@ -45,6 +50,24 @@ const SCHEMA_V3_MIGRATION: [&str; 10] = [
     "CREATE INDEX IF NOT EXISTS idx_success_patterns_agent_last_used ON success_patterns(agent_name, last_used DESC)",
     "CREATE INDEX IF NOT EXISTS idx_success_patterns_agent_category ON success_patterns(agent_name, category)",
     "UPDATE schema_version SET version = 3",
+];
+
+const SCHEMA_V4_MIGRATION: [&str; 9] = [
+    "CREATE TABLE IF NOT EXISTS code_index_metadata (workspace TEXT PRIMARY KEY, updated_at TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS code_file_indexes (workspace TEXT NOT NULL, path TEXT NOT NULL, language TEXT NOT NULL, functions_json TEXT NOT NULL, classes_json TEXT NOT NULL, imports_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(workspace, path))",
+    "CREATE INDEX IF NOT EXISTS idx_code_file_indexes_workspace ON code_file_indexes(workspace)",
+    "CREATE TABLE IF NOT EXISTS code_symbol_indexes (workspace TEXT NOT NULL, file_path TEXT NOT NULL, name TEXT NOT NULL, symbol_type TEXT NOT NULL, line INTEGER NOT NULL, column_number INTEGER NOT NULL, docstring TEXT, signature TEXT, updated_at TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_code_symbol_indexes_workspace_name ON code_symbol_indexes(workspace, name)",
+    "CREATE INDEX IF NOT EXISTS idx_code_symbol_indexes_workspace_file ON code_symbol_indexes(workspace, file_path)",
+    "CREATE TABLE IF NOT EXISTS code_call_edges (workspace TEXT NOT NULL, file_path TEXT NOT NULL, caller_symbol TEXT NOT NULL, callee_symbol TEXT NOT NULL, line INTEGER NOT NULL, column_number INTEGER NOT NULL, updated_at TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_code_call_edges_workspace_file ON code_call_edges(workspace, file_path)",
+    "UPDATE schema_version SET version = 4",
+];
+
+const SCHEMA_V5_MIGRATION: [&str; 3] = [
+    "CREATE TABLE IF NOT EXISTS vector_embeddings (workspace TEXT NOT NULL, id TEXT NOT NULL, vector_json TEXT NOT NULL, metadata_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(workspace, id))",
+    "CREATE INDEX IF NOT EXISTS idx_vector_embeddings_workspace ON vector_embeddings(workspace)",
+    "UPDATE schema_version SET version = 5",
 ];
 
 #[derive(Debug, Clone)]
@@ -103,6 +126,18 @@ impl SqliteStorage {
                     }
                 }
 
+                if current_version < 4 {
+                    for statement in SCHEMA_V4_MIGRATION {
+                        sqlx::query(statement).execute(&self.pool).await?;
+                    }
+                }
+
+                if current_version < 5 {
+                    for statement in SCHEMA_V5_MIGRATION {
+                        sqlx::query(statement).execute(&self.pool).await?;
+                    }
+                }
+
                 Ok::<(), sqlx::Error>(())
             })
             .await
@@ -135,7 +170,57 @@ impl SqliteStorage {
         .execute(&self.pool)
         .await?;
 
+        self.maybe_load_vector_extension().await?;
+
         Ok(())
+    }
+
+    async fn maybe_load_vector_extension(&self) -> std::result::Result<(), sqlx::Error> {
+        if !self.options.vector_extension_enabled {
+            return Ok(());
+        }
+
+        let extension_path = self
+            .options
+            .vector_extension_path
+            .as_deref()
+            .unwrap_or_default()
+            .trim();
+        if extension_path.is_empty() {
+            if self.options.vector_extension_strict {
+                return Err(sqlx::Error::Protocol(
+                    "vector extension enabled but vector_extension_path is empty".to_owned(),
+                ));
+            }
+            return Ok(());
+        }
+
+        let load_result = if let Some(entrypoint) = self
+            .options
+            .vector_extension_entrypoint
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            sqlx::query("SELECT load_extension(?, ?)")
+                .bind(extension_path)
+                .bind(entrypoint)
+                .execute(&self.pool)
+                .await
+        } else {
+            sqlx::query("SELECT load_extension(?)")
+                .bind(extension_path)
+                .execute(&self.pool)
+                .await
+        };
+
+        match load_result {
+            Ok(_) => Ok(()),
+            Err(err) if self.options.vector_extension_strict => Err(sqlx::Error::Protocol(
+                format!("failed to load sqlite vector extension '{extension_path}': {err}"),
+            )),
+            Err(_) => Ok(()),
+        }
     }
 
     fn parse_timestamp(value: &str) -> Result<DateTime<Utc>> {
@@ -841,5 +926,266 @@ impl StorageBackend for SqliteStorage {
         }
 
         Ok(patterns)
+    }
+
+    async fn upsert_code_index_metadata(
+        &self,
+        workspace: &str,
+        updated_at: DateTime<Utc>,
+    ) -> Result<()> {
+        self.ensure_initialized().await?;
+        sqlx::query(
+            "INSERT INTO code_index_metadata(workspace, updated_at) VALUES(?, ?) ON CONFLICT(workspace) DO UPDATE SET updated_at = excluded.updated_at",
+        )
+        .bind(workspace)
+        .bind(updated_at.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_code_index_metadata(&self, workspace: &str) -> Result<Option<DateTime<Utc>>> {
+        self.ensure_initialized().await?;
+        let row = sqlx::query("SELECT updated_at FROM code_index_metadata WHERE workspace = ?")
+            .bind(workspace)
+            .fetch_optional(&self.pool)
+            .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let updated_at = row.get::<String, _>("updated_at");
+        Ok(Some(Self::parse_timestamp(&updated_at)?))
+    }
+
+    async fn upsert_code_file_index(
+        &self,
+        workspace: &str,
+        path: &str,
+        language: &str,
+        functions: &[String],
+        classes: &[String],
+        imports: &[String],
+    ) -> Result<()> {
+        self.ensure_initialized().await?;
+        sqlx::query(
+            "INSERT INTO code_file_indexes(workspace, path, language, functions_json, classes_json, imports_json, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workspace, path) DO UPDATE SET language = excluded.language, functions_json = excluded.functions_json, classes_json = excluded.classes_json, imports_json = excluded.imports_json, updated_at = excluded.updated_at",
+        )
+        .bind(workspace)
+        .bind(path)
+        .bind(language)
+        .bind(serde_json::to_string(functions)?)
+        .bind(serde_json::to_string(classes)?)
+        .bind(serde_json::to_string(imports)?)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn list_code_file_indexes(&self, workspace: &str) -> Result<Vec<IndexedFileRecord>> {
+        self.ensure_initialized().await?;
+        let rows = sqlx::query("SELECT path, language, functions_json, classes_json, imports_json, updated_at FROM code_file_indexes WHERE workspace = ? ORDER BY path ASC")
+            .bind(workspace)
+            .fetch_all(&self.pool)
+            .await?;
+        let mut records = Vec::with_capacity(rows.len());
+        for row in rows {
+            let functions_json = row.get::<String, _>("functions_json");
+            let classes_json = row.get::<String, _>("classes_json");
+            let imports_json = row.get::<String, _>("imports_json");
+            let updated_at = row.get::<String, _>("updated_at");
+            records.push(IndexedFileRecord {
+                path: row.get::<String, _>("path"),
+                language: row.get::<String, _>("language"),
+                functions: serde_json::from_str(&functions_json)?,
+                classes: serde_json::from_str(&classes_json)?,
+                imports: serde_json::from_str(&imports_json)?,
+                updated_at: Self::parse_timestamp(&updated_at)?,
+            });
+        }
+        Ok(records)
+    }
+
+    async fn replace_code_symbols_for_file(
+        &self,
+        workspace: &str,
+        file_path: &str,
+        symbols: &[SymbolIndex],
+    ) -> Result<()> {
+        self.ensure_initialized().await?;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM code_symbol_indexes WHERE workspace = ? AND file_path = ?")
+            .bind(workspace)
+            .bind(file_path)
+            .execute(&mut *tx)
+            .await?;
+
+        for symbol in symbols {
+            sqlx::query("INSERT INTO code_symbol_indexes(workspace, file_path, name, symbol_type, line, column_number, docstring, signature, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                .bind(workspace)
+                .bind(&symbol.file_path)
+                .bind(&symbol.name)
+                .bind(symbol.symbol_type.as_str())
+                .bind(symbol.line as i64)
+                .bind(symbol.column as i64)
+                .bind(&symbol.docstring)
+                .bind(&symbol.signature)
+                .bind(Utc::now().to_rfc3339())
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn list_code_symbols(&self, workspace: &str) -> Result<Vec<IndexedSymbolRecord>> {
+        self.ensure_initialized().await?;
+        let rows = sqlx::query("SELECT name, symbol_type, file_path, line, column_number, docstring, signature, updated_at FROM code_symbol_indexes WHERE workspace = ? ORDER BY file_path ASC, line ASC")
+            .bind(workspace)
+            .fetch_all(&self.pool)
+            .await?;
+        let mut records = Vec::with_capacity(rows.len());
+        for row in rows {
+            let updated_at = row.get::<String, _>("updated_at");
+            let symbol_type = row.get::<String, _>("symbol_type");
+            records.push(IndexedSymbolRecord {
+                name: row.get::<String, _>("name"),
+                symbol_type: SymbolType::from_storage_value(&symbol_type),
+                file_path: row.get::<String, _>("file_path"),
+                line: row.get::<i64, _>("line") as usize,
+                column: row.get::<i64, _>("column_number") as usize,
+                docstring: row.get::<Option<String>, _>("docstring"),
+                signature: row.get::<Option<String>, _>("signature"),
+                updated_at: Self::parse_timestamp(&updated_at)?,
+            });
+        }
+        Ok(records)
+    }
+
+    async fn search_code_symbols(
+        &self,
+        workspace: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<SymbolIndex>> {
+        self.ensure_initialized().await?;
+        let pattern = format!("%{}%", query.to_ascii_lowercase());
+        let rows = sqlx::query("SELECT name, symbol_type, file_path, line, column_number, docstring, signature FROM code_symbol_indexes WHERE workspace = ? AND LOWER(name) LIKE ? ORDER BY name ASC LIMIT ?")
+            .bind(workspace)
+            .bind(pattern)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?;
+        let mut symbols = Vec::with_capacity(rows.len());
+        for row in rows {
+            let symbol_type = row.get::<String, _>("symbol_type");
+            symbols.push(SymbolIndex {
+                name: row.get::<String, _>("name"),
+                symbol_type: SymbolType::from_storage_value(&symbol_type),
+                file_path: row.get::<String, _>("file_path"),
+                line: row.get::<i64, _>("line") as usize,
+                column: row.get::<i64, _>("column_number") as usize,
+                docstring: row.get::<Option<String>, _>("docstring"),
+                signature: row.get::<Option<String>, _>("signature"),
+            });
+        }
+        Ok(symbols)
+    }
+
+    async fn replace_code_call_edges_for_file(
+        &self,
+        workspace: &str,
+        file_path: &str,
+        edges: &[CallEdge],
+    ) -> Result<()> {
+        self.ensure_initialized().await?;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM code_call_edges WHERE workspace = ? AND file_path = ?")
+            .bind(workspace)
+            .bind(file_path)
+            .execute(&mut *tx)
+            .await?;
+
+        for edge in edges {
+            sqlx::query("INSERT INTO code_call_edges(workspace, file_path, caller_symbol, callee_symbol, line, column_number, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)")
+                .bind(workspace)
+                .bind(&edge.file_path)
+                .bind(&edge.caller_symbol)
+                .bind(&edge.callee_symbol)
+                .bind(edge.line as i64)
+                .bind(edge.column as i64)
+                .bind(Utc::now().to_rfc3339())
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn list_code_call_edges(&self, workspace: &str) -> Result<Vec<IndexedCallEdgeRecord>> {
+        self.ensure_initialized().await?;
+        let rows = sqlx::query("SELECT caller_symbol, callee_symbol, file_path, line, column_number, updated_at FROM code_call_edges WHERE workspace = ? ORDER BY file_path ASC, line ASC")
+            .bind(workspace)
+            .fetch_all(&self.pool)
+            .await?;
+
+        let mut edges = Vec::with_capacity(rows.len());
+        for row in rows {
+            let updated_at = row.get::<String, _>("updated_at");
+            edges.push(IndexedCallEdgeRecord {
+                caller_symbol: row.get::<String, _>("caller_symbol"),
+                callee_symbol: row.get::<String, _>("callee_symbol"),
+                file_path: row.get::<String, _>("file_path"),
+                line: row.get::<i64, _>("line") as usize,
+                column: row.get::<i64, _>("column_number") as usize,
+                updated_at: Self::parse_timestamp(&updated_at)?,
+            });
+        }
+
+        Ok(edges)
+    }
+
+    async fn upsert_vector_embedding(
+        &self,
+        workspace: &str,
+        id: &str,
+        vector: &[f32],
+        metadata: &serde_json::Value,
+    ) -> Result<()> {
+        self.ensure_initialized().await?;
+        sqlx::query("INSERT INTO vector_embeddings(workspace, id, vector_json, metadata_json, updated_at) VALUES(?, ?, ?, ?, ?) ON CONFLICT(workspace, id) DO UPDATE SET vector_json = excluded.vector_json, metadata_json = excluded.metadata_json, updated_at = excluded.updated_at")
+            .bind(workspace)
+            .bind(id)
+            .bind(serde_json::to_string(vector)?)
+            .bind(serde_json::to_string(metadata)?)
+            .bind(Utc::now().to_rfc3339())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn list_vector_embeddings(&self, workspace: &str) -> Result<Vec<StoredVector>> {
+        self.ensure_initialized().await?;
+        let rows = sqlx::query(
+            "SELECT id, vector_json, metadata_json FROM vector_embeddings WHERE workspace = ?",
+        )
+        .bind(workspace)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut vectors = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id = row.get::<String, _>("id");
+            let vector_json = row.get::<String, _>("vector_json");
+            let metadata_json = row.get::<String, _>("metadata_json");
+            vectors.push(StoredVector {
+                id,
+                vector: serde_json::from_str(&vector_json)?,
+                metadata: serde_json::from_str(&metadata_json)?,
+            });
+        }
+
+        Ok(vectors)
     }
 }

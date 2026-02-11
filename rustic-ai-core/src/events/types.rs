@@ -118,6 +118,13 @@ pub enum Event {
         pattern_name: String,
         category: String,
     },
+    RetrievalContextInjected {
+        session_id: String,
+        agent: String,
+        snippets: usize,
+        keyword_hits: usize,
+        vector_hits: usize,
+    },
     SessionUpdated(String),
     Error(String),
 }

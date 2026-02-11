@@ -351,57 +351,57 @@ Last updated: 2026-02-11
 16. **Gap 8: Big Codebase Support (RAG, Vector DB, Indexing)** (26-30 days total)
 
 #### Phase 1: Code Indexing (Weeks 25-26)
-    - [ ] Create indexing module (mod.rs, parser.rs, symbols.rs, types.rs)
-    - [ ] Implement CodeIndex structure (workspace, files, symbols, dependencies, updated_at)
-    - [ ] Implement FileIndex structure (path, language, functions, classes, imports)
-    - [ ] Implement SymbolIndex structure (name, symbol_type, file_path, line, column, docstring, signature)
-    - [ ] Implement SymbolType enum (Function, Method, Struct, Enum, Trait, Impl, Type, Variable, Constant, Module)
-    - [ ] Add tree-sitter for multi-language parsing
-    - [ ] Support Rust, Python, JavaScript/TypeScript, Go, C/C++
-    - [ ] Implement AST node extraction for symbols
-    - [ ] Build call graph tracking
-    - [ ] Add SQLite tables for code index
-    - [ ] Create migration scripts for index tables
-    - [ ] Implement incremental index updates
+    - [x] Create indexing module (mod.rs, parser.rs, symbols.rs, types.rs)
+    - [x] Implement CodeIndex structure (workspace, files, symbols, dependencies, updated_at)
+    - [x] Implement FileIndex structure (path, language, functions, classes, imports)
+    - [x] Implement SymbolIndex structure (name, symbol_type, file_path, line, column, docstring, signature)
+    - [x] Implement SymbolType enum (Function, Method, Struct, Enum, Trait, Impl, Type, Variable, Constant, Module)
+    - [x] Add tree-sitter for multi-language parsing
+    - [x] Support Rust, Python, JavaScript/TypeScript, Go, C/C++
+    - [x] Implement AST node extraction for symbols
+    - [x] Build call graph tracking
+    - [x] Add SQLite tables for code index
+    - [x] Create migration scripts for index tables
+    - [x] Implement incremental index updates
 
 #### Phase 2: Vector Database Integration (Weeks 26-27)
-    - [ ] Create vector module (mod.rs, db.rs, embedding.rs)
-    - [ ] Implement VectorDB with VectorBackend (SqliteVector, PostgresVector, etc.)
-    - [ ] Implement EmbeddingProvider trait (embed, dimension)
-    - [ ] Implement OpenAI embedding provider (text-embedding-3-small/large)
-    - [ ] Implement OpenAI-compatible local embedding provider
-    - [ ] Implement sentence-transformers provider (local Python)
-    - [ ] Implement Embedding structure (id, vector, metadata)
-    - [ ] Implement SearchQuery structure (text, top_k, filter)
-    - [ ] Implement SearchResult structure (id, score, metadata)
-    - [ ] Add vector-sqlite extension integration
-    - [ ] Implement vector storage and retrieval
-    - [ ] Implement cosine similarity search
-    - [ ] Add SQLite tables for vectors
-    - [ ] Create migration scripts for vector tables
+    - [x] Create vector module (mod.rs, db.rs, embedding.rs)
+    - [x] Implement VectorDB with VectorBackend (SqliteVector, PostgresVector, etc.)
+    - [x] Implement EmbeddingProvider trait (embed, dimension)
+    - [x] Implement OpenAI embedding provider (text-embedding-3-small/large)
+    - [x] Implement OpenAI-compatible local embedding provider
+    - [x] Implement sentence-transformers provider (local Python)
+    - [x] Implement Embedding structure (id, vector, metadata)
+    - [x] Implement SearchQuery structure (text, top_k, filter)
+    - [x] Implement SearchResult structure (id, score, metadata)
+    - [x] Add vector-sqlite extension integration
+    - [x] Implement vector storage and retrieval
+    - [x] Implement cosine similarity search
+    - [x] Add SQLite tables for vectors
+    - [x] Create migration scripts for vector tables
 
 #### Phase 3: RAG System (Weeks 27-28)
-    - [ ] Create rag module (mod.rs, retriever.rs, augmenter.rs)
-    - [ ] Implement RAGRetriever (index, vector_db)
-    - [ ] Implement RetrievalRequest (query, top_k, min_score, filters)
-    - [ ] Implement RetrievalResult (snippets, symbols)
-    - [ ] Implement CodeSnippet structure (file_path, content, line_start, line_end, score, contexts)
-    - [ ] Implement SymbolMatch structure (symbol, score, usage_context)
-    - [ ] Implement hybrid search (keyword + semantic)
-    - [ ] Implement context expansion (surrounding lines)
-    - [ ] Implement result ranking (relevance, recency, importance)
-    - [ ] Implement prompt augmentation
-    - [ ] Implement code context formatting
+    - [x] Create rag module (mod.rs, retriever.rs, augmenter.rs)
+    - [x] Implement RAGRetriever (index, vector_db)
+    - [x] Implement RetrievalRequest (query, top_k, min_score, filters)
+    - [x] Implement RetrievalResult (snippets, symbols)
+    - [x] Implement CodeSnippet structure (file_path, content, line_start, line_end, score, contexts)
+    - [x] Implement SymbolMatch structure (symbol, score, usage_context)
+    - [x] Implement hybrid search (keyword + semantic)
+    - [x] Implement context expansion (surrounding lines)
+    - [x] Implement result ranking (relevance, recency, importance)
+    - [x] Implement prompt augmentation
+    - [x] Implement code context formatting
 
 #### Phase 4: Integration with Agent
-    - [ ] Modify Agent::build_context_window to use RAG
-    - [ ] Implement RAG-based context building
-    - [ ] Extract last query from conversation
-    - [ ] Retrieve relevant code snippets
-    - [ ] Build code context from retrieval
-    - [ ] Inject code context as system message
-    - [ ] Limit conversation history to fit RAG context
-    - [ ] Implement token budget management for RAG
+    - [x] Modify Agent::build_context_window to use RAG
+    - [x] Implement RAG-based context building
+    - [x] Extract last query from conversation
+    - [x] Retrieve relevant code snippets
+    - [x] Build code context from retrieval
+    - [x] Inject code context as system message
+    - [x] Limit conversation history to fit RAG context
+    - [x] Implement token budget management for RAG
 
 ---
 

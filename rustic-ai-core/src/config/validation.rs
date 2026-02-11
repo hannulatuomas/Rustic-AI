@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 
-use crate::config::schema::{AuthMode, Config, ProviderType, RuntimeMode, StorageBackendKind};
+use crate::config::schema::{
+    AuthMode, Config, EmbeddingBackend, ProviderType, RuntimeMode, StorageBackendKind,
+};
 use crate::error::{Error, Result};
 use crate::providers::auth_capabilities::{supported_auth_mode_names, supports_auth_mode};
 
@@ -780,6 +782,22 @@ pub fn validate_config(config: &Config) -> Result<()> {
                         .to_owned(),
                 ));
             }
+
+            if config.storage.sqlite.vector_extension_enabled
+                && config
+                    .storage
+                    .sqlite
+                    .vector_extension_path
+                    .as_deref()
+                    .unwrap_or_default()
+                    .trim()
+                    .is_empty()
+            {
+                return Err(Error::Validation(
+                    "storage.sqlite.vector_extension_path must be set when vector_extension_enabled is true"
+                        .to_owned(),
+                ));
+            }
         }
         StorageBackendKind::Postgres => {
             if config
@@ -809,6 +827,102 @@ pub fn validate_config(config: &Config) -> Result<()> {
         return Err(Error::Validation(
             "summarization.summary_max_tokens must be greater than zero".to_owned(),
         ));
+    }
+
+    if config.retrieval.max_snippets == 0 {
+        return Err(Error::Validation(
+            "retrieval.max_snippets must be greater than zero".to_owned(),
+        ));
+    }
+    if config.retrieval.max_snippet_chars < 32 {
+        return Err(Error::Validation(
+            "retrieval.max_snippet_chars must be at least 32".to_owned(),
+        ));
+    }
+    if config.retrieval.vector_dimension < 8 {
+        return Err(Error::Validation(
+            "retrieval.vector_dimension must be at least 8".to_owned(),
+        ));
+    }
+    if !(0.0..=1.0).contains(&config.retrieval.min_vector_score) {
+        return Err(Error::Validation(
+            "retrieval.min_vector_score must be between 0.0 and 1.0".to_owned(),
+        ));
+    }
+    if !(0.0..=1.0).contains(&config.retrieval.ranking_recency_weight) {
+        return Err(Error::Validation(
+            "retrieval.ranking_recency_weight must be between 0.0 and 1.0".to_owned(),
+        ));
+    }
+    if !(0.0..=1.0).contains(&config.retrieval.ranking_importance_weight) {
+        return Err(Error::Validation(
+            "retrieval.ranking_importance_weight must be between 0.0 and 1.0".to_owned(),
+        ));
+    }
+    if config.retrieval.rag_prompt_token_budget < 64 {
+        return Err(Error::Validation(
+            "retrieval.rag_prompt_token_budget must be at least 64".to_owned(),
+        ));
+    }
+
+    match config.retrieval.embedding_backend {
+        EmbeddingBackend::DeterministicHash => {}
+        EmbeddingBackend::OpenAi | EmbeddingBackend::OpenAiCompatible => {
+            if config
+                .retrieval
+                .embedding_model
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                return Err(Error::Validation(
+                    "retrieval.embedding_model is required for open_ai/open_ai_compatible embedding backend"
+                        .to_owned(),
+                ));
+            }
+            if config
+                .retrieval
+                .embedding_base_url
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                return Err(Error::Validation(
+                    "retrieval.embedding_base_url is required for open_ai/open_ai_compatible embedding backend"
+                        .to_owned(),
+                ));
+            }
+            if config
+                .retrieval
+                .embedding_api_key_env
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                return Err(Error::Validation(
+                    "retrieval.embedding_api_key_env is required for open_ai/open_ai_compatible embedding backend"
+                        .to_owned(),
+                ));
+            }
+        }
+        EmbeddingBackend::SentenceTransformers => {
+            if config
+                .retrieval
+                .embedding_base_url
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                return Err(Error::Validation(
+                    "retrieval.embedding_base_url is required for sentence_transformers embedding backend"
+                        .to_owned(),
+                ));
+            }
+        }
     }
 
     Ok(())

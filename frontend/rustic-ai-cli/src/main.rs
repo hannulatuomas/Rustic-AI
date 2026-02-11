@@ -399,6 +399,194 @@ fn run() -> rustic_ai_core::Result<()> {
                         }
                         return Ok(());
                     }
+                    cli::Command::Index { command } => {
+                        let runtime = tokio::runtime::Runtime::new().map_err(|err| {
+                            rustic_ai_core::Error::Config(format!(
+                                "failed to create tokio runtime: {err}"
+                            ))
+                        })?;
+
+                        match command {
+                            cli::IndexCommand::Status => {
+                                let config = app.config();
+                                let retrieval = &config.retrieval;
+                                let sqlite = &config.storage.sqlite;
+
+                                println!("Index/Retrieval status:");
+                                println!(
+                                    "- features: indexing={}, vector={}, rag={}, retrieval={}",
+                                    config.features.indexing_enabled,
+                                    config.features.vector_enabled,
+                                    config.features.rag_enabled,
+                                    retrieval.enabled
+                                );
+                                println!(
+                                    "- retrieval limits: keyword_top_k={}, vector_top_k={}, max_snippets={}, snippet_chars={}, rag_prompt_token_budget={}",
+                                    retrieval.keyword_top_k,
+                                    retrieval.vector_top_k,
+                                    retrieval.max_snippets,
+                                    retrieval.max_snippet_chars,
+                                    retrieval.rag_prompt_token_budget
+                                );
+                                println!(
+                                    "- ranking/context: min_vector_score={}, context_expansion_lines={}, recency_weight={}, importance_weight={}",
+                                    retrieval.min_vector_score,
+                                    retrieval.context_expansion_lines,
+                                    retrieval.ranking_recency_weight,
+                                    retrieval.ranking_importance_weight
+                                );
+                                println!(
+                                    "- embedding: backend={:?}, model={}, base_url={}, api_key_env={}",
+                                    retrieval.embedding_backend,
+                                    retrieval.embedding_model.as_deref().unwrap_or("<unset>"),
+                                    retrieval
+                                        .embedding_base_url
+                                        .as_deref()
+                                        .unwrap_or("<unset>"),
+                                    retrieval
+                                        .embedding_api_key_env
+                                        .as_deref()
+                                        .unwrap_or("<unset>")
+                                );
+
+                                if let Some(env_name) = retrieval.embedding_api_key_env.as_deref() {
+                                    let is_set = std::env::var(env_name)
+                                        .map(|value| !value.trim().is_empty())
+                                        .unwrap_or(false);
+                                    println!("- embedding_api_key_present: {}", is_set);
+                                }
+
+                                if config.storage.backend
+                                    == rustic_ai_core::config::schema::StorageBackendKind::Sqlite
+                                {
+                                    println!(
+                                        "- sqlite_vector_extension: enabled={}, strict={}, path={}, entrypoint={}",
+                                        sqlite.vector_extension_enabled,
+                                        sqlite.vector_extension_strict,
+                                        sqlite
+                                            .vector_extension_path
+                                            .as_deref()
+                                            .unwrap_or("<unset>"),
+                                        sqlite
+                                            .vector_extension_entrypoint
+                                            .as_deref()
+                                            .unwrap_or("<default>")
+                                    );
+                                    if let Some(path) = sqlite.vector_extension_path.as_deref() {
+                                        let exists = std::path::Path::new(path).exists();
+                                        println!(
+                                            "- sqlite_vector_extension_path_exists: {}",
+                                            exists
+                                        );
+                                    }
+                                } else {
+                                    println!(
+                                        "- sqlite_vector_extension: n/a (storage backend: {:?})",
+                                        config.storage.backend
+                                    );
+                                }
+
+                                let index = runtime.block_on(app.load_code_index_snapshot())?;
+                                println!(
+                                    "- index_snapshot: files={}, symbols={}, call_edges={}, updated_at={}",
+                                    index.files.len(),
+                                    index.symbols.len(),
+                                    index.call_edges.len(),
+                                    index.updated_at
+                                );
+                            }
+                            cli::IndexCommand::Build => {
+                                let index = runtime.block_on(app.build_code_index())?;
+                                println!(
+                                    "Code index built: files={}, symbols={}, dependencies={}",
+                                    index.files.len(),
+                                    index.symbols.len(),
+                                    index.dependencies.len()
+                                );
+                            }
+                            cli::IndexCommand::Snapshot => {
+                                let index = runtime.block_on(app.load_code_index_snapshot())?;
+                                println!(
+                                    "Code index snapshot: files={}, symbols={}, updated_at={}",
+                                    index.files.len(),
+                                    index.symbols.len(),
+                                    index.updated_at
+                                );
+                            }
+                            cli::IndexCommand::Retrieve {
+                                query,
+                                top_k,
+                                min_score,
+                                path_prefix,
+                                kind,
+                            } => {
+                                let mut filter_map = serde_json::Map::new();
+                                if let Some(path_prefix) = path_prefix {
+                                    filter_map.insert(
+                                        "path_prefix".to_owned(),
+                                        serde_json::Value::String(path_prefix),
+                                    );
+                                }
+                                if let Some(kind) = kind {
+                                    filter_map
+                                        .insert("kind".to_owned(), serde_json::Value::String(kind));
+                                }
+                                let filters = if filter_map.is_empty() {
+                                    None
+                                } else {
+                                    Some(serde_json::Value::Object(filter_map))
+                                };
+
+                                let response = runtime.block_on(
+                                    app.retrieve_code_context(&query, top_k, min_score, filters),
+                                )?;
+                                println!(
+                                    "Retrieved context: snippets={}, symbols={}, keyword_hits={}, vector_hits={}",
+                                    response.snippets.len(),
+                                    response.symbols.len(),
+                                    response.keyword_hits,
+                                    response.vector_hits
+                                );
+
+                                if response.snippets.is_empty() {
+                                    println!("No retrieval snippets found for query '{query}'.");
+                                } else {
+                                    println!("Snippets:");
+                                    for snippet in response.snippets {
+                                        println!(
+                                            "- [{}] {}:{}-{} score={:.3}",
+                                            snippet.kind,
+                                            snippet.file_path,
+                                            snippet.line_start,
+                                            snippet.line_end,
+                                            snippet.score
+                                        );
+                                        println!("  {}", snippet.content);
+                                    }
+                                }
+                            }
+                            cli::IndexCommand::Search { query, limit } => {
+                                let symbols =
+                                    runtime.block_on(app.search_code_symbols(&query, limit))?;
+                                if symbols.is_empty() {
+                                    println!("No symbols found for query '{query}'.");
+                                } else {
+                                    println!("Found {} symbols:", symbols.len());
+                                    for symbol in symbols {
+                                        println!(
+                                            "- {} [{}] {}:{}",
+                                            symbol.name,
+                                            symbol.symbol_type.as_str(),
+                                            symbol.file_path,
+                                            symbol.line
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+                        return Ok(());
+                    }
                     cli::Command::Taxonomy { command } => {
                         match command {
                             cli::TaxonomyCommand::List => {

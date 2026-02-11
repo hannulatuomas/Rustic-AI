@@ -48,6 +48,20 @@ pub fn load_from_env() -> Result<Config> {
         "RUSTIC_AI_ENABLE_TRIGGERS",
         config.features.triggers_enabled,
     )?;
+    config.features.learning_enabled = parse_bool_env(
+        "RUSTIC_AI_ENABLE_LEARNING",
+        config.features.learning_enabled,
+    )?;
+    config.features.indexing_enabled = parse_bool_env(
+        "RUSTIC_AI_ENABLE_INDEXING",
+        config.features.indexing_enabled,
+    )?;
+    config.features.vector_enabled =
+        parse_bool_env("RUSTIC_AI_ENABLE_VECTOR", config.features.vector_enabled)?;
+    config.features.rag_enabled =
+        parse_bool_env("RUSTIC_AI_ENABLE_RAG", config.features.rag_enabled)?;
+    config.retrieval.enabled =
+        parse_bool_env("RUSTIC_AI_ENABLE_RETRIEVAL", config.retrieval.enabled)?;
 
     Ok(config)
 }
@@ -56,6 +70,7 @@ pub fn merge(base: Config, override_config: Config) -> Config {
     Config {
         mode: override_config.mode,
         features: override_config.features,
+        retrieval: merge_retrieval(base.retrieval, override_config.retrieval),
         mcp: if override_config.mcp.servers.is_empty() {
             base.mcp
         } else {
@@ -315,6 +330,20 @@ fn apply_env_overrides(config: &mut Config) -> Result<()> {
         "RUSTIC_AI_ENABLE_TRIGGERS",
         config.features.triggers_enabled,
     )?;
+    config.features.learning_enabled = parse_bool_env(
+        "RUSTIC_AI_ENABLE_LEARNING",
+        config.features.learning_enabled,
+    )?;
+    config.features.indexing_enabled = parse_bool_env(
+        "RUSTIC_AI_ENABLE_INDEXING",
+        config.features.indexing_enabled,
+    )?;
+    config.features.vector_enabled =
+        parse_bool_env("RUSTIC_AI_ENABLE_VECTOR", config.features.vector_enabled)?;
+    config.features.rag_enabled =
+        parse_bool_env("RUSTIC_AI_ENABLE_RAG", config.features.rag_enabled)?;
+    config.retrieval.enabled =
+        parse_bool_env("RUSTIC_AI_ENABLE_RETRIEVAL", config.retrieval.enabled)?;
 
     Ok(())
 }
@@ -455,6 +484,64 @@ fn merge_storage(base: StorageConfig, override_values: StorageConfig) -> Storage
     }
 }
 
+fn merge_retrieval(
+    base: crate::config::schema::RetrievalConfig,
+    override_values: crate::config::schema::RetrievalConfig,
+) -> crate::config::schema::RetrievalConfig {
+    crate::config::schema::RetrievalConfig {
+        enabled: override_values.enabled,
+        keyword_top_k: merge_usize(base.keyword_top_k, override_values.keyword_top_k),
+        vector_top_k: merge_usize(base.vector_top_k, override_values.vector_top_k),
+        max_snippets: merge_usize(base.max_snippets, override_values.max_snippets),
+        max_snippet_chars: merge_usize(base.max_snippet_chars, override_values.max_snippet_chars),
+        vector_dimension: merge_usize(base.vector_dimension, override_values.vector_dimension),
+        min_vector_score: if override_values.min_vector_score > 0.0 {
+            override_values.min_vector_score
+        } else {
+            base.min_vector_score
+        },
+        inject_as_system_message: override_values.inject_as_system_message,
+        context_expansion_lines: merge_usize(
+            base.context_expansion_lines,
+            override_values.context_expansion_lines,
+        ),
+        ranking_recency_weight: if override_values.ranking_recency_weight > 0.0 {
+            override_values.ranking_recency_weight
+        } else {
+            base.ranking_recency_weight
+        },
+        ranking_importance_weight: if override_values.ranking_importance_weight > 0.0 {
+            override_values.ranking_importance_weight
+        } else {
+            base.ranking_importance_weight
+        },
+        rag_prompt_token_budget: merge_usize(
+            base.rag_prompt_token_budget,
+            override_values.rag_prompt_token_budget,
+        ),
+        embedding_backend: override_values.embedding_backend,
+        embedding_model: merge_optional_string(
+            base.embedding_model,
+            override_values.embedding_model,
+        ),
+        embedding_base_url: merge_optional_string(
+            base.embedding_base_url,
+            override_values.embedding_base_url,
+        ),
+        embedding_api_key_env: merge_optional_string(
+            base.embedding_api_key_env,
+            override_values.embedding_api_key_env,
+        ),
+    }
+}
+
+fn merge_optional_string(base: Option<String>, override_value: Option<String>) -> Option<String> {
+    match override_value {
+        Some(value) if !value.trim().is_empty() => Some(value),
+        _ => base,
+    }
+}
+
 fn merge_sqlite_storage(
     base: SqliteStorageConfig,
     override_values: SqliteStorageConfig,
@@ -463,7 +550,17 @@ fn merge_sqlite_storage(
         busy_timeout_ms: merge_u64(base.busy_timeout_ms, override_values.busy_timeout_ms),
         journal_mode: merge_string(base.journal_mode, override_values.journal_mode),
         synchronous: merge_string(base.synchronous, override_values.synchronous),
-        foreign_keys: merge_bool(base.foreign_keys, override_values.foreign_keys),
+        foreign_keys: override_values.foreign_keys,
+        vector_extension_enabled: override_values.vector_extension_enabled,
+        vector_extension_path: merge_optional_string(
+            base.vector_extension_path,
+            override_values.vector_extension_path,
+        ),
+        vector_extension_entrypoint: merge_optional_string(
+            base.vector_extension_entrypoint,
+            override_values.vector_extension_entrypoint,
+        ),
+        vector_extension_strict: override_values.vector_extension_strict,
     }
 }
 

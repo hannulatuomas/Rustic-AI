@@ -22,6 +22,7 @@ pub enum RuleApplicability {
 pub struct Config {
     pub mode: RuntimeMode,
     pub features: FeatureConfig,
+    pub retrieval: RetrievalConfig,
     pub mcp: McpConfig,
     pub plugins: PluginConfig,
     pub skills: SkillsConfig,
@@ -42,6 +43,7 @@ impl Default for Config {
         Self {
             mode: RuntimeMode::Direct,
             features: FeatureConfig::default(),
+            retrieval: RetrievalConfig::default(),
             mcp: McpConfig::default(),
             plugins: PluginConfig::default(),
             skills: SkillsConfig::default(),
@@ -293,6 +295,10 @@ pub struct SqliteStorageConfig {
     pub journal_mode: String,
     pub synchronous: String,
     pub foreign_keys: bool,
+    pub vector_extension_enabled: bool,
+    pub vector_extension_path: Option<String>,
+    pub vector_extension_entrypoint: Option<String>,
+    pub vector_extension_strict: bool,
 }
 
 impl Default for SqliteStorageConfig {
@@ -302,6 +308,10 @@ impl Default for SqliteStorageConfig {
             journal_mode: "WAL".to_owned(),
             synchronous: "NORMAL".to_owned(),
             foreign_keys: true,
+            vector_extension_enabled: false,
+            vector_extension_path: None,
+            vector_extension_entrypoint: None,
+            vector_extension_strict: false,
         }
     }
 }
@@ -424,6 +434,9 @@ pub struct FeatureConfig {
     pub workflows_enabled: bool,
     pub triggers_enabled: bool,
     pub learning_enabled: bool,
+    pub indexing_enabled: bool,
+    pub vector_enabled: bool,
+    pub rag_enabled: bool,
 }
 
 impl Default for FeatureConfig {
@@ -435,8 +448,65 @@ impl Default for FeatureConfig {
             workflows_enabled: true,
             triggers_enabled: false,
             learning_enabled: true,
+            indexing_enabled: true,
+            vector_enabled: true,
+            rag_enabled: false,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RetrievalConfig {
+    pub enabled: bool,
+    pub keyword_top_k: usize,
+    pub vector_top_k: usize,
+    pub max_snippets: usize,
+    pub max_snippet_chars: usize,
+    pub vector_dimension: usize,
+    pub min_vector_score: f32,
+    pub inject_as_system_message: bool,
+    pub context_expansion_lines: usize,
+    pub ranking_recency_weight: f32,
+    pub ranking_importance_weight: f32,
+    pub rag_prompt_token_budget: usize,
+    pub embedding_backend: EmbeddingBackend,
+    pub embedding_model: Option<String>,
+    pub embedding_base_url: Option<String>,
+    pub embedding_api_key_env: Option<String>,
+}
+
+impl Default for RetrievalConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            keyword_top_k: 8,
+            vector_top_k: 8,
+            max_snippets: 8,
+            max_snippet_chars: 220,
+            vector_dimension: 256,
+            min_vector_score: 0.2,
+            inject_as_system_message: true,
+            context_expansion_lines: 4,
+            ranking_recency_weight: 0.12,
+            ranking_importance_weight: 0.18,
+            rag_prompt_token_budget: 1400,
+            embedding_backend: EmbeddingBackend::DeterministicHash,
+            embedding_model: None,
+            embedding_base_url: None,
+            embedding_api_key_env: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbeddingBackend {
+    #[default]
+    DeterministicHash,
+    OpenAi,
+    OpenAiCompatible,
+    SentenceTransformers,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -5,6 +5,7 @@ use crate::error::Result;
 use crate::events::Event;
 use crate::learning::{LearningManager, MistakeType};
 use crate::providers::types::{ChatMessage, GenerateOptions, ModelProvider};
+use crate::rag::HybridRetriever;
 use crate::storage::PendingToolState;
 use crate::ToolManager;
 use chrono::Utc;
@@ -30,6 +31,7 @@ pub struct Agent {
     tool_manager: Arc<ToolManager>,
     session_manager: Arc<SessionManager>,
     learning: Arc<LearningManager>,
+    retriever: Arc<HybridRetriever>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -67,6 +69,7 @@ impl Agent {
         tool_manager: Arc<ToolManager>,
         session_manager: Arc<SessionManager>,
         learning: Arc<LearningManager>,
+        retriever: Arc<HybridRetriever>,
     ) -> Self {
         let memory = AgentMemory::new(
             config.context_window_size,
@@ -82,6 +85,7 @@ impl Agent {
             tool_manager,
             session_manager,
             learning,
+            retriever,
         }
     }
 
@@ -225,6 +229,78 @@ impl Agent {
         }
 
         Ok(())
+    }
+
+    async fn maybe_inject_retrieval_context(
+        &self,
+        session_id_str: &str,
+        input: &str,
+        context: &mut Vec<ChatMessage>,
+        event_tx: &mpsc::Sender<Event>,
+    ) -> Result<()> {
+        let retrieval = self.retriever.retrieve(input).await?;
+        if retrieval.snippets.is_empty() {
+            return Ok(());
+        }
+
+        let prompt_block = self.retriever.format_for_prompt(&retrieval.snippets);
+        if prompt_block.is_empty() {
+            return Ok(());
+        }
+
+        let message = ChatMessage {
+            role: if self.retriever.inject_as_system_message() {
+                "system".to_owned()
+            } else {
+                "user".to_owned()
+            },
+            content: prompt_block,
+            name: None,
+            tool_calls: None,
+        };
+
+        let insertion_index = context.len().saturating_sub(1);
+        context.insert(insertion_index, message);
+        self.compact_context_for_rag(context);
+
+        let _ = event_tx.try_send(Event::RetrievalContextInjected {
+            session_id: session_id_str.to_owned(),
+            agent: self.config.name.clone(),
+            snippets: retrieval.snippets.len(),
+            keyword_hits: retrieval.keyword_hits,
+            vector_hits: retrieval.vector_hits,
+        });
+
+        Ok(())
+    }
+
+    fn compact_context_for_rag(&self, context: &mut Vec<ChatMessage>) {
+        let token_budget = self.config.context_window_size;
+        if token_budget == 0 || context.len() <= 2 {
+            return;
+        }
+
+        while estimate_context_tokens(context) > token_budget {
+            let mut removed = false;
+            for index in 1..context.len().saturating_sub(1) {
+                let candidate = &context[index];
+                if candidate.role == "system"
+                    && candidate
+                        .content
+                        .starts_with("Retrieved context from code index:")
+                {
+                    continue;
+                }
+
+                context.remove(index);
+                removed = true;
+                break;
+            }
+
+            if !removed {
+                break;
+            }
+        }
     }
 
     fn render_tool_output_message(
@@ -1140,7 +1216,16 @@ impl Agent {
             }
         } else {
             // No pending state - reload context and continue
-            let context_window = self.load_context_window_from_session(session_id).await?;
+            let mut context_window = self.load_context_window_from_session(session_id).await?;
+            if let Some(query) = Self::latest_user_task(&context_window) {
+                self.maybe_inject_retrieval_context(
+                    &session_id_str,
+                    &query,
+                    &mut context_window,
+                    &event_tx,
+                )
+                .await?;
+            }
             let continued = self
                 .run_assistant_tool_loop(
                     session_id,
@@ -1202,6 +1287,9 @@ impl Agent {
         )
         .await?;
 
+        self.maybe_inject_retrieval_context(&session_id_str, &input, &mut full_context, &event_tx)
+            .await?;
+
         // 6. Append user message to session
         self.session_manager
             .append_message(session_id, "user", &input)
@@ -1259,6 +1347,9 @@ impl Agent {
             tool_calls: None,
         });
 
+        self.maybe_inject_retrieval_context(&session_id, task, &mut context, &event_tx)
+            .await?;
+
         let response = self
             .generate_response_with_events(
                 &context,
@@ -1307,4 +1398,13 @@ impl std::fmt::Debug for Agent {
             .field("session_manager", &"<SessionManager>")
             .finish()
     }
+}
+
+fn estimate_context_tokens(messages: &[ChatMessage]) -> usize {
+    messages
+        .iter()
+        .map(|message| {
+            std::cmp::max(1, message.role.len() / 4) + std::cmp::max(1, message.content.len() / 4)
+        })
+        .sum()
 }

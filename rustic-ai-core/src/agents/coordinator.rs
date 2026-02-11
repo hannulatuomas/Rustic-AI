@@ -6,6 +6,7 @@ use crate::error::{Error, Result};
 use crate::learning::LearningManager;
 use crate::providers::registry::ProviderRegistry;
 use crate::providers::types::ChatMessage;
+use crate::rag::HybridRetriever;
 use crate::ToolManager;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -71,6 +72,7 @@ impl AgentCoordinator {
         tool_manager: Arc<ToolManager>,
         session_manager: Arc<SessionManager>,
         learning: Arc<LearningManager>,
+        retriever: Arc<HybridRetriever>,
     ) -> Result<Self> {
         let mut registry = AgentRegistry::new();
         let mut default_agent = String::new();
@@ -91,6 +93,7 @@ impl AgentCoordinator {
                 tool_manager.clone(),
                 session_manager.clone(),
                 learning.clone(),
+                retriever.clone(),
             ));
 
             registry.register(config.clone(), agent);

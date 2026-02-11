@@ -195,6 +195,16 @@ impl Renderer {
             } => {
                 println!("[learning] success pattern recorded: {pattern_name} ({category})");
             }
+            Event::RetrievalContextInjected {
+                snippets,
+                keyword_hits,
+                vector_hits,
+                ..
+            } => {
+                println!(
+                    "[retrieval] context injected: snippets={snippets}, keyword_hits={keyword_hits}, vector_hits={vector_hits}"
+                );
+            }
             Event::SessionUpdated(_) => {
                 // Silent for now, useful for debugging
             }
@@ -427,6 +437,20 @@ impl Renderer {
                 "agent": agent,
                 "pattern_name": pattern_name,
                 "category": category,
+            }),
+            Event::RetrievalContextInjected {
+                session_id,
+                agent,
+                snippets,
+                keyword_hits,
+                vector_hits,
+            } => serde_json::json!({
+                "type": "retrieval_context_injected",
+                "session_id": session_id,
+                "agent": agent,
+                "snippets": snippets,
+                "keyword_hits": keyword_hits,
+                "vector_hits": vector_hits,
             }),
             Event::SessionUpdated(id) => serde_json::json!({
                 "type": "session_updated",

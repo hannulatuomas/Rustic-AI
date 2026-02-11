@@ -394,6 +394,106 @@ ADR-0021: Phase 6 Learning Subsystem (Feedback, Patterns, Preferences, Success L
 
 ---
 
+ADR-0022: Phase 7 Code Indexing Foundation with Persistent Symbol Store
+
+- Status: Accepted
+- Date: 2026-02-11
+- Context: Phase 7 requires big-codebase support. We need an immediately usable indexing baseline while tree-sitter integration is still pending.
+- Decision:
+  - Add a new `indexing` module in core with:
+    - `CodeIndex`, `FileIndex`, `SymbolIndex`, and `SymbolType` typed models
+    - tree-sitter-backed parser/symbol extraction for Rust, Python, JS/TS, Go, and C/C++
+    - call graph extraction/persistence from parsed call expressions
+    - indexer APIs for full rebuild, per-file incremental updates, and symbol search
+  - Extend `StorageBackend` with persistent code index operations and add schema version 4 migrations for SQLite/Postgres:
+    - `code_index_metadata`
+    - `code_file_indexes`
+    - `code_symbol_indexes`
+    - `code_call_edges`
+  - Use deterministic persisted snapshots as the retrieval backbone for upcoming vector/RAG phases.
+- Consequences:
+  - Workspace indexing is now durable across restarts and backend-agnostic.
+  - Symbol retrieval and call graph discovery are available before vector search/RAG integration.
+  - Tree-sitter grammars are now an explicit dependency boundary for indexing fidelity.
+
+---
+
+ADR-0023: Phase 7 Vector Store Baseline (Persistent + Cosine Search)
+
+- Status: Accepted
+- Date: 2026-02-11
+- Context: RAG integration requires vector persistence and retrieval before provider-specific embedding integrations are finalized.
+- Decision:
+  - Add a `vector` module with typed `Embedding`, `SearchQuery`, `SearchResult`, and `VectorDb` APIs.
+  - Introduce a pluggable `EmbeddingProvider` trait and ship a deterministic local baseline provider for development workflows.
+  - Extend `StorageBackend` with vector persistence operations and add schema version 5 migrations for SQLite/Postgres (`vector_embeddings`).
+  - Implement cosine similarity ranking in core as the default retrieval strategy.
+- Consequences:
+  - Vector retrieval is available now for upcoming hybrid keyword+semantic RAG flows.
+  - External embedding providers (OpenAI/local/SBERT) can be added without changing vector persistence contracts.
+
+---
+
+ADR-0024: Configurable Hybrid RAG Context Injection in Agent Turns
+
+- Status: Accepted
+- Date: 2026-02-11
+- Context: Big codebase support requires retrieval-augmented prompting while keeping operational control over performance and behavior.
+- Decision:
+  - Add a `rag` module with hybrid retrieval (keyword symbol lookup + vector similarity), typed retrieval request/response models, and prompt formatting.
+  - Inject retrieval context into agent turns before model generation, with event emission for observability.
+  - Make indexing/vector/RAG behavior configurable and independently toggleable via:
+    - `features.indexing_enabled`
+    - `features.vector_enabled`
+    - `features.rag_enabled`
+    - `retrieval.*` tunables (top-k, snippet limits, vector dimension, min score, injection mode)
+  - Keep retrieval injection safe by honoring disable switches and returning empty retrieval output when disabled.
+- Consequences:
+  - Operators can tune or disable heavy retrieval features per environment.
+  - Agent context quality improves for large workspaces without hard-coding retrieval behavior.
+
+---
+
+ADR-0025: Configurable Embedding Backends and RAG-Aware Context Compaction
+
+- Status: Accepted
+- Date: 2026-02-11
+- Context: Retrieval quality depends on embedding backend selection per environment, and large retrieval payloads can crowd out conversation history.
+- Decision:
+  - Extend retrieval config with explicit embedding backend settings:
+    - `embedding_backend`: `deterministic_hash`, `open_ai`, `open_ai_compatible`, `sentence_transformers`
+    - `embedding_model`, `embedding_base_url`, `embedding_api_key_env`
+  - Implement embedding providers for OpenAI/OpenAI-compatible `/embeddings` and sentence-transformers local `/embed` JSON API.
+  - Use the selected embedding provider for both index-time vector generation and query-time retrieval embedding.
+  - Add RAG-aware context compaction in the agent turn path to keep token usage within configured context window after retrieval injection.
+- Consequences:
+  - Deployments can switch embedding strategy without code changes.
+  - Retrieval and indexing stay dimension-consistent across backend choices.
+  - Large retrieval blocks no longer force unbounded context growth.
+
+---
+
+ADR-0026: Optional SQLite Vector Extension Loading with Strict/Best-Effort Modes
+
+- Status: Accepted
+- Date: 2026-02-11
+- Context: Some deployments want SQLite-native vector acceleration while others run without native extensions.
+- Decision:
+  - Add configurable SQLite vector extension controls:
+    - `storage.sqlite.vector_extension_enabled`
+    - `storage.sqlite.vector_extension_path`
+    - `storage.sqlite.vector_extension_entrypoint`
+    - `storage.sqlite.vector_extension_strict`
+  - Attempt loading extension during SQLite runtime initialization via `load_extension(...)`.
+  - Respect strictness:
+    - strict mode: initialization fails if extension cannot be loaded
+    - best-effort mode: extension load failures are tolerated and core cosine search remains available
+- Consequences:
+  - Vector acceleration can be enabled per environment without hard dependency on extension availability.
+  - Existing behavior remains stable when extension loading is disabled.
+
+---
+
 Template (copy/paste)
 
 ADR-XXXX: <Title>

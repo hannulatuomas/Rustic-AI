@@ -18,6 +18,10 @@ pub enum Command {
     Discover,
     Topics,
     Agents,
+    Index {
+        #[command(subcommand)]
+        command: IndexCommand,
+    },
     Taxonomy {
         #[command(subcommand)]
         command: TaxonomyCommand,
@@ -157,6 +161,29 @@ pub enum TaxonomyCommand {
     },
     Search {
         query: String,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum IndexCommand {
+    Status,
+    Build,
+    Snapshot,
+    Retrieve {
+        query: String,
+        #[arg(long, default_value_t = 8)]
+        top_k: usize,
+        #[arg(long)]
+        min_score: Option<f32>,
+        #[arg(long)]
+        path_prefix: Option<String>,
+        #[arg(long)]
+        kind: Option<String>,
+    },
+    Search {
+        query: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
     },
 }
 

@@ -57,6 +57,10 @@ impl SessionManager {
         self.project_profile.as_ref()
     }
 
+    pub(crate) fn storage(&self) -> Arc<dyn StorageBackend> {
+        self.storage.clone()
+    }
+
     pub async fn create_session(&self, agent_name: &str) -> Result<Uuid> {
         let session_id = Uuid::new_v4();
         self.storage

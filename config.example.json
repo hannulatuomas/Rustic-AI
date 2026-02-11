@@ -6,7 +6,28 @@
     "plugins_enabled": false,
     "workflows_enabled": true,
     "triggers_enabled": false,
-    "learning_enabled": true
+    "learning_enabled": true,
+    "indexing_enabled": true,
+    "vector_enabled": true,
+    "rag_enabled": false
+  },
+  "retrieval": {
+    "enabled": true,
+    "keyword_top_k": 8,
+    "vector_top_k": 8,
+    "max_snippets": 8,
+    "max_snippet_chars": 220,
+    "vector_dimension": 256,
+    "min_vector_score": 0.2,
+    "inject_as_system_message": true,
+    "context_expansion_lines": 4,
+    "ranking_recency_weight": 0.12,
+    "ranking_importance_weight": 0.18,
+    "rag_prompt_token_budget": 1400,
+    "embedding_backend": "deterministic_hash",
+    "embedding_model": null,
+    "embedding_base_url": null,
+    "embedding_api_key_env": null
   },
   "mcp": {
     "servers": [
@@ -90,7 +111,11 @@
       "busy_timeout_ms": 5000,
       "journal_mode": "WAL",
       "synchronous": "NORMAL",
-      "foreign_keys": true
+      "foreign_keys": true,
+      "vector_extension_enabled": false,
+      "vector_extension_path": null,
+      "vector_extension_entrypoint": null,
+      "vector_extension_strict": false
     },
     "postgres": {
       "connection_url": null,

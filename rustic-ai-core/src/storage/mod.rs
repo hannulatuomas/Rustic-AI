@@ -8,9 +8,13 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::error::Result;
+use crate::indexing::{
+    CallEdge, IndexedCallEdgeRecord, IndexedFileRecord, IndexedSymbolRecord, SymbolIndex,
+};
 use crate::learning::{
     MistakePattern, PatternCategory, PreferenceValue, SuccessPattern, UserFeedback, UserPreference,
 };
+use crate::vector::StoredVector;
 
 pub use factory::create_storage_backend;
 pub use model::{Message, PendingToolState, Session, SessionConfig};
@@ -84,4 +88,55 @@ pub trait StorageBackend: Send + Sync {
         query: Option<&str>,
         limit: usize,
     ) -> Result<Vec<SuccessPattern>>;
+
+    // Code indexing and symbol search
+    async fn upsert_code_index_metadata(
+        &self,
+        workspace: &str,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()>;
+    async fn get_code_index_metadata(
+        &self,
+        workspace: &str,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>>;
+    async fn upsert_code_file_index(
+        &self,
+        workspace: &str,
+        path: &str,
+        language: &str,
+        functions: &[String],
+        classes: &[String],
+        imports: &[String],
+    ) -> Result<()>;
+    async fn list_code_file_indexes(&self, workspace: &str) -> Result<Vec<IndexedFileRecord>>;
+    async fn replace_code_symbols_for_file(
+        &self,
+        workspace: &str,
+        file_path: &str,
+        symbols: &[SymbolIndex],
+    ) -> Result<()>;
+    async fn list_code_symbols(&self, workspace: &str) -> Result<Vec<IndexedSymbolRecord>>;
+    async fn search_code_symbols(
+        &self,
+        workspace: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<SymbolIndex>>;
+    async fn replace_code_call_edges_for_file(
+        &self,
+        workspace: &str,
+        file_path: &str,
+        edges: &[CallEdge],
+    ) -> Result<()>;
+    async fn list_code_call_edges(&self, workspace: &str) -> Result<Vec<IndexedCallEdgeRecord>>;
+
+    // Vector storage
+    async fn upsert_vector_embedding(
+        &self,
+        workspace: &str,
+        id: &str,
+        vector: &[f32],
+        metadata: &serde_json::Value,
+    ) -> Result<()>;
+    async fn list_vector_embeddings(&self, workspace: &str) -> Result<Vec<StoredVector>>;
 }
