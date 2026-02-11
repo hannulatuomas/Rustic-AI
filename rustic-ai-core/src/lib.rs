@@ -6,6 +6,7 @@ pub mod config;
 pub mod conversation;
 pub mod error;
 pub mod events;
+pub mod learning;
 pub mod logging;
 pub mod permissions;
 pub mod project;
@@ -24,6 +25,10 @@ pub use config::Config;
 pub use conversation::session_manager::SessionManager;
 pub use error::{Error, Result};
 pub use events::EventBus;
+pub use learning::types::{
+    FeedbackContext, FeedbackType, MistakeType, PatternCategory, PreferenceValue,
+};
+pub use learning::LearningManager;
 pub use providers::create_provider_registry;
 pub use storage::create_storage_backend;
 pub use tools::ToolManager;
@@ -32,6 +37,7 @@ pub struct RusticAI {
     config: Config,
     runtime: runtime::Runtime,
     session_manager: std::sync::Arc<conversation::session_manager::SessionManager>,
+    learning: std::sync::Arc<learning::LearningManager>,
     topic_inference: rules::TopicInferenceService,
     work_dir: std::path::PathBuf,
 }
@@ -78,11 +84,15 @@ impl RusticAI {
         };
         let session_manager =
             std::sync::Arc::new(conversation::session_manager::SessionManager::new(
-                storage_backend,
+                storage_backend.clone(),
                 config.rules.discovered_rules.clone(),
                 work_dir.clone(),
                 project_profile,
             ));
+        let learning = std::sync::Arc::new(learning::LearningManager::new(
+            storage_backend,
+            config.features.learning_enabled,
+        ));
 
         // Cleanup stale pending tool states on startup using a dedicated runtime
         let cleanup_timeout = config.permissions.pending_tool_timeout_secs;
@@ -94,7 +104,8 @@ impl RusticAI {
             }
         });
 
-        let runtime = runtime::Runtime::new(config.clone(), session_manager.clone())?;
+        let runtime =
+            runtime::Runtime::new(config.clone(), session_manager.clone(), learning.clone())?;
         let inference_provider = config.summarization.provider_name.clone().ok_or_else(|| {
             Error::Config(
                 "summarization.provider_name must be set (no implicit provider fallback)"
@@ -107,6 +118,7 @@ impl RusticAI {
             config,
             runtime,
             session_manager,
+            learning,
             topic_inference,
             work_dir,
         })
@@ -133,6 +145,10 @@ impl RusticAI {
 
     pub fn topic_inference(&self) -> &rules::TopicInferenceService {
         &self.topic_inference
+    }
+
+    pub fn learning(&self) -> &std::sync::Arc<learning::LearningManager> {
+        &self.learning
     }
 
     pub fn work_dir(&self) -> &std::path::Path {

@@ -6,6 +6,10 @@ use tokio::sync::OnceCell;
 use uuid::Uuid;
 
 use crate::error::{Error, Result};
+use crate::learning::{
+    FeedbackType, MistakePattern, MistakeType, PatternCategory, PreferenceValue, SuccessPattern,
+    UserFeedback, UserPreference,
+};
 use crate::storage::model::{Message, PendingToolState, Session, SessionConfig};
 use crate::storage::StorageBackend;
 
@@ -27,6 +31,19 @@ const SCHEMA_V1: [&str; 12] = [
 const SCHEMA_V2_MIGRATION: [&str; 2] = [
     "CREATE TABLE IF NOT EXISTS pending_tools (session_id TEXT PRIMARY KEY, tool_name TEXT NOT NULL, args_json TEXT NOT NULL, round_index INTEGER NOT NULL, tool_messages_json TEXT NOT NULL, context_snapshot_json TEXT NOT NULL, created_at TEXT NOT NULL)",
     "UPDATE schema_version SET version = 2",
+];
+
+const SCHEMA_V3_MIGRATION: [&str; 10] = [
+    "CREATE TABLE IF NOT EXISTS user_feedback (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, agent_name TEXT NOT NULL, feedback_type TEXT NOT NULL, rating INTEGER NOT NULL, comment TEXT, context_json TEXT NOT NULL, created_at TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_user_feedback_session_created_at ON user_feedback(session_id, created_at)",
+    "CREATE TABLE IF NOT EXISTS mistake_patterns (id TEXT PRIMARY KEY, agent_name TEXT NOT NULL, mistake_type TEXT NOT NULL, trigger TEXT NOT NULL, frequency INTEGER NOT NULL, last_seen TEXT NOT NULL, suggested_fix TEXT, UNIQUE(agent_name, mistake_type, trigger))",
+    "CREATE INDEX IF NOT EXISTS idx_mistake_patterns_agent_frequency ON mistake_patterns(agent_name, frequency DESC)",
+    "CREATE TABLE IF NOT EXISTS user_preferences (session_id TEXT NOT NULL, preference_key TEXT NOT NULL, value_json TEXT NOT NULL, value_kind TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(session_id, preference_key))",
+    "CREATE INDEX IF NOT EXISTS idx_user_preferences_session ON user_preferences(session_id)",
+    "CREATE TABLE IF NOT EXISTS success_patterns (id TEXT PRIMARY KEY, agent_name TEXT NOT NULL, name TEXT NOT NULL, category TEXT NOT NULL, description TEXT NOT NULL, template TEXT NOT NULL, frequency INTEGER NOT NULL, last_used TEXT NOT NULL, success_rate DOUBLE PRECISION NOT NULL, created_at TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_success_patterns_agent_last_used ON success_patterns(agent_name, last_used DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_success_patterns_agent_category ON success_patterns(agent_name, category)",
+    "UPDATE schema_version SET version = 3",
 ];
 
 #[derive(Debug, Clone)]
@@ -88,6 +105,12 @@ impl PostgresStorage {
                     }
                 }
 
+                if current_version < 3 {
+                    for statement in SCHEMA_V3_MIGRATION {
+                        sqlx::query(statement).execute(&self.pool).await?;
+                    }
+                }
+
                 Ok::<(), sqlx::Error>(())
             })
             .await
@@ -99,6 +122,36 @@ impl PostgresStorage {
         DateTime::parse_from_rfc3339(value)
             .map(|timestamp| timestamp.with_timezone(&Utc))
             .map_err(|err| Error::Storage(format!("failed to parse timestamp '{value}': {err}")))
+    }
+
+    fn parse_feedback_type(value: &str) -> FeedbackType {
+        match value {
+            "explicit" => FeedbackType::Explicit,
+            "implicit_success" => FeedbackType::ImplicitSuccess,
+            "implicit_permission_denied" => FeedbackType::ImplicitPermissionDenied,
+            _ => FeedbackType::ImplicitError,
+        }
+    }
+
+    fn parse_mistake_type(value: &str) -> MistakeType {
+        match value {
+            "permission_denied" => MistakeType::PermissionDenied,
+            "tool_timeout" => MistakeType::ToolTimeout,
+            "file_not_found" => MistakeType::FileNotFound,
+            "compilation_error" => MistakeType::CompilationError,
+            "test_failure" => MistakeType::TestFailure,
+            _ => MistakeType::WrongApproach,
+        }
+    }
+
+    fn parse_pattern_category(value: &str) -> PatternCategory {
+        match value {
+            "error_fixing" => PatternCategory::ErrorFixing,
+            "refactoring" => PatternCategory::Refactoring,
+            "debugging" => PatternCategory::Debugging,
+            "testing" => PatternCategory::Testing,
+            _ => PatternCategory::FeatureImplementation,
+        }
     }
 }
 
@@ -464,5 +517,271 @@ impl StorageBackend for PostgresStorage {
             .fetch_optional(&self.pool)
             .await?;
         Ok(row.is_some())
+    }
+
+    async fn store_user_feedback(&self, feedback: &UserFeedback) -> Result<()> {
+        self.ensure_initialized().await?;
+
+        sqlx::query("INSERT INTO user_feedback(id, session_id, agent_name, feedback_type, rating, comment, context_json, created_at) VALUES($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT(id) DO UPDATE SET feedback_type = EXCLUDED.feedback_type, rating = EXCLUDED.rating, comment = EXCLUDED.comment, context_json = EXCLUDED.context_json, created_at = EXCLUDED.created_at")
+            .bind(feedback.id.to_string())
+            .bind(feedback.session_id.to_string())
+            .bind(&feedback.agent_name)
+            .bind(feedback.feedback_type.as_str())
+            .bind(feedback.rating as i64)
+            .bind(&feedback.comment)
+            .bind(serde_json::to_string(&feedback.context)?)
+            .bind(feedback.created_at.to_rfc3339())
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn list_user_feedback(
+        &self,
+        session_id: Uuid,
+        limit: usize,
+    ) -> Result<Vec<UserFeedback>> {
+        self.ensure_initialized().await?;
+
+        let rows = sqlx::query("SELECT id, session_id, agent_name, feedback_type, rating, comment, context_json, created_at FROM user_feedback WHERE session_id = $1 ORDER BY created_at DESC LIMIT $2")
+            .bind(session_id.to_string())
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?;
+
+        let mut feedback = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id = row.get::<String, _>("id");
+            let sid = row.get::<String, _>("session_id");
+            let context_json = row.get::<String, _>("context_json");
+            let created_at = row.get::<String, _>("created_at");
+            feedback.push(UserFeedback {
+                id: Uuid::parse_str(&id)
+                    .map_err(|err| Error::Storage(format!("invalid feedback id '{id}': {err}")))?,
+                session_id: Uuid::parse_str(&sid).map_err(|err| {
+                    Error::Storage(format!("invalid feedback session id '{sid}': {err}"))
+                })?,
+                agent_name: row.get::<String, _>("agent_name"),
+                feedback_type: Self::parse_feedback_type(
+                    row.get::<String, _>("feedback_type").as_str(),
+                ),
+                rating: row.get::<i64, _>("rating") as i8,
+                comment: row.get::<Option<String>, _>("comment"),
+                context: serde_json::from_str(&context_json)?,
+                created_at: Self::parse_timestamp(&created_at)?,
+            });
+        }
+        feedback.reverse();
+        Ok(feedback)
+    }
+
+    async fn upsert_mistake_pattern(&self, pattern: &MistakePattern) -> Result<()> {
+        self.ensure_initialized().await?;
+
+        sqlx::query("INSERT INTO mistake_patterns(id, agent_name, mistake_type, trigger, frequency, last_seen, suggested_fix) VALUES($1, $2, $3, $4, $5, $6, $7) ON CONFLICT(agent_name, mistake_type, trigger) DO UPDATE SET frequency = EXCLUDED.frequency, last_seen = EXCLUDED.last_seen, suggested_fix = EXCLUDED.suggested_fix")
+            .bind(pattern.id.to_string())
+            .bind(&pattern.agent_name)
+            .bind(pattern.mistake_type.as_str())
+            .bind(&pattern.trigger)
+            .bind(pattern.frequency as i64)
+            .bind(pattern.last_seen.to_rfc3339())
+            .bind(&pattern.suggested_fix)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn list_mistake_patterns(
+        &self,
+        agent_name: &str,
+        min_frequency: u32,
+        limit: usize,
+    ) -> Result<Vec<MistakePattern>> {
+        self.ensure_initialized().await?;
+
+        let rows = sqlx::query("SELECT id, agent_name, mistake_type, trigger, frequency, last_seen, suggested_fix FROM mistake_patterns WHERE agent_name = $1 AND frequency >= $2 ORDER BY frequency DESC, last_seen DESC LIMIT $3")
+            .bind(agent_name)
+            .bind(min_frequency as i64)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?;
+
+        let mut patterns = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id = row.get::<String, _>("id");
+            let last_seen = row.get::<String, _>("last_seen");
+            let mistake_type = row.get::<String, _>("mistake_type");
+            patterns.push(MistakePattern {
+                id: Uuid::parse_str(&id).map_err(|err| {
+                    Error::Storage(format!("invalid mistake pattern id '{id}': {err}"))
+                })?,
+                agent_name: row.get::<String, _>("agent_name"),
+                mistake_type: Self::parse_mistake_type(&mistake_type),
+                trigger: row.get::<String, _>("trigger"),
+                frequency: row.get::<i64, _>("frequency") as u32,
+                last_seen: Self::parse_timestamp(&last_seen)?,
+                suggested_fix: row.get::<Option<String>, _>("suggested_fix"),
+            });
+        }
+
+        Ok(patterns)
+    }
+
+    async fn upsert_user_preference(
+        &self,
+        session_id: Uuid,
+        key: &str,
+        value: &PreferenceValue,
+    ) -> Result<()> {
+        self.ensure_initialized().await?;
+
+        sqlx::query("INSERT INTO user_preferences(session_id, preference_key, value_json, value_kind, updated_at) VALUES($1, $2, $3, $4, $5) ON CONFLICT(session_id, preference_key) DO UPDATE SET value_json = EXCLUDED.value_json, value_kind = EXCLUDED.value_kind, updated_at = EXCLUDED.updated_at")
+            .bind(session_id.to_string())
+            .bind(key)
+            .bind(serde_json::to_string(value)?)
+            .bind(value.kind())
+            .bind(Utc::now().to_rfc3339())
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn get_user_preference(
+        &self,
+        session_id: Uuid,
+        key: &str,
+    ) -> Result<Option<PreferenceValue>> {
+        self.ensure_initialized().await?;
+
+        let row = sqlx::query(
+            "SELECT value_json FROM user_preferences WHERE session_id = $1 AND preference_key = $2",
+        )
+        .bind(session_id.to_string())
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        let value_json = row.get::<String, _>("value_json");
+        Ok(Some(serde_json::from_str(&value_json)?))
+    }
+
+    async fn list_user_preferences(&self, session_id: Uuid) -> Result<Vec<UserPreference>> {
+        self.ensure_initialized().await?;
+
+        let rows = sqlx::query("SELECT preference_key, value_json, updated_at FROM user_preferences WHERE session_id = $1 ORDER BY preference_key ASC")
+            .bind(session_id.to_string())
+            .fetch_all(&self.pool)
+            .await?;
+
+        let mut preferences = Vec::with_capacity(rows.len());
+        for row in rows {
+            let value_json = row.get::<String, _>("value_json");
+            let updated_at = row.get::<String, _>("updated_at");
+            preferences.push(UserPreference {
+                session_id,
+                key: row.get::<String, _>("preference_key"),
+                value: serde_json::from_str(&value_json)?,
+                updated_at: Self::parse_timestamp(&updated_at)?,
+            });
+        }
+
+        Ok(preferences)
+    }
+
+    async fn upsert_success_pattern(&self, pattern: &SuccessPattern) -> Result<()> {
+        self.ensure_initialized().await?;
+
+        sqlx::query("INSERT INTO success_patterns(id, agent_name, name, category, description, template, frequency, last_used, success_rate, created_at) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT(id) DO UPDATE SET name = EXCLUDED.name, category = EXCLUDED.category, description = EXCLUDED.description, template = EXCLUDED.template, frequency = EXCLUDED.frequency, last_used = EXCLUDED.last_used, success_rate = EXCLUDED.success_rate")
+            .bind(pattern.id.to_string())
+            .bind(&pattern.agent_name)
+            .bind(&pattern.name)
+            .bind(pattern.category.as_str())
+            .bind(&pattern.description)
+            .bind(&pattern.template)
+            .bind(pattern.frequency as i64)
+            .bind(pattern.last_used.to_rfc3339())
+            .bind(pattern.success_rate)
+            .bind(pattern.created_at.to_rfc3339())
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn find_success_patterns(
+        &self,
+        agent_name: &str,
+        category: Option<PatternCategory>,
+        query: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<SuccessPattern>> {
+        self.ensure_initialized().await?;
+
+        let search = query.map(|value| format!("%{}%", value.to_ascii_lowercase()));
+        let rows = match (category, search.as_ref()) {
+            (Some(category), Some(search)) => {
+                sqlx::query("SELECT id, agent_name, name, category, description, template, frequency, last_used, success_rate, created_at FROM success_patterns WHERE agent_name = $1 AND category = $2 AND (LOWER(name) LIKE $3 OR LOWER(description) LIKE $3 OR LOWER(template) LIKE $3) ORDER BY frequency DESC, last_used DESC LIMIT $4")
+                    .bind(agent_name)
+                    .bind(category.as_str())
+                    .bind(search)
+                    .bind(limit as i64)
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+            (Some(category), None) => {
+                sqlx::query("SELECT id, agent_name, name, category, description, template, frequency, last_used, success_rate, created_at FROM success_patterns WHERE agent_name = $1 AND category = $2 ORDER BY frequency DESC, last_used DESC LIMIT $3")
+                    .bind(agent_name)
+                    .bind(category.as_str())
+                    .bind(limit as i64)
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+            (None, Some(search)) => {
+                sqlx::query("SELECT id, agent_name, name, category, description, template, frequency, last_used, success_rate, created_at FROM success_patterns WHERE agent_name = $1 AND (LOWER(name) LIKE $2 OR LOWER(description) LIKE $2 OR LOWER(template) LIKE $2) ORDER BY frequency DESC, last_used DESC LIMIT $3")
+                    .bind(agent_name)
+                    .bind(search)
+                    .bind(limit as i64)
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+            (None, None) => {
+                sqlx::query("SELECT id, agent_name, name, category, description, template, frequency, last_used, success_rate, created_at FROM success_patterns WHERE agent_name = $1 ORDER BY frequency DESC, last_used DESC LIMIT $2")
+                    .bind(agent_name)
+                    .bind(limit as i64)
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+        };
+
+        let mut patterns = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id = row.get::<String, _>("id");
+            let category = row.get::<String, _>("category");
+            let created_at = row.get::<String, _>("created_at");
+            let last_used = row.get::<String, _>("last_used");
+            patterns.push(SuccessPattern {
+                id: Uuid::parse_str(&id).map_err(|err| {
+                    Error::Storage(format!("invalid success pattern id '{id}': {err}"))
+                })?,
+                agent_name: row.get::<String, _>("agent_name"),
+                name: row.get::<String, _>("name"),
+                category: Self::parse_pattern_category(&category),
+                description: row.get::<String, _>("description"),
+                template: row.get::<String, _>("template"),
+                frequency: row.get::<i64, _>("frequency") as u32,
+                last_used: Self::parse_timestamp(&last_used)?,
+                success_rate: row.get::<f64, _>("success_rate"),
+                created_at: Self::parse_timestamp(&created_at)?,
+            });
+        }
+
+        Ok(patterns)
     }
 }

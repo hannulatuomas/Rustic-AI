@@ -8,6 +8,9 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::error::Result;
+use crate::learning::{
+    MistakePattern, PatternCategory, PreferenceValue, SuccessPattern, UserFeedback, UserPreference,
+};
 
 pub use factory::create_storage_backend;
 pub use model::{Message, PendingToolState, Session, SessionConfig};
@@ -46,4 +49,39 @@ pub trait StorageBackend: Send + Sync {
     ) -> Result<Option<PendingToolState>>;
     async fn delete_stale_pending_tools(&self, older_than_secs: u64) -> Result<usize>;
     async fn has_pending_tool(&self, session_id: Uuid) -> Result<bool>;
+
+    // Learning feedback and adaptation
+    async fn store_user_feedback(&self, feedback: &UserFeedback) -> Result<()>;
+    async fn list_user_feedback(&self, session_id: Uuid, limit: usize)
+        -> Result<Vec<UserFeedback>>;
+
+    async fn upsert_mistake_pattern(&self, pattern: &MistakePattern) -> Result<()>;
+    async fn list_mistake_patterns(
+        &self,
+        agent_name: &str,
+        min_frequency: u32,
+        limit: usize,
+    ) -> Result<Vec<MistakePattern>>;
+
+    async fn upsert_user_preference(
+        &self,
+        session_id: Uuid,
+        key: &str,
+        value: &PreferenceValue,
+    ) -> Result<()>;
+    async fn get_user_preference(
+        &self,
+        session_id: Uuid,
+        key: &str,
+    ) -> Result<Option<PreferenceValue>>;
+    async fn list_user_preferences(&self, session_id: Uuid) -> Result<Vec<UserPreference>>;
+
+    async fn upsert_success_pattern(&self, pattern: &SuccessPattern) -> Result<()>;
+    async fn find_success_patterns(
+        &self,
+        agent_name: &str,
+        category: Option<PatternCategory>,
+        query: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<SuccessPattern>>;
 }

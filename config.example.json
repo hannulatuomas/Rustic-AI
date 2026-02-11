@@ -5,7 +5,8 @@
     "skills_enabled": true,
     "plugins_enabled": false,
     "workflows_enabled": true,
-    "triggers_enabled": false
+    "triggers_enabled": false,
+    "learning_enabled": true
   },
   "mcp": {
     "servers": [

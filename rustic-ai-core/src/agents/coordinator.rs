@@ -3,11 +3,13 @@ use crate::agents::registry::{AgentRegistry, AgentSuggestion};
 use crate::config::schema::AgentConfig;
 use crate::conversation::session_manager::SessionManager;
 use crate::error::{Error, Result};
+use crate::learning::LearningManager;
 use crate::providers::registry::ProviderRegistry;
 use crate::providers::types::ChatMessage;
 use crate::ToolManager;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 const DEFAULT_SUB_AGENT_CONTEXT_MESSAGES: usize = 24;
@@ -22,6 +24,7 @@ pub struct SubAgentRequest {
     pub current_depth: usize,
     pub context_filter: SubAgentContextFilter,
     pub max_context_tokens: Option<usize>,
+    pub cancellation_token: Option<CancellationToken>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +70,7 @@ impl AgentCoordinator {
         provider_registry: &ProviderRegistry,
         tool_manager: Arc<ToolManager>,
         session_manager: Arc<SessionManager>,
+        learning: Arc<LearningManager>,
     ) -> Result<Self> {
         let mut registry = AgentRegistry::new();
         let mut default_agent = String::new();
@@ -86,6 +90,7 @@ impl AgentCoordinator {
                 provider,
                 tool_manager.clone(),
                 session_manager.clone(),
+                learning.clone(),
             ));
 
             registry.register(config.clone(), agent);
@@ -189,6 +194,7 @@ impl AgentCoordinator {
                 &request.task,
                 request.session_id.to_string(),
                 event_tx,
+                request.cancellation_token,
             )
             .await
     }

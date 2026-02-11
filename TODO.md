@@ -6,7 +6,7 @@ Last updated: 2026-02-11
 
 ## Project Status
 
-**Overall Requirements Coverage: ~52%**
+**Overall Requirements Coverage: ~60%**
 
 **Current Implementation vs Requirements:**
 - LLM Providers: 175% (7 implemented, 4 required)
@@ -15,7 +15,7 @@ Last updated: 2026-02-11
 - Agent Coordination: 30% (partial, missing direct agent calling)
 - Context Handling: 20% (simple LIFO, no summarization/RAG)
 - Big Codebases: 0% (no indexing, vector DB, semantic search)
-- Self-Learning: 0% (no feedback, patterns, adaptation)
+- Self-Learning: 75% (feedback, patterns, preferences, success library implemented)
 - Taxonomy: 10% (schema only, no implementation)
 
 **Estimated Completion: 22-26 weeks of work remaining**
@@ -288,62 +288,62 @@ Last updated: 2026-02-11
 15. **Gap 9: Self-Learning System** (14-18 days total)
 
 #### Phase 1: Feedback Collection (Week 20)
-    - [ ] Create learning module (mod.rs, feedback.rs, storage.rs, types.rs)
-    - [ ] Implement UserFeedback structure (id, session_id, agent_name, feedback_type, rating, comment, context)
-    - [ ] Implement FeedbackContext (task_description, tools_used, model_response, error_occurred, error_message)
-    - [ ] Add SQLite table for feedback storage
-    - [ ] Create migration script for feedback table
-    - [ ] Implement feedback collection API
-    - [ ] Add CLI command: `/feedback --type <type> --rating <-1..1> --comment <text>`
-    - [ ] Add implicit feedback collection from events
+    - [x] Create learning module (mod.rs, feedback.rs, storage.rs, types.rs)
+    - [x] Implement UserFeedback structure (id, session_id, agent_name, feedback_type, rating, comment, context)
+    - [x] Implement FeedbackContext (task_description, tools_used, model_response, error_occurred, error_message)
+    - [x] Add SQLite table for feedback storage
+    - [x] Create migration script for feedback table
+    - [x] Implement feedback collection API
+    - [x] Add CLI command: `/feedback --type <type> --rating <-1..1> --comment <text>`
+    - [x] Add implicit feedback collection from events
 
 #### Phase 2: Mistake Pattern Learning (Weeks 21-22)
-    - [ ] Create pattern learning module (patterns.rs)
-    - [ ] Implement MistakePattern structure (pattern_type, trigger, frequency, last_seen, suggested_fix)
-    - [ ] Implement MistakeType enum (PermissionDenied, ToolTimeout, FileNotFound, CompilationError, TestFailure, WrongApproach)
-    - [ ] Implement PatternLearner
-    - [ ] Implement event recording (ToolFailed, PermissionDenied)
-    - [ ] Implement error classification (classify_error method)
-    - [ ] Implement pattern frequency tracking
-    - [ ] Implement fix suggestion (suggest_fix method)
-    - [ ] Implement active pattern retrieval (get_active_patterns)
-    - [ ] Implement pattern-based warnings before task execution
-    - [ ] Add SQLite table for mistake patterns
-    - [ ] Create migration script for patterns table
+    - [x] Create pattern learning module (patterns.rs)
+    - [x] Implement MistakePattern structure (pattern_type, trigger, frequency, last_seen, suggested_fix)
+    - [x] Implement MistakeType enum (PermissionDenied, ToolTimeout, FileNotFound, CompilationError, TestFailure, WrongApproach)
+    - [x] Implement PatternLearner
+    - [x] Implement event recording (ToolFailed, PermissionDenied)
+    - [x] Implement error classification (classify_error method)
+    - [x] Implement pattern frequency tracking
+    - [x] Implement fix suggestion (suggest_fix method)
+    - [x] Implement active pattern retrieval (get_active_patterns)
+    - [x] Implement pattern-based warnings before task execution
+    - [x] Add SQLite table for mistake patterns
+    - [x] Create migration script for patterns table
 
 #### Phase 3: Preference Adaptation (Week 23)
-    - [ ] Create preference learning module (preferences.rs)
-    - [ ] Implement UserPreferences structure (id, session_id, preferences HashMap)
-    - [ ] Implement PreferenceValue enum (String, Int, Float, Bool)
-    - [ ] Implement PreferenceLearner
-    - [ ] Implement choice recording (record_choice)
-    - [ ] Implement rating recording (record_rating)
-    - [ ] Implement preference retrieval (get_preference)
-    - [ ] Implement preferred approach retrieval (get_preferred_approach)
-    - [ ] Add SQLite table for user preferences
-    - [ ] Create migration script for preferences table
+    - [x] Create preference learning module (preferences.rs)
+    - [x] Implement UserPreferences structure (id, session_id, preferences HashMap)
+    - [x] Implement PreferenceValue enum (String, Int, Float, Bool)
+    - [x] Implement PreferenceLearner
+    - [x] Implement choice recording (record_choice)
+    - [x] Implement rating recording (record_rating)
+    - [x] Implement preference retrieval (get_preference)
+    - [x] Implement preferred approach retrieval (get_preferred_approach)
+    - [x] Add SQLite table for user preferences
+    - [x] Create migration script for preferences table
 
 #### Phase 4: Success Pattern Library (Week 24)
-    - [ ] Create success patterns module (success_patterns.rs)
-    - [ ] Implement SuccessPattern structure (id, name, category, description, template, frequency, last_used, success_rate)
-    - [ ] Implement PatternCategory enum (ErrorFixing, Refactoring, Debugging, FeatureImplementation, Testing)
-    - [ ] Implement SuccessPatternLibrary
-    - [ ] Implement success recording (record_success)
-    - [ ] Implement pattern similarity scoring (similarity method)
-    - [ ] Implement pattern finding (find_patterns)
-    - [ ] Implement top pattern retrieval (get_top_patterns)
-    - [ ] Implement name generation (generate_name)
-    - [ ] Implement template extraction (extract_template)
-    - [ ] Add SQLite table for success patterns
-    - [ ] Create migration script for success patterns table
+    - [x] Create success patterns module (success_patterns.rs)
+    - [x] Implement SuccessPattern structure (id, name, category, description, template, frequency, last_used, success_rate)
+    - [x] Implement PatternCategory enum (ErrorFixing, Refactoring, Debugging, FeatureImplementation, Testing)
+    - [x] Implement SuccessPatternLibrary
+    - [x] Implement success recording (record_success)
+    - [x] Implement pattern similarity scoring (similarity method)
+    - [x] Implement pattern finding (find_patterns)
+    - [x] Implement top pattern retrieval (get_top_patterns)
+    - [x] Implement name generation (generate_name)
+    - [x] Implement template extraction (extract_template)
+    - [x] Add SQLite table for success patterns
+    - [x] Create migration script for success patterns table
 
 #### Phase 5: Integration with Agent
-    - [ ] Modify Agent::run to incorporate learning
-    - [ ] Add pattern check before task execution (show known patterns)
-    - [ ] Record task completion for success patterns
-    - [ ] Record errors for mistake patterns
-    - [ ] Apply user preferences in agent behavior
-    - [ ] Emit learning-related events
+    - [x] Modify Agent::run to incorporate learning
+    - [x] Add pattern check before task execution (show known patterns)
+    - [x] Record task completion for success patterns
+    - [x] Record errors for mistake patterns
+    - [x] Apply user preferences in agent behavior
+    - [x] Emit learning-related events
 
 ### Phase 7: Big Codebase Support (Weeks 25-28)
 **Priority: CRITICAL - Required for large codebases (100K+ files)**
@@ -481,7 +481,7 @@ Last updated: 2026-02-11
 - [x] Add timeout policy controls to route step timeout as failure when configured
 - [x] Add per-step cancel-signal integration for long-running tool/plugin executions
 - [x] Surface workflow retry/timeout aggregates in CLI workflow run summaries
-- [ ] Implement full OpenCode-parity interrupt: user-triggered cancellation for active agent and sub-agent turns (not only tool/process timeout cancellation)
+- [x] Implement full OpenCode-parity interrupt: user-triggered cancellation for active agent and sub-agent turns (not only tool/process timeout cancellation)
 
 ---
 

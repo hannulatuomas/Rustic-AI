@@ -94,6 +94,30 @@ pub enum Event {
         target_agent: String,
         success: bool,
     },
+    LearningFeedbackRecorded {
+        session_id: String,
+        agent: String,
+        feedback_type: String,
+        rating: i8,
+    },
+    LearningPatternWarning {
+        session_id: String,
+        agent: String,
+        mistake_type: String,
+        frequency: u32,
+        suggested_fix: Option<String>,
+    },
+    LearningPreferenceApplied {
+        session_id: String,
+        agent: String,
+        key: String,
+    },
+    LearningSuccessPatternRecorded {
+        session_id: String,
+        agent: String,
+        pattern_name: String,
+        category: String,
+    },
     SessionUpdated(String),
     Error(String),
 }

@@ -2412,7 +2412,7 @@ impl WorkflowExecutor {
                         let mut backoff_ms = retry_backoff_ms;
                         loop {
                             let result = agent
-                                .start_turn(session_uuid, prompt.clone(), event_tx.clone())
+                                .start_turn(session_uuid, prompt.clone(), event_tx.clone(), None)
                                 .await;
                             match result {
                                 Ok(()) => {

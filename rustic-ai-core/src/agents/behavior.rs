@@ -3,6 +3,7 @@ use crate::config::schema::AgentConfig;
 use crate::conversation::session_manager::SessionManager;
 use crate::error::Result;
 use crate::events::Event;
+use crate::learning::{LearningManager, MistakeType};
 use crate::providers::types::{ChatMessage, GenerateOptions, ModelProvider};
 use crate::storage::PendingToolState;
 use crate::ToolManager;
@@ -11,6 +12,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration, Instant};
+use tokio_util::sync::CancellationToken;
 
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 4;
 const DEFAULT_MAX_TOOLS_PER_ROUND: usize = 8;
@@ -27,6 +29,7 @@ pub struct Agent {
     provider: Arc<dyn ModelProvider>,
     tool_manager: Arc<ToolManager>,
     session_manager: Arc<SessionManager>,
+    learning: Arc<LearningManager>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -41,12 +44,29 @@ struct ToolExecutionResult {
     pending: bool,
 }
 
+#[derive(Clone, Copy)]
+struct ResponseMeta<'a> {
+    session_id_str: &'a str,
+    agent_name: &'a str,
+}
+
 impl Agent {
+    fn is_cancelled(cancellation_token: Option<&CancellationToken>) -> bool {
+        cancellation_token
+            .map(CancellationToken::is_cancelled)
+            .unwrap_or(false)
+    }
+
+    fn interrupted_error() -> crate::Error {
+        crate::Error::Timeout("agent turn interrupted by user".to_owned())
+    }
+
     pub fn new(
         config: AgentConfig,
         provider: Arc<dyn ModelProvider>,
         tool_manager: Arc<ToolManager>,
         session_manager: Arc<SessionManager>,
+        learning: Arc<LearningManager>,
     ) -> Self {
         let memory = AgentMemory::new(
             config.context_window_size,
@@ -61,6 +81,7 @@ impl Agent {
             provider,
             tool_manager,
             session_manager,
+            learning,
         }
     }
 
@@ -118,6 +139,94 @@ impl Agent {
         }
     }
 
+    fn latest_user_task(context: &[ChatMessage]) -> Option<String> {
+        context
+            .iter()
+            .rev()
+            .find(|message| message.role == "user")
+            .map(|message| message.content.clone())
+    }
+
+    fn tools_used_from_context(context: &[ChatMessage]) -> Vec<String> {
+        let mut tools = Vec::new();
+        for message in context {
+            if message.role != "tool" {
+                continue;
+            }
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&message.content) {
+                let maybe_tool_name = value.get("tool").and_then(serde_json::Value::as_str);
+                if let Some(tool_name) = maybe_tool_name {
+                    if !tools.iter().any(|existing| existing == tool_name) {
+                        tools.push(tool_name.to_owned());
+                    }
+                }
+            }
+        }
+        tools
+    }
+
+    async fn maybe_apply_preferred_approach(
+        &self,
+        session_id: uuid::Uuid,
+        session_id_str: &str,
+        context: &mut Vec<ChatMessage>,
+        event_tx: &mpsc::Sender<Event>,
+    ) -> Result<()> {
+        if !self.learning.enabled() {
+            return Ok(());
+        }
+
+        if let Some(preferred_approach) = self
+            .learning
+            .get_preferred_approach(session_id, "task_execution")
+            .await?
+        {
+            context.insert(
+                1,
+                ChatMessage {
+                    role: "system".to_owned(),
+                    content: format!("User preference for task execution: {}", preferred_approach),
+                    name: None,
+                    tool_calls: None,
+                },
+            );
+
+            let _ = event_tx.try_send(Event::LearningPreferenceApplied {
+                session_id: session_id_str.to_owned(),
+                agent: self.config.name.clone(),
+                key: "preferred_approach.task_execution".to_owned(),
+            });
+        }
+
+        Ok(())
+    }
+
+    async fn emit_pattern_warnings(
+        &self,
+        session_id_str: &str,
+        event_tx: &mpsc::Sender<Event>,
+    ) -> Result<()> {
+        if !self.learning.enabled() {
+            return Ok(());
+        }
+
+        let patterns = self
+            .learning
+            .get_active_patterns(&self.config.name, 5)
+            .await?;
+        for pattern in patterns {
+            let _ = event_tx.try_send(Event::LearningPatternWarning {
+                session_id: session_id_str.to_owned(),
+                agent: self.config.name.clone(),
+                mistake_type: pattern.mistake_type.as_str().to_owned(),
+                frequency: pattern.frequency,
+                suggested_fix: pattern.suggested_fix.clone(),
+            });
+        }
+
+        Ok(())
+    }
+
     fn render_tool_output_message(
         tool_name: &str,
         result: Option<&crate::tools::ToolResult>,
@@ -144,6 +253,7 @@ impl Agent {
         agent_name: &str,
         call: &ParsedToolCall,
         event_tx: mpsc::Sender<Event>,
+        cancellation_token: Option<CancellationToken>,
     ) -> Result<ToolExecutionResult> {
         if !self.config.tools.iter().any(|name| name == &call.tool) {
             let message = format!(
@@ -166,12 +276,13 @@ impl Agent {
 
         let tool_result = self
             .tool_manager
-            .execute_tool(
+            .execute_tool_with_cancel(
                 session_id_str.to_owned(),
                 Some(agent_name.to_owned()),
                 &call.tool,
                 call.args.clone(),
                 event_tx,
+                cancellation_token,
             )
             .await?;
 
@@ -341,6 +452,7 @@ impl Agent {
         agent_name: &str,
         mut context: Vec<ChatMessage>,
         event_tx: mpsc::Sender<Event>,
+        cancellation_token: Option<CancellationToken>,
     ) -> Result<()> {
         let options = self.generation_options();
         let max_rounds = self.effective_max_tool_rounds();
@@ -349,8 +461,20 @@ impl Agent {
         let max_turn_duration = self.effective_max_turn_duration();
         let turn_started = Instant::now();
         let mut total_tool_calls_executed = 0usize;
+        let task_description = Self::latest_user_task(&context).unwrap_or_default();
+        let mut tools_used = Self::tools_used_from_context(&context);
+
+        self.emit_pattern_warnings(session_id_str, &event_tx)
+            .await?;
 
         for round_index in 0..max_rounds {
+            if Self::is_cancelled(cancellation_token.as_ref()) {
+                let _ = event_tx.try_send(Event::Progress(
+                    "agent turn interrupted by user request".to_owned(),
+                ));
+                return Err(Self::interrupted_error());
+            }
+
             // Save context snapshot before generating assistant response
             // This will be used to resume after permission approval
             let context_snapshot = context.clone();
@@ -372,10 +496,13 @@ impl Agent {
                 .generate_response_with_events(
                     &context,
                     &options,
-                    session_id_str,
-                    agent_name,
+                    ResponseMeta {
+                        session_id_str,
+                        agent_name,
+                    },
                     event_tx.clone(),
                     remaining_duration,
+                    cancellation_token.clone(),
                 )
                 .await?;
 
@@ -385,6 +512,24 @@ impl Agent {
 
             let mut parsed_tool_calls = self.extract_tool_calls(&response);
             if parsed_tool_calls.is_empty() {
+                if self.learning.enabled() {
+                    let pattern = self
+                        .learning
+                        .record_success(
+                            session_id,
+                            agent_name,
+                            &task_description,
+                            &tools_used,
+                            &response,
+                        )
+                        .await?;
+                    let _ = event_tx.try_send(Event::LearningSuccessPatternRecorded {
+                        session_id: session_id_str.to_owned(),
+                        agent: agent_name.to_owned(),
+                        pattern_name: pattern.name,
+                        category: pattern.category.as_str().to_owned(),
+                    });
+                }
                 return Ok(());
             }
 
@@ -399,6 +544,13 @@ impl Agent {
 
             let mut tool_messages = Vec::new();
             for call in parsed_tool_calls {
+                if Self::is_cancelled(cancellation_token.as_ref()) {
+                    let _ = event_tx.try_send(Event::Progress(
+                        "agent turn interrupted by user request".to_owned(),
+                    ));
+                    return Err(Self::interrupted_error());
+                }
+
                 if total_tool_calls_executed >= max_total_tool_calls {
                     let _ = event_tx.try_send(Event::Progress(format!(
                         "agent reached max total tool calls per turn ({max_total_tool_calls}); stopping autonomous loop"
@@ -412,6 +564,23 @@ impl Agent {
                         "tool '{}' is not allowed for agent '{}'",
                         call.tool, self.config.name
                     );
+                    if self.learning.enabled() {
+                        let pattern = self
+                            .learning
+                            .record_mistake(
+                                agent_name,
+                                MistakeType::WrongApproach,
+                                format!("tool={} not allowed", call.tool),
+                            )
+                            .await?;
+                        let _ = event_tx.try_send(Event::LearningPatternWarning {
+                            session_id: session_id_str.to_owned(),
+                            agent: agent_name.to_owned(),
+                            mistake_type: pattern.mistake_type.as_str().to_owned(),
+                            frequency: pattern.frequency,
+                            suggested_fix: pattern.suggested_fix,
+                        });
+                    }
                     self.session_manager
                         .append_message(session_id, "tool", &message)
                         .await?;
@@ -446,12 +615,13 @@ impl Agent {
 
                     match timeout(
                         remaining,
-                        self.tool_manager.execute_tool(
+                        self.tool_manager.execute_tool_with_cancel(
                             session_id_str.to_owned(),
                             Some(agent_name.to_owned()),
                             &call.tool,
                             call.args.clone(),
                             event_tx.clone(),
+                            cancellation_token.clone(),
                         ),
                     )
                     .await
@@ -467,12 +637,13 @@ impl Agent {
                     }
                 } else {
                     self.tool_manager
-                        .execute_tool(
+                        .execute_tool_with_cancel(
                             session_id_str.to_owned(),
                             Some(agent_name.to_owned()),
                             &call.tool,
                             call.args.clone(),
                             event_tx.clone(),
+                            cancellation_token.clone(),
                         )
                         .await?
                 };
@@ -497,6 +668,33 @@ impl Agent {
                 self.session_manager
                     .append_message(session_id, "tool", &tool_message)
                     .await?;
+
+                if !tools_used.iter().any(|tool| tool == &call.tool) {
+                    tools_used.push(call.tool.clone());
+                }
+
+                if self.learning.enabled() {
+                    if let Some(result) = tool_result.as_ref() {
+                        if !result.success || result.exit_code.unwrap_or_default() != 0 {
+                            let pattern = self
+                                .learning
+                                .record_tool_failure(
+                                    agent_name,
+                                    &call.tool,
+                                    result.exit_code,
+                                    &result.output,
+                                )
+                                .await?;
+                            let _ = event_tx.try_send(Event::LearningPatternWarning {
+                                session_id: session_id_str.to_owned(),
+                                agent: agent_name.to_owned(),
+                                mistake_type: pattern.mistake_type.as_str().to_owned(),
+                                frequency: pattern.frequency,
+                                suggested_fix: pattern.suggested_fix,
+                            });
+                        }
+                    }
+                }
 
                 tool_messages.push(ChatMessage {
                     role: "tool".to_string(),
@@ -543,37 +741,65 @@ impl Agent {
         &self,
         context: &[ChatMessage],
         options: &GenerateOptions,
-        session_id_str: &str,
-        agent_name: &str,
+        response_meta: ResponseMeta<'_>,
         event_tx: mpsc::Sender<Event>,
         remaining_duration: Option<Duration>,
+        cancellation_token: Option<CancellationToken>,
     ) -> Result<String> {
+        if Self::is_cancelled(cancellation_token.as_ref()) {
+            return Err(Self::interrupted_error());
+        }
+
         if self.provider.supports_streaming() {
-            let receiver_result = if let Some(remaining) = remaining_duration {
-                timeout(remaining, self.provider.stream_generate(context, options))
-                    .await
-                    .map_err(|_| {
-                        crate::Error::Provider(
-                            "streaming response timed out before stream started".to_owned(),
-                        )
-                    })?
+            let stream_start = async {
+                if let Some(remaining) = remaining_duration {
+                    timeout(remaining, self.provider.stream_generate(context, options))
+                        .await
+                        .map_err(|_| {
+                            crate::Error::Provider(
+                                "streaming response timed out before stream started".to_owned(),
+                            )
+                        })?
+                } else {
+                    self.provider.stream_generate(context, options).await
+                }
+            };
+
+            let receiver_result = if let Some(token) = cancellation_token.clone() {
+                tokio::select! {
+                    result = stream_start => result,
+                    _ = token.cancelled() => return Err(Self::interrupted_error()),
+                }
             } else {
-                self.provider.stream_generate(context, options).await
+                stream_start.await
             };
 
             match receiver_result {
                 Ok(mut rx) => {
                     let consume_stream = async {
                         let mut buffer = String::new();
-                        while let Some(chunk) = rx.recv().await {
+                        loop {
+                            let maybe_chunk = if let Some(token) = cancellation_token.clone() {
+                                tokio::select! {
+                                    chunk = rx.recv() => chunk,
+                                    _ = token.cancelled() => return Err(Self::interrupted_error()),
+                                }
+                            } else {
+                                rx.recv().await
+                            };
+
+                            let Some(chunk) = maybe_chunk else {
+                                break;
+                            };
+
                             let _ = event_tx.try_send(Event::ModelChunk {
-                                session_id: session_id_str.to_owned(),
-                                agent: agent_name.to_owned(),
+                                session_id: response_meta.session_id_str.to_owned(),
+                                agent: response_meta.agent_name.to_owned(),
                                 text: chunk.clone(),
                             });
                             buffer.push_str(&chunk);
                         }
-                        buffer
+                        Ok::<String, crate::Error>(buffer)
                     };
 
                     let streamed = if let Some(remaining) = remaining_duration {
@@ -587,7 +813,7 @@ impl Agent {
                         consume_stream.await
                     };
 
-                    return Ok(streamed);
+                    return streamed;
                 }
                 Err(err) => {
                     let _ = event_tx.try_send(Event::Progress(format!(
@@ -597,23 +823,34 @@ impl Agent {
             }
         }
 
-        let response = if let Some(remaining) = remaining_duration {
-            timeout(remaining, self.provider.generate(context, options))
-                .await
-                .map_err(|_| {
-                    crate::Error::Provider(
-                        "model response timed out while waiting for non-streaming output"
-                            .to_owned(),
-                    )
-                })??
+        let generate = async {
+            if let Some(remaining) = remaining_duration {
+                timeout(remaining, self.provider.generate(context, options))
+                    .await
+                    .map_err(|_| {
+                        crate::Error::Provider(
+                            "model response timed out while waiting for non-streaming output"
+                                .to_owned(),
+                        )
+                    })?
+            } else {
+                self.provider.generate(context, options).await
+            }
+        };
+
+        let response = if let Some(token) = cancellation_token {
+            tokio::select! {
+                result = generate => result?,
+                _ = token.cancelled() => return Err(Self::interrupted_error()),
+            }
         } else {
-            self.provider.generate(context, options).await?
+            generate.await?
         };
 
         for chunk in response.split_inclusive('\n') {
             let _ = event_tx.try_send(Event::ModelChunk {
-                session_id: session_id_str.to_owned(),
-                agent: agent_name.to_owned(),
+                session_id: response_meta.session_id_str.to_owned(),
+                agent: response_meta.agent_name.to_owned(),
                 text: chunk.to_string(),
             });
         }
@@ -627,6 +864,7 @@ impl Agent {
         session_id_str: &str,
         agent_name: &str,
         event_tx: mpsc::Sender<Event>,
+        cancellation_token: Option<CancellationToken>,
     ) -> Result<()> {
         let pending = self
             .session_manager
@@ -658,6 +896,7 @@ impl Agent {
                 agent_name,
                 &resumed_call,
                 event_tx.clone(),
+                cancellation_token.clone(),
             )
             .await?;
         tool_messages.push(resumed_result.message);
@@ -705,6 +944,13 @@ impl Agent {
             .take(max_tools_per_round.saturating_sub(tool_messages.len()));
 
         for call in remaining_tools {
+            if Self::is_cancelled(cancellation_token.as_ref()) {
+                let _ = event_tx.try_send(Event::Progress(
+                    "agent turn interrupted by user request".to_owned(),
+                ));
+                return Err(Self::interrupted_error());
+            }
+
             if total_tool_calls_executed >= max_total_tool_calls {
                 let _ = event_tx.try_send(Event::Progress(format!(
                     "agent reached max total tool calls per turn ({max_total_tool_calls}); stopping autonomous loop"
@@ -719,6 +965,7 @@ impl Agent {
                     agent_name,
                     &call,
                     event_tx.clone(),
+                    cancellation_token.clone(),
                 )
                 .await?;
             tool_messages.push(exec.message);
@@ -749,6 +996,13 @@ impl Agent {
 
         // Continue autonomous tool loop from next round
         for r in (round_index + 1)..max_rounds {
+            if Self::is_cancelled(cancellation_token.as_ref()) {
+                let _ = event_tx.try_send(Event::Progress(
+                    "agent turn interrupted by user request".to_owned(),
+                ));
+                return Err(Self::interrupted_error());
+            }
+
             let remaining_duration = if let Some(max_duration) = max_turn_duration {
                 if turn_started.elapsed() >= max_duration {
                     let _ = event_tx.try_send(Event::Progress(format!(
@@ -766,10 +1020,13 @@ impl Agent {
                 .generate_response_with_events(
                     &context,
                     &options,
-                    session_id_str,
-                    agent_name,
+                    ResponseMeta {
+                        session_id_str,
+                        agent_name,
+                    },
                     event_tx.clone(),
                     remaining_duration,
+                    cancellation_token.clone(),
                 )
                 .await?;
 
@@ -808,6 +1065,7 @@ impl Agent {
                         agent_name,
                         &call,
                         event_tx.clone(),
+                        cancellation_token.clone(),
                     )
                     .await?;
                 tool_messages_round.push(exec.message);
@@ -847,6 +1105,7 @@ impl Agent {
         &self,
         session_id: uuid::Uuid,
         event_tx: mpsc::Sender<Event>,
+        cancellation_token: Option<CancellationToken>,
     ) -> Result<()> {
         let agent_name = self.config.name.clone();
         let session_id_str = session_id.to_string();
@@ -861,19 +1120,46 @@ impl Agent {
 
         if has_pending {
             // Resume from pending tool state
-            self.resume_from_pending_tool(session_id, &session_id_str, &agent_name, event_tx)
-                .await?;
+            let resumed = self
+                .resume_from_pending_tool(
+                    session_id,
+                    &session_id_str,
+                    &agent_name,
+                    event_tx,
+                    cancellation_token,
+                )
+                .await;
+            if let Err(err) = resumed {
+                if self.learning.enabled() {
+                    let _ = self
+                        .learning
+                        .record_error_message(&agent_name, &err.to_string())
+                        .await;
+                }
+                return Err(err);
+            }
         } else {
             // No pending state - reload context and continue
             let context_window = self.load_context_window_from_session(session_id).await?;
-            self.run_assistant_tool_loop(
-                session_id,
-                &session_id_str,
-                &agent_name,
-                context_window,
-                event_tx,
-            )
-            .await?;
+            let continued = self
+                .run_assistant_tool_loop(
+                    session_id,
+                    &session_id_str,
+                    &agent_name,
+                    context_window,
+                    event_tx,
+                    cancellation_token,
+                )
+                .await;
+            if let Err(err) = continued {
+                if self.learning.enabled() {
+                    let _ = self
+                        .learning
+                        .record_error_message(&agent_name, &err.to_string())
+                        .await;
+                }
+                return Err(err);
+            }
         }
 
         Ok(())
@@ -885,6 +1171,7 @@ impl Agent {
         session_id: uuid::Uuid,
         input: String,
         event_tx: mpsc::Sender<Event>,
+        cancellation_token: Option<CancellationToken>,
     ) -> Result<()> {
         let agent_name = self.config.name.clone();
         let session_id_str = session_id.to_string();
@@ -907,20 +1194,41 @@ impl Agent {
             tool_calls: None,
         });
 
+        self.maybe_apply_preferred_approach(
+            session_id,
+            &session_id_str,
+            &mut full_context,
+            &event_tx,
+        )
+        .await?;
+
         // 6. Append user message to session
         self.session_manager
             .append_message(session_id, "user", &input)
             .await?;
 
         // 7+. Run autonomous assistant/tool loop with configured limits
-        self.run_assistant_tool_loop(
-            session_id,
-            &session_id_str,
-            &agent_name,
-            full_context,
-            event_tx,
-        )
-        .await
+        let turn_result = self
+            .run_assistant_tool_loop(
+                session_id,
+                &session_id_str,
+                &agent_name,
+                full_context,
+                event_tx,
+                cancellation_token,
+            )
+            .await;
+
+        if self.learning.enabled() {
+            if let Err(err) = &turn_result {
+                let _ = self
+                    .learning
+                    .record_error_message(&agent_name, &err.to_string())
+                    .await;
+            }
+        }
+
+        turn_result
     }
 
     pub async fn generate_from_context(
@@ -929,6 +1237,7 @@ impl Agent {
         task: &str,
         session_id: String,
         event_tx: mpsc::Sender<Event>,
+        cancellation_token: Option<CancellationToken>,
     ) -> Result<String> {
         let system_prompt = self.system_prompt();
         if !context.iter().any(|message| message.role == "system") {
@@ -950,15 +1259,37 @@ impl Agent {
             tool_calls: None,
         });
 
-        self.generate_response_with_events(
-            &context,
-            &self.generation_options(),
-            &session_id,
-            &self.config.name,
-            event_tx,
-            None,
-        )
-        .await
+        let response = self
+            .generate_response_with_events(
+                &context,
+                &self.generation_options(),
+                ResponseMeta {
+                    session_id_str: &session_id,
+                    agent_name: &self.config.name,
+                },
+                event_tx,
+                None,
+                cancellation_token,
+            )
+            .await;
+
+        if self.learning.enabled() {
+            if let Err(err) = &response {
+                if let Ok(parsed_session_id) = uuid::Uuid::parse_str(&session_id) {
+                    let _ = self
+                        .learning
+                        .record_implicit_event(
+                            parsed_session_id,
+                            &self.config.name,
+                            &Event::Error(err.to_string()),
+                            Some(task.to_owned()),
+                        )
+                        .await;
+                }
+            }
+        }
+
+        response
     }
 
     pub fn config(&self) -> &AgentConfig {

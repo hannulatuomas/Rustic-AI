@@ -6,12 +6,14 @@ use rustic_ai_core::events::Event;
 use rustic_ai_core::permissions::{AskResolution, CommandPatternBucket};
 use rustic_ai_core::rules::TopicTracker;
 use rustic_ai_core::workflows::{WorkflowExecutor, WorkflowExecutorConfig, WorkflowRunRequest};
-use rustic_ai_core::RusticAI;
+use rustic_ai_core::{FeedbackContext, FeedbackType, PreferenceValue, RusticAI};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 struct PendingPermissionRequest {
@@ -29,6 +31,30 @@ struct PendingSudoRequest {
     reason: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum FeedbackCommandType {
+    Explicit,
+    Success,
+    Error,
+}
+
+impl FeedbackCommandType {
+    fn as_feedback_type(self) -> FeedbackType {
+        match self {
+            Self::Explicit => FeedbackType::Explicit,
+            Self::Success => FeedbackType::ImplicitSuccess,
+            Self::Error => FeedbackType::ImplicitError,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ParsedFeedbackCommand {
+    feedback_type: FeedbackCommandType,
+    rating: i8,
+    comment: Option<String>,
+}
+
 pub struct Repl {
     app: Arc<RusticAI>,
     agent_name: Option<String>,
@@ -37,6 +63,72 @@ pub struct Repl {
 }
 
 impl Repl {
+    fn parse_feedback_command(input: &str) -> std::result::Result<ParsedFeedbackCommand, String> {
+        let mut feedback_type = FeedbackCommandType::Explicit;
+        let mut rating: Option<i8> = None;
+        let mut comment: Option<String> = None;
+
+        let tokens = input.split_whitespace().collect::<Vec<_>>();
+        let mut index = 1usize;
+        while index < tokens.len() {
+            match tokens[index] {
+                "--type" => {
+                    index += 1;
+                    let value = tokens.get(index).ok_or_else(|| {
+                        "missing value for --type (expected explicit|success|error)".to_owned()
+                    })?;
+                    feedback_type = match value.to_ascii_lowercase().as_str() {
+                        "explicit" => FeedbackCommandType::Explicit,
+                        "success" => FeedbackCommandType::Success,
+                        "error" => FeedbackCommandType::Error,
+                        other => {
+                            return Err(format!(
+                                "invalid --type '{other}' (expected explicit|success|error)"
+                            ));
+                        }
+                    };
+                }
+                "--rating" => {
+                    index += 1;
+                    let value = tokens
+                        .get(index)
+                        .ok_or_else(|| "missing value for --rating".to_owned())?;
+                    let parsed = value
+                        .parse::<i8>()
+                        .map_err(|_| format!("invalid --rating '{value}' (expected -1..1)"))?;
+                    if !(-1..=1).contains(&parsed) {
+                        return Err("--rating must be between -1 and 1".to_owned());
+                    }
+                    rating = Some(parsed);
+                }
+                "--comment" => {
+                    let comment_start = input
+                        .find("--comment")
+                        .ok_or_else(|| "missing value for --comment".to_owned())?
+                        + "--comment".len();
+                    let raw_comment = input[comment_start..].trim();
+                    if raw_comment.is_empty() {
+                        return Err("missing value for --comment".to_owned());
+                    }
+                    comment = Some(raw_comment.to_owned());
+                    break;
+                }
+                unknown => {
+                    return Err(format!("unknown feedback argument '{unknown}'"));
+                }
+            }
+            index += 1;
+        }
+
+        let rating = rating.ok_or_else(|| "missing --rating <-1..1>".to_owned())?;
+
+        Ok(ParsedFeedbackCommand {
+            feedback_type,
+            rating,
+            comment,
+        })
+    }
+
     pub fn new(
         app: Arc<RusticAI>,
         agent_name: Option<String>,
@@ -398,11 +490,27 @@ impl Repl {
         let (event_tx, mut event_rx) = mpsc::channel(100);
 
         let renderer = Renderer::new(self.output_format);
+        let agent_name = self
+            .agent_name
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+        if !self.app.runtime().agents.has_agent(&agent_name) {
+            return Err(rustic_ai_core::Error::NotFound(format!(
+                "agent '{}' not found",
+                agent_name
+            )));
+        }
+
         let pending_permission: Arc<Mutex<Option<PendingPermissionRequest>>> =
             Arc::new(Mutex::new(None));
         let pending_sudo: Arc<Mutex<Option<PendingSudoRequest>>> = Arc::new(Mutex::new(None));
+        let active_turn_tokens: Arc<Mutex<HashMap<uuid::Uuid, CancellationToken>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let pending_for_listener = pending_permission.clone();
         let pending_sudo_for_listener = pending_sudo.clone();
+        let learning_for_listener = self.app.learning().clone();
+        let agent_name_for_listener = agent_name.clone();
+        let session_id_for_listener = session_id;
         let renderer_handle = tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
                 if let Event::PermissionRequest {
@@ -438,23 +546,34 @@ impl Repl {
                 }
 
                 renderer.render_event(&event);
+
+                if learning_for_listener.enabled() {
+                    match &event {
+                        Event::ToolCompleted { .. }
+                        | Event::PermissionDecision { .. }
+                        | Event::Error(_) => {
+                            let _ = learning_for_listener
+                                .record_implicit_event(
+                                    session_id_for_listener,
+                                    &agent_name_for_listener,
+                                    &event,
+                                    None,
+                                )
+                                .await;
+                        }
+                        _ => {}
+                    }
+                }
             }
         });
-
-        let agent_name = self
-            .agent_name
-            .clone()
-            .unwrap_or_else(|| "default".to_string());
-        if !self.app.runtime().agents.has_agent(&agent_name) {
-            return Err(rustic_ai_core::Error::NotFound(format!(
-                "agent '{}' not found",
-                agent_name
-            )));
-        }
 
         println!();
         println!("Rustic-AI Interactive Chat");
         println!("Type 'exit' or press Ctrl-C to quit");
+        println!("Use /interrupt to cancel an active turn");
+        println!(
+            "Use /feedback --type <explicit|success|error> --rating <-1..1> [--comment <text>]"
+        );
         println!("Config: {}", self.config_path.display());
         println!(
             "Permission shortcuts: /perm path add [global|project|session] <path>, /perm cmd <allow|ask|deny> [global|project|session] <pattern>"
@@ -515,12 +634,28 @@ impl Repl {
                             .await?;
 
                         let agent = self.app.runtime().agents.get_agent(Some(&agent_name))?;
-                        if let Err(err) = agent
-                            .continue_after_tool(session_id, event_tx.clone())
-                            .await
+                        let continue_token = CancellationToken::new();
                         {
-                            let _ = event_tx.try_send(Event::Error(err.to_string()));
+                            let mut tokens = active_turn_tokens.lock().await;
+                            tokens.insert(session_id, continue_token.clone());
                         }
+                        let active_turn_tokens_for_task = active_turn_tokens.clone();
+                        let event_tx_error = event_tx.clone();
+                        let event_tx_for_continue = event_tx.clone();
+                        tokio::spawn(async move {
+                            if let Err(err) = agent
+                                .continue_after_tool(
+                                    session_id,
+                                    event_tx_for_continue,
+                                    Some(continue_token),
+                                )
+                                .await
+                            {
+                                let _ = event_tx_error.try_send(Event::Error(err.to_string()));
+                            }
+                            let mut tokens = active_turn_tokens_for_task.lock().await;
+                            tokens.remove(&session_id);
+                        });
 
                         let mut permission_guard = pending_permission.lock().await;
                         *permission_guard = None;
@@ -614,12 +749,28 @@ impl Repl {
                             .await?;
 
                         let agent = self.app.runtime().agents.get_agent(Some(&agent_name))?;
-                        if let Err(err) = agent
-                            .continue_after_tool(session_id, event_tx.clone())
-                            .await
+                        let continue_token = CancellationToken::new();
                         {
-                            let _ = event_tx.try_send(Event::Error(err.to_string()));
+                            let mut tokens = active_turn_tokens.lock().await;
+                            tokens.insert(session_id, continue_token.clone());
                         }
+                        let active_turn_tokens_for_task = active_turn_tokens.clone();
+                        let event_tx_error = event_tx.clone();
+                        let event_tx_for_continue = event_tx.clone();
+                        tokio::spawn(async move {
+                            if let Err(err) = agent
+                                .continue_after_tool(
+                                    session_id,
+                                    event_tx_for_continue,
+                                    Some(continue_token),
+                                )
+                                .await
+                            {
+                                let _ = event_tx_error.try_send(Event::Error(err.to_string()));
+                            }
+                            let mut tokens = active_turn_tokens_for_task.lock().await;
+                            tokens.remove(&session_id);
+                        });
                     }
 
                     let mut guard = pending_permission.lock().await;
@@ -627,6 +778,116 @@ impl Repl {
                 } else {
                     println!("No pending permission request.");
                 }
+                continue;
+            }
+
+            if input.eq_ignore_ascii_case("/interrupt") {
+                let token = {
+                    let mut tokens = active_turn_tokens.lock().await;
+                    tokens.remove(&session_id)
+                };
+                if let Some(token) = token {
+                    token.cancel();
+                    println!("Interrupted active turn for session {session_id}.");
+                } else {
+                    println!("No active turn to interrupt.");
+                }
+                continue;
+            }
+
+            if input.starts_with("/feedback") {
+                let parsed = match Self::parse_feedback_command(input) {
+                    Ok(parsed) => parsed,
+                    Err(err) => {
+                        println!("Invalid feedback command: {err}");
+                        println!(
+                            "Usage: /feedback --type <explicit|success|error> --rating <-1..1> [--comment <text>]"
+                        );
+                        continue;
+                    }
+                };
+
+                let recent = self
+                    .app
+                    .session_manager()
+                    .get_recent_messages(session_id, 24)
+                    .await?;
+
+                let task_description = recent
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == "user")
+                    .map(|message| message.content.clone());
+                let model_response = recent
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == "assistant")
+                    .map(|message| message.content.clone());
+
+                let mut tools_used = Vec::new();
+                for message in recent.iter().filter(|message| message.role == "tool") {
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&message.content) {
+                        let maybe_tool_name = value.get("tool").and_then(serde_json::Value::as_str);
+                        if let Some(tool_name) = maybe_tool_name {
+                            if !tools_used.iter().any(|existing| existing == tool_name) {
+                                tools_used.push(tool_name.to_owned());
+                            }
+                        }
+                    }
+                }
+
+                let context = FeedbackContext {
+                    task_description: task_description.clone(),
+                    tools_used,
+                    model_response,
+                    error_occurred: parsed.rating < 0,
+                    error_message: if parsed.rating < 0 {
+                        parsed.comment.clone()
+                    } else {
+                        None
+                    },
+                };
+
+                let recorded = self
+                    .app
+                    .learning()
+                    .submit_feedback(
+                        session_id,
+                        agent_name.clone(),
+                        parsed.feedback_type.as_feedback_type(),
+                        parsed.rating,
+                        parsed.comment.clone(),
+                        context,
+                    )
+                    .await?;
+
+                self.app
+                    .learning()
+                    .record_rating(session_id, "task_execution", parsed.rating)
+                    .await?;
+
+                if let Some(comment) = parsed.comment.clone() {
+                    let lowered = comment.to_ascii_lowercase();
+                    if let Some(preferred) = lowered.strip_prefix("prefer ") {
+                        self.app
+                            .learning()
+                            .record_choice(
+                                session_id,
+                                "preferred_approach.task_execution",
+                                PreferenceValue::String(preferred.trim().to_owned()),
+                            )
+                            .await?;
+                    }
+                }
+
+                let _ = event_tx.try_send(Event::LearningFeedbackRecorded {
+                    session_id: session_id.to_string(),
+                    agent: agent_name.clone(),
+                    feedback_type: recorded.feedback_type.as_str().to_owned(),
+                    rating: recorded.rating,
+                });
+
+                println!("Feedback recorded.");
                 continue;
             }
 
@@ -1117,14 +1378,27 @@ impl Repl {
             let input_clone = input.to_string();
             let event_tx_clone = event_tx.clone();
             let event_tx_error = event_tx.clone();
+            let turn_token = CancellationToken::new();
+            {
+                let mut tokens = active_turn_tokens.lock().await;
+                tokens.insert(session_id_clone, turn_token.clone());
+            }
+            let active_turn_tokens_for_task = active_turn_tokens.clone();
 
             tokio::spawn(async move {
                 if let Err(err) = agent_clone
-                    .start_turn(session_id_clone, input_clone, event_tx_clone)
+                    .start_turn(
+                        session_id_clone,
+                        input_clone,
+                        event_tx_clone,
+                        Some(turn_token),
+                    )
                     .await
                 {
                     let _ = event_tx_error.try_send(Event::Error(err.to_string()));
                 }
+                let mut tokens = active_turn_tokens_for_task.lock().await;
+                tokens.remove(&session_id_clone);
             });
 
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;

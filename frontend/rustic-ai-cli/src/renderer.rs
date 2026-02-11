@@ -167,6 +167,34 @@ impl Renderer {
                 let status = if *success { "OK" } else { "FAILED" };
                 println!("[sub-agent] {caller_agent} <- {target_agent} {status}");
             }
+            Event::LearningFeedbackRecorded {
+                feedback_type,
+                rating,
+                ..
+            } => {
+                println!("[learning] feedback recorded: type={feedback_type}, rating={rating}");
+            }
+            Event::LearningPatternWarning {
+                mistake_type,
+                frequency,
+                suggested_fix,
+                ..
+            } => {
+                println!("[learning] pattern warning: {mistake_type} (seen {frequency}x)");
+                if let Some(fix) = suggested_fix {
+                    println!("[learning] suggested fix: {fix}");
+                }
+            }
+            Event::LearningPreferenceApplied { key, .. } => {
+                println!("[learning] applied user preference: {key}");
+            }
+            Event::LearningSuccessPatternRecorded {
+                pattern_name,
+                category,
+                ..
+            } => {
+                println!("[learning] success pattern recorded: {pattern_name} ({category})");
+            }
             Event::SessionUpdated(_) => {
                 // Silent for now, useful for debugging
             }
@@ -351,6 +379,54 @@ impl Renderer {
                 "caller_agent": caller_agent,
                 "target_agent": target_agent,
                 "success": success,
+            }),
+            Event::LearningFeedbackRecorded {
+                session_id,
+                agent,
+                feedback_type,
+                rating,
+            } => serde_json::json!({
+                "type": "learning_feedback_recorded",
+                "session_id": session_id,
+                "agent": agent,
+                "feedback_type": feedback_type,
+                "rating": rating,
+            }),
+            Event::LearningPatternWarning {
+                session_id,
+                agent,
+                mistake_type,
+                frequency,
+                suggested_fix,
+            } => serde_json::json!({
+                "type": "learning_pattern_warning",
+                "session_id": session_id,
+                "agent": agent,
+                "mistake_type": mistake_type,
+                "frequency": frequency,
+                "suggested_fix": suggested_fix,
+            }),
+            Event::LearningPreferenceApplied {
+                session_id,
+                agent,
+                key,
+            } => serde_json::json!({
+                "type": "learning_preference_applied",
+                "session_id": session_id,
+                "agent": agent,
+                "key": key,
+            }),
+            Event::LearningSuccessPatternRecorded {
+                session_id,
+                agent,
+                pattern_name,
+                category,
+            } => serde_json::json!({
+                "type": "learning_success_pattern_recorded",
+                "session_id": session_id,
+                "agent": agent,
+                "pattern_name": pattern_name,
+                "category": category,
             }),
             Event::SessionUpdated(id) => serde_json::json!({
                 "type": "session_updated",

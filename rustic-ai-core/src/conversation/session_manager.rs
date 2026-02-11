@@ -97,6 +97,14 @@ impl SessionManager {
         self.storage.get_session_messages(session_id).await
     }
 
+    pub async fn get_recent_messages(
+        &self,
+        session_id: Uuid,
+        limit: usize,
+    ) -> Result<Vec<Message>> {
+        self.storage.get_recent_messages(session_id, limit).await
+    }
+
     pub async fn get_session_topics(&self, session_id: Uuid) -> Result<Option<Vec<String>>> {
         self.storage.get_session_topics(session_id).await
     }

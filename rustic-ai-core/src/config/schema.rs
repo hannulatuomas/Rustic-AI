@@ -423,6 +423,7 @@ pub struct FeatureConfig {
     pub plugins_enabled: bool,
     pub workflows_enabled: bool,
     pub triggers_enabled: bool,
+    pub learning_enabled: bool,
 }
 
 impl Default for FeatureConfig {
@@ -433,6 +434,7 @@ impl Default for FeatureConfig {
             plugins_enabled: false,
             workflows_enabled: true,
             triggers_enabled: false,
+            learning_enabled: true,
         }
     }
 }

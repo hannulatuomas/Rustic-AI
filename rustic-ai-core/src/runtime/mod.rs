@@ -4,6 +4,7 @@ use crate::config::schema::AgentPermissionMode;
 use crate::conversation::session_manager::SessionManager;
 use crate::error::Result;
 use crate::events::EventBus;
+use crate::learning::LearningManager;
 use crate::permissions::{ConfigurablePermissionPolicy, PermissionPolicy};
 use crate::providers::create_provider_registry;
 use crate::providers::registry::ProviderRegistry;
@@ -28,6 +29,7 @@ impl Runtime {
     pub fn new(
         config: crate::config::Config,
         session_manager: Arc<SessionManager>,
+        learning: Arc<LearningManager>,
     ) -> Result<Self> {
         let work_dir = std::env::current_dir()
             .map_err(|err| crate::Error::Config(format!("failed to resolve current dir: {err}")))?;
@@ -107,6 +109,7 @@ impl Runtime {
             &providers,
             tools.clone(),
             session_manager.clone(),
+            learning,
         )?;
         tools.attach_agents(Arc::new(agents.clone()));
 

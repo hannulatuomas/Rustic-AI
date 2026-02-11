@@ -364,7 +364,33 @@ ADR-0020: Layered Configuration via Global/Project Fragment Files
 - Consequences:
   - Users can split config concerns into separate files without losing a single effective config model.
   - Project config can override global defaults cleanly.
-  - Env vars remain highest-precedence runtime override path.
+- Env vars remain highest-precedence runtime override path.
+
+---
+
+ADR-0021: Phase 6 Learning Subsystem (Feedback, Patterns, Preferences, Success Library)
+
+- Status: Accepted
+- Date: 2026-02-11
+- Context: The roadmap requires a self-learning loop so the system can reduce repeated mistakes, adapt to user preferences, and capture successful task patterns.
+- Decision:
+  - Add a dedicated `learning` module in `rustic-ai-core` with typed models and manager APIs for:
+    - explicit and implicit feedback collection
+    - mistake pattern classification/tracking
+    - user preference recording/retrieval
+    - success pattern extraction/similarity/reuse
+  - Extend `StorageBackend` with learning persistence operations and add schema version 3 migrations for SQLite/Postgres.
+  - Integrate learning with agent turns:
+    - pre-turn pattern warnings
+    - post-turn success pattern recording
+    - error/mistake recording
+    - optional preference application to prompt context
+  - Add interactive CLI feedback capture via `/feedback --type <explicit|success|error> --rating <-1..1> [--comment <text>]`.
+  - Add `features.learning_enabled` to allow runtime enable/disable.
+- Consequences:
+  - Learning data is now durable and backend-agnostic through the storage trait boundary.
+  - Agent behavior can adapt gradually based on persisted user/task history.
+  - Event stream includes learning lifecycle notifications for UI consumers.
 
 ---
 

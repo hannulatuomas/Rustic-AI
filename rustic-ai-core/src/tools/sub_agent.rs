@@ -180,6 +180,7 @@ impl Tool for SubAgentTool {
                     current_depth: context.sub_agent_depth + 1,
                     context_filter,
                     max_context_tokens: parsed.max_context_tokens,
+                    cancellation_token: context.cancellation_token.clone(),
                 },
                 tx.clone(),
             )

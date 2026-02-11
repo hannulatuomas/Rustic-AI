@@ -37,7 +37,8 @@
         "skills_enabled": { "type": "boolean" },
         "plugins_enabled": { "type": "boolean" },
         "workflows_enabled": { "type": "boolean" },
-        "triggers_enabled": { "type": "boolean" }
+        "triggers_enabled": { "type": "boolean" },
+        "learning_enabled": { "type": "boolean" }
       },
       "additionalProperties": false
     },
