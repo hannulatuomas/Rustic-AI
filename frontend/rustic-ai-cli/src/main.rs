@@ -495,6 +495,80 @@ fn run() -> rustic_ai_core::Result<()> {
                                     index.updated_at
                                 );
                             }
+                            cli::IndexCommand::Graph { format } => match format {
+                                cli::GraphFormat::Summary => {
+                                    let graph = runtime.block_on(app.build_code_graph())?;
+                                    println!(
+                                        "Code graph: nodes={}, edges={}",
+                                        graph.nodes.len(),
+                                        graph.edges.len()
+                                    );
+                                }
+                                cli::GraphFormat::Json => {
+                                    let graph = runtime.block_on(app.build_code_graph())?;
+                                    println!("{}", serde_json::to_string_pretty(&graph)?);
+                                }
+                                cli::GraphFormat::Dot => {
+                                    let dot = runtime.block_on(app.render_code_graph_dot())?;
+                                    println!("{}", dot);
+                                }
+                            },
+                            cli::IndexCommand::Impact {
+                                symbol,
+                                depth,
+                                format,
+                            } => {
+                                let report =
+                                    runtime.block_on(app.analyze_symbol_impact(&symbol, depth))?;
+                                match format {
+                                    cli::GraphFormat::Summary => {
+                                        println!(
+                                            "Impact report for '{}': affected_symbols={}, affected_files={}, depth={}",
+                                            report.root_symbol,
+                                            report.affected_symbols.len(),
+                                            report.affected_files.len(),
+                                            report.max_depth
+                                        );
+                                        if !report.affected_files.is_empty() {
+                                            println!("Files:");
+                                            for file in report.affected_files {
+                                                println!("- {}", file);
+                                            }
+                                        }
+                                    }
+                                    cli::GraphFormat::Json => {
+                                        println!("{}", serde_json::to_string_pretty(&report)?);
+                                    }
+                                    cli::GraphFormat::Dot => {
+                                        let graph = runtime.block_on(app.build_code_graph())?;
+                                        let affected = report
+                                            .affected_symbols
+                                            .iter()
+                                            .cloned()
+                                            .collect::<std::collections::BTreeSet<_>>();
+                                        println!("digraph impact_graph {{");
+                                        println!("  rankdir=LR;");
+                                        for node in graph.nodes {
+                                            if affected.contains(&node.id) {
+                                                println!("  \"{}\";", node.id.replace('"', "\\\""));
+                                            }
+                                        }
+                                        for edge in graph.edges {
+                                            if edge.edge_type == "calls"
+                                                && affected.contains(&edge.from)
+                                                && affected.contains(&edge.to)
+                                            {
+                                                println!(
+                                                    "  \"{}\" -> \"{}\";",
+                                                    edge.from.replace('"', "\\\""),
+                                                    edge.to.replace('"', "\\\"")
+                                                );
+                                            }
+                                        }
+                                        println!("}}");
+                                    }
+                                }
+                            }
                             cli::IndexCommand::Build => {
                                 let index = runtime.block_on(app.build_code_index())?;
                                 println!(

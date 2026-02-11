@@ -494,6 +494,26 @@ ADR-0026: Optional SQLite Vector Extension Loading with Strict/Best-Effort Modes
 
 ---
 
+ADR-0027: Code Graph and Impact Analysis via Index Snapshot
+
+- Status: Accepted
+- Date: 2026-02-11
+- Context: With indexing and call-edge persistence in place, engineering workflows need direct impact analysis and graph visualization outputs.
+- Decision:
+  - Add graph analysis utilities on top of index snapshots:
+    - build graph nodes/edges from symbols, call edges, and dependencies
+    - reverse-call impact traversal from a root symbol with depth limit
+    - DOT rendering for graph/impact visualization
+  - Expose CLI diagnostics under `index` command surface:
+    - `index graph` with `summary|json|dot`
+    - `index impact <symbol>` with `summary|json|dot`
+    - `index retrieve` filters (`path_prefix`, `kind`) for retrieval diagnostics
+- Consequences:
+  - Developers can inspect structural impact before edits.
+  - Graph/impact outputs are available without external tooling dependencies.
+
+---
+
 Template (copy/paste)
 
 ADR-XXXX: <Title>

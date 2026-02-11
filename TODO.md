@@ -6,19 +6,19 @@ Last updated: 2026-02-11
 
 ## Project Status
 
-**Overall Requirements Coverage: ~60%**
+**Overall Requirements Coverage: ~80%**
 
 **Current Implementation vs Requirements:**
 - LLM Providers: 175% (7 implemented, 4 required)
-- Tool System: 23% (7 implemented, 30+ required)
-- Permissions: 50% (allow/deny/ask, missing read/write)
-- Agent Coordination: 30% (partial, missing direct agent calling)
-- Context Handling: 20% (simple LIFO, no summarization/RAG)
-- Big Codebases: 0% (no indexing, vector DB, semantic search)
-- Self-Learning: 75% (feedback, patterns, preferences, success library implemented)
-- Taxonomy: 10% (schema only, no implementation)
+- Tool System: 63% (core + advanced tools implemented; connector breadth still pending)
+- Permissions: 90% (allow/deny/ask + read-only/read-write enforcement implemented)
+- Agent Coordination: 65% (sub-agent protocol, filtered context, interrupt flow implemented; parallel/deep delegation pending)
+- Context Handling: 70% (importance scoring, pruning, summarization, RAG-assisted context; aggressive configurable summaries pending)
+- Big Codebases: 90% (indexing, vector search, hybrid retrieval, graph/impact analysis implemented)
+- Self-Learning: 85% (feedback, patterns, preferences, success library implemented)
+- Taxonomy: 95% (registry/filtering + CLI flows implemented)
 
-**Estimated Completion: 22-26 weeks of work remaining**
+**Estimated Completion: 8-12 weeks of work remaining**
 
 ---
 
@@ -408,21 +408,21 @@ Last updated: 2026-02-11
 ## Release Preparation
 
 17. **Update README.md** (1 day)
-    - [ ] Fix "scaffold + foundation stage" claim
-    - [ ] Reflect completion status
-    - [ ] Add quick start examples
-    - [ ] Update feature matrix
+    - [x] Fix "scaffold + foundation stage" claim
+    - [x] Reflect completion status
+    - [x] Add quick start examples
+    - [x] Update feature matrix
 
 18. **Advanced Tools** (5-7 days)
-    - [ ] Git tool (clone, commit, push, pull, status, diff, log, branch)
-    - [ ] Database tool (query, list tables, describe table)
-    - [ ] LSP client tool (symbol search, definition, references, hover)
+    - [x] Git tool (clone, commit, push, pull, status, diff, log, branch)
+    - [x] Database tool (query, list tables, describe table)
+    - [x] LSP client tool (symbol search, definition, references, hover)
 
 19. **Code Graph Analysis** (7-10 days)
-    - [ ] AST parsing/indexing
-    - [ ] Dependency tracking
-    - [ ] Impact analysis for changes
-    - [ ] Code visualization
+    - [x] AST parsing/indexing
+    - [x] Dependency tracking
+    - [x] Impact analysis for changes
+    - [x] Code visualization
 
 20. **API Server** (7-10 days)
     - [ ] REST API for programmatic access
@@ -452,6 +452,55 @@ Last updated: 2026-02-11
     - [ ] Target: 80%+ code coverage
     - [ ] Ensure all tests pass
 
+23. **Operational Reliability and Productization** (8-10 days)
+    - [ ] Add CI pipeline for required checks (fmt, build, clippy, tests)
+    - [ ] Define quality gate policy and merge criteria
+    - [ ] Add release runbook (build, verification, rollback)
+    - [ ] Add production runtime/deployment docs
+
+24. **Complexity and Duplication Refactors** (5-7 days)
+    - [ ] Refactor `rustic-ai-core/src/agents/behavior.rs` into smaller units
+    - [ ] Refactor large workflow/config paths into focused modules
+    - [ ] Reduce duplicated provider/tool option-building logic
+    - [ ] Keep behavior parity with targeted regression checks
+
+25. **Session and Project TODO Tracking** (3-4 days)
+    - [ ] Add TODO model for session/project scopes
+    - [ ] Add CLI commands to list/add/update/complete TODO tasks
+    - [ ] Persist TODO state in storage backend
+    - [ ] Render TODO progress in session status output
+
+26. **Aggressive Context Summary Controls** (3-4 days)
+    - [ ] Add configurable message-window threshold for summarization
+    - [ ] Summarize what user asked and what was completed each cycle
+    - [ ] Add summary quality and token-budget controls
+    - [ ] Expose config and CLI visibility for active summaries
+
+27. **Bracket Validator Tool** (2-3 days)
+    - [ ] Implement `bracket_validator` tool with (), {}, [], <> nesting checks
+    - [ ] Ignore brackets in comments and string literals with per-language rules
+    - [ ] Return structured mismatches with line/column, suggestions, and max error cap
+    - [ ] Support summary/detailed output plus CI/LSP-friendly formatting
+
+28. **Dynamic Routing Engine (LangGraph-like)** (5-7 days)
+    - [ ] Add rule- and state-driven routing layer for agent/task orchestration
+    - [ ] Support conditional branching, retries, fallbacks, and loop controls
+    - [ ] Add runtime route tracing for explainability/debugging
+    - [ ] Integrate routing policies with permission and tool selection systems
+
+29. **Sub-Agent Orchestration v2** (6-8 days)
+    - [ ] Enable aggressive sub-agent delegation policies by task type and context pressure
+    - [ ] Add parallel sub-agent execution with bounded concurrency
+    - [ ] Treat sub-agent calls as first-class tool invocations with explicit input/output contracts
+    - [ ] Surface full sub-agent execution traces in CLI (timeline, events, outcomes)
+    - [ ] Capture and persist sub-agent outputs for parent-agent reuse
+
+30. **CLI Document Change Visibility** (2-3 days)
+    - [ ] Add command/output path to show changed documents for current session
+    - [ ] Provide unified diffs for modified docs/files (OpenCode-style UX)
+    - [ ] Add concise summary view (files changed + key hunks)
+    - [ ] Ensure large diffs are paginated and stream safely
+
 ---
 
 ## Release
@@ -469,19 +518,20 @@ Last updated: 2026-02-11
 
 ## Current Focus (Continuing)
 
-- [ ] Workflow enhancements (from previous TODO)
-    - [x] Phase 1: Grouped conditions with nested logic (2-3 days)
-    - [x] Phase 2: Expression language hardening (error model + schema update)
-    - [x] Phase 3: New step types follow-up (loop parallel mode, switch pattern matching)
+- [ ] Release hardening and productization
+    - [ ] Complete API server foundation planning and execution scope
+    - [ ] Start test and CI quality gate implementation
+    - [ ] Keep docs/TODO synchronized with shipped capabilities
 
 ---
 
 ## Next (Immediate)
 
-- [x] Add timeout policy controls to route step timeout as failure when configured
-- [x] Add per-step cancel-signal integration for long-running tool/plugin executions
-- [x] Surface workflow retry/timeout aggregates in CLI workflow run summaries
-- [x] Implement full OpenCode-parity interrupt: user-triggered cancellation for active agent and sub-agent turns (not only tool/process timeout cancellation)
+- [ ] Implement Sub-Agent Orchestration v2 (item 29)
+- [ ] Implement Session and Project TODO Tracking (item 25)
+- [ ] Implement Aggressive Context Summary Controls (item 26)
+- [ ] Implement Bracket Validator Tool (item 27)
+- [ ] Start Dynamic Routing Engine (item 28)
 
 ---
 

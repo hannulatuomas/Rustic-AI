@@ -169,6 +169,17 @@ pub enum IndexCommand {
     Status,
     Build,
     Snapshot,
+    Graph {
+        #[arg(long, value_enum, default_value = "summary")]
+        format: GraphFormat,
+    },
+    Impact {
+        symbol: String,
+        #[arg(long, default_value_t = 3)]
+        depth: usize,
+        #[arg(long, value_enum, default_value = "summary")]
+        format: GraphFormat,
+    },
     Retrieve {
         query: String,
         #[arg(long, default_value_t = 8)]
@@ -185,6 +196,13 @@ pub enum IndexCommand {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum GraphFormat {
+    Summary,
+    Json,
+    Dot,
 }
 
 impl Cli {

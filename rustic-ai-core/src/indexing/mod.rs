@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod graph;
 pub mod parser;
 pub mod symbols;
 pub mod types;
@@ -13,6 +14,7 @@ use crate::error::{Error, Result};
 use crate::storage::StorageBackend;
 use crate::vector::{create_embedding_provider, Embedding, VectorDb};
 
+pub use graph::{analyze_impact, build_code_graph, render_dot, CodeGraph, ImpactReport};
 use parser::{build_file_and_symbols, detect_language};
 pub use types::{
     CallEdge, CodeIndex, FileIndex, IndexedCallEdgeRecord, IndexedFileRecord, IndexedSymbolRecord,

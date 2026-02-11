@@ -29,6 +29,7 @@ pub use conversation::session_manager::SessionManager;
 pub use error::{Error, Result};
 pub use events::EventBus;
 pub use indexing::CodeIndexer;
+pub use indexing::{CodeGraph, ImpactReport};
 pub use learning::types::{
     FeedbackContext, FeedbackType, MistakeType, PatternCategory, PreferenceValue,
 };
@@ -195,6 +196,25 @@ impl RusticAI {
 
     pub async fn load_code_index_snapshot(&self) -> Result<indexing::CodeIndex> {
         self.code_indexer().load_index_snapshot().await
+    }
+
+    pub async fn build_code_graph(&self) -> Result<indexing::CodeGraph> {
+        let snapshot = self.load_code_index_snapshot().await?;
+        Ok(indexing::build_code_graph(&snapshot))
+    }
+
+    pub async fn analyze_symbol_impact(
+        &self,
+        symbol: &str,
+        depth: usize,
+    ) -> Result<indexing::ImpactReport> {
+        let snapshot = self.load_code_index_snapshot().await?;
+        Ok(indexing::analyze_impact(&snapshot, symbol, depth))
+    }
+
+    pub async fn render_code_graph_dot(&self) -> Result<String> {
+        let graph = self.build_code_graph().await?;
+        Ok(indexing::render_dot(&graph))
     }
 
     pub async fn retrieve_code_context(
