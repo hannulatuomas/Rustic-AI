@@ -466,6 +466,38 @@ pub fn validate_config(config: &Config) -> Result<()> {
             ));
         }
     }
+    if let Some(priority) = config.workflows.switch_pattern_priority.as_deref() {
+        if !matches!(priority, "exact_first" | "pattern_first") {
+            return Err(Error::Validation(
+                "workflows.switch_pattern_priority must be exact_first or pattern_first when set"
+                    .to_owned(),
+            ));
+        }
+    }
+    if let Some(routing) = config.workflows.continue_on_error_routing.as_deref() {
+        if !matches!(routing, "next_first" | "on_failure_first") {
+            return Err(Error::Validation(
+                "workflows.continue_on_error_routing must be next_first or on_failure_first when set"
+                    .to_owned(),
+            ));
+        }
+    }
+    if let Some(policy) = config.workflows.execution_error_policy.as_deref() {
+        if !matches!(policy, "abort" | "route_as_failure") {
+            return Err(Error::Validation(
+                "workflows.execution_error_policy must be abort or route_as_failure when set"
+                    .to_owned(),
+            ));
+        }
+    }
+    if let Some(multiplier) = config.workflows.default_retry_backoff_multiplier {
+        if !(1.0..=10.0).contains(&multiplier) {
+            return Err(Error::Validation(
+                "workflows.default_retry_backoff_multiplier must be between 1.0 and 10.0 when set"
+                    .to_owned(),
+            ));
+        }
+    }
     if config.workflows.condition_group_max_depth == 0
         || config.workflows.condition_group_max_depth > 64
     {

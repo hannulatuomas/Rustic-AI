@@ -127,6 +127,7 @@
         "directories",
         "max_discovery_depth",
         "default_timeout_seconds",
+        "compatibility_preset",
         "max_recursion_depth",
         "max_steps_per_run",
         "condition_group_max_depth",
@@ -145,6 +146,31 @@
         },
         "max_discovery_depth": { "type": "integer", "minimum": 1, "maximum": 32 },
         "default_timeout_seconds": { "type": "integer", "minimum": 1 },
+        "compatibility_preset": {
+          "type": "string",
+          "enum": ["rustic", "open_code", "claude_code", "n8n"]
+        },
+        "switch_case_sensitive_default": { "type": ["boolean", "null"] },
+        "switch_pattern_priority": {
+          "type": ["string", "null"],
+          "enum": ["exact_first", "pattern_first", null]
+        },
+        "loop_continue_on_iteration_error_default": { "type": ["boolean", "null"] },
+        "wait_timeout_succeeds": { "type": ["boolean", "null"] },
+        "condition_missing_path_as_false": { "type": ["boolean", "null"] },
+        "default_continue_on_error": { "type": ["boolean", "null"] },
+        "continue_on_error_routing": {
+          "type": ["string", "null"],
+          "enum": ["next_first", "on_failure_first", null]
+        },
+        "execution_error_policy": {
+          "type": ["string", "null"],
+          "enum": ["abort", "route_as_failure", null]
+        },
+        "default_retry_count": { "type": ["integer", "null"], "minimum": 0, "maximum": 20 },
+        "default_retry_backoff_ms": { "type": ["integer", "null"], "minimum": 1, "maximum": 600000 },
+        "default_retry_backoff_multiplier": { "type": ["number", "null"], "minimum": 1.0, "maximum": 10.0 },
+        "default_retry_backoff_max_ms": { "type": ["integer", "null"], "minimum": 1, "maximum": 600000 },
         "max_recursion_depth": { "type": ["integer", "null"], "minimum": 1, "maximum": 256 },
         "max_steps_per_run": { "type": ["integer", "null"], "minimum": 1, "maximum": 10000 },
         "condition_group_max_depth": { "type": "integer", "minimum": 1, "maximum": 64 },

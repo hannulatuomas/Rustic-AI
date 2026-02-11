@@ -1,0 +1,58 @@
+{
+  "name": "opencode_parallel_checks",
+  "description": "OpenCode-style parallel repository checks with explicit strictness",
+  "version": "1.0.0",
+  "execution": {
+    "null_handling": "strict",
+    "max_steps_per_run": 32,
+    "expression_max_depth": 64,
+    "loop_default_max_parallelism": 16
+  },
+  "entrypoints": {
+    "start": {
+      "step": "collect",
+      "triggers": {
+        "events": ["repo.check"],
+        "cron": [],
+        "webhooks": []
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "collect",
+      "name": "Collect check targets",
+      "kind": "loop",
+      "config": {
+        "items": "$input.targets",
+        "result_expression": "to_string(item)",
+        "parallel": true,
+        "max_parallelism": 12,
+        "item_variable": "item",
+        "index_variable": "index",
+        "expression_error_mode": "strict"
+      },
+      "outputs": {
+        "targets": "$.results"
+      },
+      "next": "finish",
+      "continue_on_error": false
+    },
+    {
+      "id": "finish",
+      "name": "Finalize",
+      "kind": "merge",
+      "config": {
+        "mode": "combine",
+        "inputs": {
+          "targets": "$targets"
+        },
+        "null_handling": "strict"
+      },
+      "outputs": {
+        "result": "$"
+      },
+      "continue_on_error": false
+    }
+  ]
+}

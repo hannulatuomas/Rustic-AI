@@ -1,0 +1,93 @@
+{
+  "name": "n8n_webhook_signature_gate",
+  "description": "Webhook signature verification gate with explicit pass/reject routing",
+  "version": "1.0.0",
+  "execution": {
+    "null_handling": "lenient",
+    "execution_error_policy": "route_as_failure",
+    "default_continue_on_error": true,
+    "default_retry_count": 2,
+    "default_retry_backoff_ms": 500,
+    "default_retry_backoff_multiplier": 2.0,
+    "default_retry_backoff_max_ms": 10000
+  },
+  "entrypoints": {
+    "webhook": {
+      "step": "verify_signature",
+      "triggers": {
+        "events": [],
+        "cron": [],
+        "webhooks": ["signed-event"]
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "verify_signature",
+      "name": "Verify signature",
+      "kind": "tool",
+      "config": {
+        "tool": "bash",
+        "args": {
+          "command": "verify-webhook-signature"
+        },
+        "execution_error_policy": "route_as_failure"
+      },
+      "outputs": {
+        "verified": "$.verified",
+        "verify_error": "$.error"
+      },
+      "next": "route_signature",
+      "continue_on_error": true
+    },
+    {
+      "id": "route_signature",
+      "name": "Route signature result",
+      "kind": "switch",
+      "config": {
+        "value": "$verified",
+        "cases": {
+          "true": "accept_payload"
+        },
+        "default": "reject_payload"
+      },
+      "outputs": {},
+      "continue_on_error": true
+    },
+    {
+      "id": "accept_payload",
+      "name": "Accept payload",
+      "kind": "merge",
+      "config": {
+        "mode": "combine",
+        "inputs": {
+          "accepted": true,
+          "payload": "$input.body"
+        },
+        "null_handling": "lenient"
+      },
+      "outputs": {
+        "result": "$"
+      },
+      "continue_on_error": true
+    },
+    {
+      "id": "reject_payload",
+      "name": "Reject payload",
+      "kind": "merge",
+      "config": {
+        "mode": "combine",
+        "inputs": {
+          "accepted": false,
+          "reason": "invalid_signature",
+          "verify_error": "$verify_error"
+        },
+        "null_handling": "lenient"
+      },
+      "outputs": {
+        "result": "$"
+      },
+      "continue_on_error": true
+    }
+  ]
+}

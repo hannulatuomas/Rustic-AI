@@ -1,0 +1,147 @@
+{
+  "name": "n8n_webhook_idempotent_upsert",
+  "description": "Idempotent webhook processing with duplicate replay routing",
+  "version": "1.0.0",
+  "execution": {
+    "null_handling": "lenient",
+    "execution_error_policy": "route_as_failure",
+    "default_continue_on_error": true,
+    "default_retry_count": 2,
+    "default_retry_backoff_ms": 500,
+    "default_retry_backoff_multiplier": 2.0,
+    "default_retry_backoff_max_ms": 10000
+  },
+  "entrypoints": {
+    "webhook": {
+      "step": "extract_key",
+      "triggers": {
+        "events": [],
+        "cron": [],
+        "webhooks": ["upsert-event"]
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "extract_key",
+      "name": "Extract idempotency key",
+      "kind": "merge",
+      "config": {
+        "mode": "combine",
+        "inputs": {
+          "idempotency_key": "$input.headers.idempotency-key",
+          "payload": "$input.body"
+        },
+        "null_handling": "lenient"
+      },
+      "outputs": {
+        "idempotency_key": "$.idempotency_key",
+        "payload": "$.payload"
+      },
+      "next": "lookup_existing",
+      "continue_on_error": true
+    },
+    {
+      "id": "lookup_existing",
+      "name": "Lookup existing key",
+      "kind": "tool",
+      "config": {
+        "tool": "bash",
+        "args": {
+          "command": "idempotency-lookup"
+        },
+        "execution_error_policy": "route_as_failure"
+      },
+      "outputs": {
+        "already_processed": "$.exists",
+        "prior_result": "$.result"
+      },
+      "next": "route_existing",
+      "continue_on_error": true
+    },
+    {
+      "id": "route_existing",
+      "name": "Route existing/new",
+      "kind": "switch",
+      "config": {
+        "value": "$already_processed",
+        "cases": {
+          "true": "return_existing"
+        },
+        "default": "process_new"
+      },
+      "outputs": {},
+      "continue_on_error": true
+    },
+    {
+      "id": "process_new",
+      "name": "Process new event",
+      "kind": "tool",
+      "config": {
+        "tool": "bash",
+        "args": {
+          "command": "process-upsert"
+        },
+        "retry_count": 4,
+        "retry_backoff_ms": 500,
+        "retry_backoff_multiplier": 2.0,
+        "retry_backoff_max_ms": 15000
+      },
+      "outputs": {
+        "new_result": "$"
+      },
+      "next": "store_new",
+      "continue_on_error": true
+    },
+    {
+      "id": "store_new",
+      "name": "Store idempotency result",
+      "kind": "tool",
+      "config": {
+        "tool": "bash",
+        "args": {
+          "command": "idempotency-store"
+        }
+      },
+      "outputs": {},
+      "next": "return_new",
+      "continue_on_error": true
+    },
+    {
+      "id": "return_existing",
+      "name": "Return existing result",
+      "kind": "merge",
+      "config": {
+        "mode": "combine",
+        "inputs": {
+          "is_duplicate": true,
+          "idempotency_key": "$idempotency_key",
+          "result": "$prior_result"
+        },
+        "null_handling": "lenient"
+      },
+      "outputs": {
+        "result": "$"
+      },
+      "continue_on_error": true
+    },
+    {
+      "id": "return_new",
+      "name": "Return new result",
+      "kind": "merge",
+      "config": {
+        "mode": "combine",
+        "inputs": {
+          "is_duplicate": false,
+          "idempotency_key": "$idempotency_key",
+          "result": "$new_result"
+        },
+        "null_handling": "lenient"
+      },
+      "outputs": {
+        "result": "$"
+      },
+      "continue_on_error": true
+    }
+  ]
+}

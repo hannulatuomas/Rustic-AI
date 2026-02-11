@@ -1,0 +1,132 @@
+{
+  "name": "claude_code_nested_review_rework",
+  "description": "Claude-code style nested review/rework orchestration",
+  "version": "1.0.0",
+  "execution": {
+    "null_handling": "strict",
+    "max_steps_per_run": 64,
+    "default_continue_on_error": false,
+    "execution_error_policy": "abort",
+    "default_retry_count": 1,
+    "default_retry_backoff_ms": 300,
+    "default_retry_backoff_multiplier": 2.0,
+    "default_retry_backoff_max_ms": 5000
+  },
+  "entrypoints": {
+    "start": {
+      "step": "plan",
+      "triggers": {
+        "events": ["review.rework"],
+        "cron": [],
+        "webhooks": []
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "plan",
+      "name": "Plan requested change",
+      "kind": "agent",
+      "config": {
+        "agent": "planner",
+        "input": "$input.task"
+      },
+      "outputs": {
+        "plan": "$"
+      },
+      "next": "implement",
+      "continue_on_error": false
+    },
+    {
+      "id": "implement",
+      "name": "Implement",
+      "kind": "agent",
+      "config": {
+        "agent": "coder",
+        "input": "$plan"
+      },
+      "outputs": {
+        "implementation": "$"
+      },
+      "next": "review",
+      "continue_on_error": false
+    },
+    {
+      "id": "review",
+      "name": "Review",
+      "kind": "agent",
+      "config": {
+        "agent": "reviewer",
+        "input": "$implementation"
+      },
+      "outputs": {
+        "review": "$"
+      },
+      "next": "review_route",
+      "continue_on_error": false
+    },
+    {
+      "id": "review_route",
+      "name": "Route by review outcome",
+      "kind": "switch",
+      "config": {
+        "value": "$review",
+        "cases": {
+          "approved": "complete"
+        },
+        "pattern_cases": [
+          {
+            "pattern": "^needs_changes",
+            "target": "rework_subflow",
+            "flags": "i"
+          }
+        ],
+        "default": "complete",
+        "pattern_priority": "exact_first",
+        "case_sensitive": true
+      },
+      "outputs": {},
+      "continue_on_error": false
+    },
+    {
+      "id": "rework_subflow",
+      "name": "Invoke nested rework",
+      "kind": "workflow",
+      "config": {
+        "workflow": "claude_code_rework_subflow",
+        "entrypoint": "start",
+        "input": {
+          "feedback": "$review"
+        },
+        "retry_count": 1,
+        "retry_backoff_ms": 500,
+        "retry_backoff_multiplier": 2.0,
+        "retry_backoff_max_ms": 3000
+      },
+      "outputs": {
+        "rework_result": "$.outputs"
+      },
+      "next": "complete",
+      "continue_on_error": false
+    },
+    {
+      "id": "complete",
+      "name": "Complete",
+      "kind": "merge",
+      "config": {
+        "mode": "combine",
+        "inputs": {
+          "plan": "$plan",
+          "implementation": "$implementation",
+          "review": "$review",
+          "rework": "$rework_result"
+        },
+        "null_handling": "lenient"
+      },
+      "outputs": {
+        "result": "$"
+      },
+      "continue_on_error": false
+    }
+  ]
+}

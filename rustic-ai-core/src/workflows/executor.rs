@@ -8,6 +8,7 @@ use super::types::{
     WorkflowExecutionConfig, WorkflowStep, WorkflowStepKind,
 };
 use crate::agents::AgentCoordinator;
+use crate::config::schema::WorkflowCompatibilityPreset;
 use crate::conversation::session_manager::SessionManager;
 use crate::error::{Error, Result};
 use crate::events::Event;
@@ -28,6 +29,19 @@ pub struct WorkflowExecutorConfig {
     pub max_recursion_depth: Option<usize>,
     pub max_steps_per_run: Option<usize>,
     pub working_directory: PathBuf,
+    pub compatibility_preset: WorkflowCompatibilityPreset,
+    pub switch_case_sensitive_default: Option<bool>,
+    pub switch_pattern_priority: Option<String>,
+    pub loop_continue_on_iteration_error_default: Option<bool>,
+    pub wait_timeout_succeeds: Option<bool>,
+    pub condition_missing_path_as_false: Option<bool>,
+    pub default_continue_on_error: Option<bool>,
+    pub continue_on_error_routing: Option<String>,
+    pub execution_error_policy: Option<String>,
+    pub default_retry_count: Option<u32>,
+    pub default_retry_backoff_ms: Option<u64>,
+    pub default_retry_backoff_multiplier: Option<f64>,
+    pub default_retry_backoff_max_ms: Option<u64>,
     pub condition_group_max_depth: usize,
     pub expression_max_length: usize,
     pub expression_max_depth: usize,
@@ -38,7 +52,7 @@ pub struct WorkflowExecutorConfig {
     pub wait_default_timeout_seconds: u64,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct EffectiveWorkflowConfig {
     max_recursion_depth: Option<usize>,
     max_steps_per_run: Option<usize>,
@@ -51,6 +65,18 @@ struct EffectiveWorkflowConfig {
     wait_default_poll_interval_ms: u64,
     wait_default_timeout_seconds: u64,
     null_handling: NullHandlingMode,
+    switch_case_sensitive_default: bool,
+    switch_pattern_priority: String,
+    loop_continue_on_iteration_error_default: bool,
+    wait_timeout_succeeds: bool,
+    condition_missing_path_as_false: bool,
+    default_continue_on_error: bool,
+    continue_on_error_routing: String,
+    execution_error_policy: String,
+    default_retry_count: u32,
+    default_retry_backoff_ms: u64,
+    default_retry_backoff_multiplier: f64,
+    default_retry_backoff_max_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -253,10 +279,156 @@ impl WorkflowExecutor {
             .unwrap_or("strict")
     }
 
+    fn effective_continue_on_error(
+        step: &WorkflowStep,
+        workflow_config: &EffectiveWorkflowConfig,
+    ) -> bool {
+        step.config
+            .get("continue_on_error")
+            .and_then(Value::as_bool)
+            .unwrap_or(step.continue_on_error || workflow_config.default_continue_on_error)
+    }
+
+    fn continue_on_error_routing<'a>(
+        step: &'a WorkflowStep,
+        workflow_config: &'a EffectiveWorkflowConfig,
+    ) -> &'a str {
+        step.config
+            .get("continue_on_error_routing")
+            .and_then(Value::as_str)
+            .unwrap_or(&workflow_config.continue_on_error_routing)
+    }
+
+    fn execution_error_policy<'a>(
+        step: &'a WorkflowStep,
+        workflow_config: &'a EffectiveWorkflowConfig,
+    ) -> &'a str {
+        step.config
+            .get("execution_error_policy")
+            .and_then(Value::as_str)
+            .unwrap_or(&workflow_config.execution_error_policy)
+    }
+
+    fn retry_settings(
+        step: &WorkflowStep,
+        workflow_config: &EffectiveWorkflowConfig,
+    ) -> (u32, u64, f64, u64) {
+        let retry_count = step
+            .config
+            .get("retry_count")
+            .and_then(Value::as_u64)
+            .map(|v| v as u32)
+            .unwrap_or(workflow_config.default_retry_count)
+            .min(20);
+        let retry_backoff_ms = step
+            .config
+            .get("retry_backoff_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(workflow_config.default_retry_backoff_ms)
+            .max(1);
+        let retry_backoff_multiplier = step
+            .config
+            .get("retry_backoff_multiplier")
+            .and_then(Value::as_f64)
+            .unwrap_or(workflow_config.default_retry_backoff_multiplier)
+            .clamp(1.0, 10.0);
+        let retry_backoff_max_ms = step
+            .config
+            .get("retry_backoff_max_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(workflow_config.default_retry_backoff_max_ms)
+            .max(retry_backoff_ms);
+        (
+            retry_count,
+            retry_backoff_ms,
+            retry_backoff_multiplier,
+            retry_backoff_max_ms,
+        )
+    }
+
+    fn next_backoff_ms(current: u64, multiplier: f64, max_ms: u64) -> u64 {
+        let scaled = (current as f64 * multiplier).round();
+        let scaled = if scaled.is_finite() && scaled > 0.0 {
+            scaled as u64
+        } else {
+            current
+        };
+        scaled.clamp(1, max_ms)
+    }
+
     fn effective_config_for_workflow(
         &self,
         overrides: &WorkflowExecutionConfig,
     ) -> EffectiveWorkflowConfig {
+        let preset_null_handling = match self.config.compatibility_preset {
+            WorkflowCompatibilityPreset::N8n => NullHandlingMode::Lenient,
+            WorkflowCompatibilityPreset::OpenCode
+            | WorkflowCompatibilityPreset::ClaudeCode
+            | WorkflowCompatibilityPreset::Rustic => NullHandlingMode::Strict,
+        };
+        let preset_switch_case_sensitive = !matches!(
+            self.config.compatibility_preset,
+            WorkflowCompatibilityPreset::N8n
+        );
+        let preset_switch_pattern_priority = if matches!(
+            self.config.compatibility_preset,
+            WorkflowCompatibilityPreset::N8n
+        ) {
+            "pattern_first"
+        } else {
+            "exact_first"
+        };
+        let preset_loop_continue_on_iteration_error = matches!(
+            self.config.compatibility_preset,
+            WorkflowCompatibilityPreset::N8n
+        );
+        let preset_wait_timeout_succeeds = matches!(
+            self.config.compatibility_preset,
+            WorkflowCompatibilityPreset::N8n
+        );
+        let preset_condition_missing_path_as_false = matches!(
+            self.config.compatibility_preset,
+            WorkflowCompatibilityPreset::N8n
+        );
+        let preset_default_continue_on_error = matches!(
+            self.config.compatibility_preset,
+            WorkflowCompatibilityPreset::N8n
+        );
+        let preset_continue_on_error_routing = "next_first";
+        let preset_execution_error_policy = if matches!(
+            self.config.compatibility_preset,
+            WorkflowCompatibilityPreset::N8n
+        ) {
+            "route_as_failure"
+        } else {
+            "abort"
+        };
+        let preset_default_retry_count = if matches!(
+            self.config.compatibility_preset,
+            WorkflowCompatibilityPreset::N8n
+        ) {
+            2
+        } else {
+            0
+        };
+        let preset_default_retry_backoff_ms = if matches!(
+            self.config.compatibility_preset,
+            WorkflowCompatibilityPreset::N8n
+        ) {
+            500
+        } else {
+            250
+        };
+        let preset_default_retry_backoff_multiplier = 2.0;
+        let preset_default_retry_backoff_max_ms = if matches!(
+            self.config.compatibility_preset,
+            WorkflowCompatibilityPreset::N8n
+        ) {
+            30_000
+        } else {
+            10_000
+        };
+
         EffectiveWorkflowConfig {
             max_recursion_depth: overrides
                 .max_recursion_depth
@@ -288,13 +460,64 @@ impl WorkflowExecutor {
             wait_default_timeout_seconds: overrides
                 .wait_default_timeout_seconds
                 .unwrap_or(self.config.wait_default_timeout_seconds),
-            null_handling: overrides.null_handling.unwrap_or(NullHandlingMode::Strict),
+            null_handling: overrides.null_handling.unwrap_or(preset_null_handling),
+            switch_case_sensitive_default: overrides
+                .switch_case_sensitive_default
+                .or(self.config.switch_case_sensitive_default)
+                .unwrap_or(preset_switch_case_sensitive),
+            switch_pattern_priority: overrides
+                .switch_pattern_priority
+                .clone()
+                .or_else(|| self.config.switch_pattern_priority.clone())
+                .unwrap_or_else(|| preset_switch_pattern_priority.to_owned()),
+            loop_continue_on_iteration_error_default: overrides
+                .loop_continue_on_iteration_error_default
+                .or(self.config.loop_continue_on_iteration_error_default)
+                .unwrap_or(preset_loop_continue_on_iteration_error),
+            wait_timeout_succeeds: overrides
+                .wait_timeout_succeeds
+                .or(self.config.wait_timeout_succeeds)
+                .unwrap_or(preset_wait_timeout_succeeds),
+            condition_missing_path_as_false: overrides
+                .condition_missing_path_as_false
+                .or(self.config.condition_missing_path_as_false)
+                .unwrap_or(preset_condition_missing_path_as_false),
+            default_continue_on_error: overrides
+                .default_continue_on_error
+                .or(self.config.default_continue_on_error)
+                .unwrap_or(preset_default_continue_on_error),
+            continue_on_error_routing: overrides
+                .continue_on_error_routing
+                .clone()
+                .or_else(|| self.config.continue_on_error_routing.clone())
+                .unwrap_or_else(|| preset_continue_on_error_routing.to_owned()),
+            execution_error_policy: overrides
+                .execution_error_policy
+                .clone()
+                .or_else(|| self.config.execution_error_policy.clone())
+                .unwrap_or_else(|| preset_execution_error_policy.to_owned()),
+            default_retry_count: overrides
+                .default_retry_count
+                .or(self.config.default_retry_count)
+                .unwrap_or(preset_default_retry_count),
+            default_retry_backoff_ms: overrides
+                .default_retry_backoff_ms
+                .or(self.config.default_retry_backoff_ms)
+                .unwrap_or(preset_default_retry_backoff_ms),
+            default_retry_backoff_multiplier: overrides
+                .default_retry_backoff_multiplier
+                .or(self.config.default_retry_backoff_multiplier)
+                .unwrap_or(preset_default_retry_backoff_multiplier),
+            default_retry_backoff_max_ms: overrides
+                .default_retry_backoff_max_ms
+                .or(self.config.default_retry_backoff_max_ms)
+                .unwrap_or(preset_default_retry_backoff_max_ms),
         }
     }
 
     fn null_handling_for_step(
         step: &WorkflowStep,
-        workflow_config: EffectiveWorkflowConfig,
+        workflow_config: &EffectiveWorkflowConfig,
     ) -> NullHandlingMode {
         if let Some(mode) = step.config.get("null_handling").and_then(Value::as_str) {
             return match mode {
@@ -308,7 +531,7 @@ impl WorkflowExecutor {
     fn expression_options_for_step(
         &self,
         step: &WorkflowStep,
-        workflow_config: EffectiveWorkflowConfig,
+        workflow_config: &EffectiveWorkflowConfig,
     ) -> EvaluationOptions {
         let max_length = step
             .config
@@ -332,7 +555,7 @@ impl WorkflowExecutor {
         &self,
         step: &WorkflowStep,
         outputs: &BTreeMap<String, Value>,
-        workflow_config: EffectiveWorkflowConfig,
+        workflow_config: &EffectiveWorkflowConfig,
     ) -> Result<bool> {
         if let Some(group_value) = step.config.get("group") {
             let group: ConditionGroup =
@@ -353,7 +576,7 @@ impl WorkflowExecutor {
         group: &ConditionGroup,
         outputs: &BTreeMap<String, Value>,
         step: &WorkflowStep,
-        workflow_config: EffectiveWorkflowConfig,
+        workflow_config: &EffectiveWorkflowConfig,
         depth: usize,
     ) -> Result<bool> {
         if depth > workflow_config.condition_group_max_depth {
@@ -404,7 +627,7 @@ impl WorkflowExecutor {
         clause: &ConditionClause,
         outputs: &BTreeMap<String, Value>,
         step: &WorkflowStep,
-        workflow_config: EffectiveWorkflowConfig,
+        workflow_config: &EffectiveWorkflowConfig,
         depth: usize,
     ) -> Result<bool> {
         if let Some(group) = &clause.group {
@@ -456,7 +679,7 @@ impl WorkflowExecutor {
         config: &Value,
         outputs: &BTreeMap<String, Value>,
         step: &WorkflowStep,
-        workflow_config: EffectiveWorkflowConfig,
+        workflow_config: &EffectiveWorkflowConfig,
     ) -> Result<bool> {
         if let Some(expression) = config.get("expression").and_then(Value::as_str) {
             return self.evaluate_expression(expression, outputs, step, workflow_config);
@@ -482,6 +705,9 @@ impl WorkflowExecutor {
             && !matches!(op, "exists" | "truthy" | "falsy")
             && null_mode == NullHandlingMode::Strict
         {
+            if workflow_config.condition_missing_path_as_false {
+                return Ok(false);
+            }
             return Err(Error::Tool(format!(
                 "workflow condition step '{}' missing path '{}' under strict null handling",
                 step.id, path
@@ -569,7 +795,7 @@ impl WorkflowExecutor {
         expression: &str,
         outputs: &BTreeMap<String, Value>,
         step: &WorkflowStep,
-        workflow_config: EffectiveWorkflowConfig,
+        workflow_config: &EffectiveWorkflowConfig,
     ) -> Result<bool> {
         let options = self.expression_options_for_step(step, workflow_config);
         let value =
@@ -640,8 +866,14 @@ impl WorkflowExecutor {
         }
     }
 
-    fn build_regex(pattern: &str, flags: &str, step_id: &str) -> Result<Regex> {
+    fn build_regex(
+        pattern: &str,
+        flags: &str,
+        step_id: &str,
+        default_case_sensitive: bool,
+    ) -> Result<Regex> {
         let mut builder = RegexBuilder::new(pattern);
+        builder.case_insensitive(!default_case_sensitive);
         for flag in flags.chars() {
             match flag {
                 'i' => {
@@ -676,38 +908,89 @@ impl WorkflowExecutor {
         })
     }
 
-    fn resolve_switch_target(step: &WorkflowStep, key: &str) -> Result<(Option<String>, String)> {
-        if let Some(target) = step
+    fn resolve_switch_target(
+        step: &WorkflowStep,
+        key: &str,
+        workflow_config: &EffectiveWorkflowConfig,
+    ) -> Result<(Option<String>, String)> {
+        let case_sensitive = step
             .config
-            .get("cases")
-            .and_then(Value::as_object)
-            .and_then(|cases| cases.get(key))
+            .get("case_sensitive")
+            .and_then(Value::as_bool)
+            .unwrap_or(workflow_config.switch_case_sensitive_default);
+        let priority = step
+            .config
+            .get("pattern_priority")
             .and_then(Value::as_str)
-            .map(ToOwned::to_owned)
-        {
-            return Ok((Some(target), "exact".to_owned()));
-        }
+            .unwrap_or(&workflow_config.switch_pattern_priority);
 
-        if let Some(pattern_cases) = step.config.get("pattern_cases").and_then(Value::as_array) {
-            for case in pattern_cases {
-                let pattern = case.get("pattern").and_then(Value::as_str).ok_or_else(|| {
-                    Error::Tool(format!(
-                        "workflow switch step '{}' pattern_cases entries must include 'pattern'",
-                        step.id
-                    ))
-                })?;
-                let target = case.get("target").and_then(Value::as_str).ok_or_else(|| {
-                    Error::Tool(format!(
-                        "workflow switch step '{}' pattern_cases entries must include 'target'",
-                        step.id
-                    ))
-                })?;
-                let flags = case.get("flags").and_then(Value::as_str).unwrap_or("");
-                let regex = Self::build_regex(pattern, flags, &step.id)?;
-                if regex.is_match(key) {
-                    return Ok((Some(target.to_owned()), "pattern".to_owned()));
+        let exact_match = || {
+            step.config
+                .get("cases")
+                .and_then(Value::as_object)
+                .and_then(|cases| {
+                    if case_sensitive {
+                        cases
+                            .get(key)
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned)
+                    } else {
+                        cases.iter().find_map(|(case_key, target)| {
+                            if case_key.eq_ignore_ascii_case(key) {
+                                target.as_str().map(ToOwned::to_owned)
+                            } else {
+                                None
+                            }
+                        })
+                    }
+                })
+        };
+
+        let pattern_match = || -> Result<Option<String>> {
+            if let Some(pattern_cases) = step.config.get("pattern_cases").and_then(Value::as_array)
+            {
+                for case in pattern_cases {
+                    let pattern = case.get("pattern").and_then(Value::as_str).ok_or_else(|| {
+                        Error::Tool(format!(
+                            "workflow switch step '{}' pattern_cases entries must include 'pattern'",
+                            step.id
+                        ))
+                    })?;
+                    let target = case.get("target").and_then(Value::as_str).ok_or_else(|| {
+                        Error::Tool(format!(
+                            "workflow switch step '{}' pattern_cases entries must include 'target'",
+                            step.id
+                        ))
+                    })?;
+                    let flags = case.get("flags").and_then(Value::as_str).unwrap_or("");
+                    let regex = Self::build_regex(pattern, flags, &step.id, case_sensitive)?;
+                    if regex.is_match(key) {
+                        return Ok(Some(target.to_owned()));
+                    }
                 }
             }
+            Ok(None)
+        };
+
+        let matched = match priority {
+            "pattern_first" => {
+                if let Some(target) = pattern_match()? {
+                    Some((target, "pattern".to_owned()))
+                } else {
+                    exact_match().map(|target| (target, "exact".to_owned()))
+                }
+            }
+            _ => {
+                if let Some(target) = exact_match() {
+                    Some((target, "exact".to_owned()))
+                } else {
+                    pattern_match()?.map(|target| (target, "pattern".to_owned()))
+                }
+            }
+        };
+
+        if let Some((target, match_type)) = matched {
+            return Ok((Some(target), match_type));
         }
 
         if let Some(target) = step
@@ -730,7 +1013,7 @@ impl WorkflowExecutor {
         &self,
         step: &WorkflowStep,
         outputs: &BTreeMap<String, Value>,
-        workflow_config: EffectiveWorkflowConfig,
+        workflow_config: &EffectiveWorkflowConfig,
     ) -> Result<Value> {
         let items_config = step.config.get("items").ok_or_else(|| {
             Error::Tool(format!(
@@ -806,7 +1089,9 @@ impl WorkflowExecutor {
             .config
             .get("continue_on_iteration_error")
             .and_then(Value::as_bool)
-            .unwrap_or(step.continue_on_error);
+            .unwrap_or(
+                workflow_config.loop_continue_on_iteration_error_default || step.continue_on_error,
+            );
 
         let mut results = Vec::with_capacity(items.len());
         let mut errors = Vec::new();
@@ -910,7 +1195,7 @@ impl WorkflowExecutor {
         &self,
         step: &WorkflowStep,
         outputs: &BTreeMap<String, Value>,
-        workflow_config: EffectiveWorkflowConfig,
+        workflow_config: &EffectiveWorkflowConfig,
     ) -> Result<Value> {
         let mode = step
             .config
@@ -1146,27 +1431,74 @@ impl WorkflowExecutor {
                             &args_template,
                             &outputs,
                             &step,
-                            self.expression_options_for_step(&step, workflow_config),
+                            self.expression_options_for_step(&step, &workflow_config),
                         )?;
 
-                        let tool_result = tools
-                            .execute_tool(
-                                request.session_id.clone(),
-                                request.agent_name.clone(),
-                                tool_name,
-                                args,
-                                event_tx.clone(),
-                            )
-                            .await?;
-                        let Some(tool_result) = tool_result else {
-                            return Err(Error::Tool(format!(
-                                "workflow '{}' step '{}' paused pending permission/user input; this flow is not resumable yet",
-                                request.workflow_name, step.id
-                            )));
-                        };
+                        let (retry_count, retry_backoff_ms, retry_multiplier, retry_backoff_max_ms) =
+                            Self::retry_settings(&step, &workflow_config);
+                        let execution_error_policy =
+                            Self::execution_error_policy(&step, &workflow_config).to_owned();
+                        let mut attempt = 0u32;
+                        let mut backoff_ms = retry_backoff_ms;
+                        loop {
+                            let call_result = tools
+                                .execute_tool(
+                                    request.session_id.clone(),
+                                    request.agent_name.clone(),
+                                    tool_name,
+                                    args.clone(),
+                                    event_tx.clone(),
+                                )
+                                .await;
 
-                        let parsed = Self::parse_step_result(&tool_result.output);
-                        (tool_result.success, parsed)
+                            match call_result {
+                                Ok(Some(tool_result)) => {
+                                    let parsed = Self::parse_step_result(&tool_result.output);
+                                    if tool_result.success || attempt >= retry_count {
+                                        break (tool_result.success, parsed);
+                                    }
+                                }
+                                Ok(None) => {
+                                    if attempt >= retry_count {
+                                        if execution_error_policy == "route_as_failure" {
+                                            break (
+                                                false,
+                                                json!({
+                                                    "error": "paused pending permission/user input",
+                                                    "policy": "route_as_failure"
+                                                }),
+                                            );
+                                        }
+                                        return Err(Error::Tool(format!(
+                                            "workflow '{}' step '{}' paused pending permission/user input; this flow is not resumable yet",
+                                            request.workflow_name, step.id
+                                        )));
+                                    }
+                                }
+                                Err(err) => {
+                                    if attempt >= retry_count {
+                                        if execution_error_policy == "route_as_failure" {
+                                            break (
+                                                false,
+                                                json!({
+                                                    "error": err.to_string(),
+                                                    "policy": "route_as_failure"
+                                                }),
+                                            );
+                                        }
+                                        return Err(err);
+                                    }
+                                }
+                            }
+
+                            attempt += 1;
+                            sleep(Duration::from_millis(backoff_ms)).await;
+                            backoff_ms = Self::next_backoff_ms(
+                                backoff_ms,
+                                retry_multiplier,
+                                retry_backoff_max_ms,
+                            );
+                        }
                     }
                     WorkflowStepKind::Skill => {
                         let skill_name = step
@@ -1188,21 +1520,59 @@ impl WorkflowExecutor {
                             &input_template,
                             &outputs,
                             &step,
-                            self.expression_options_for_step(&step, workflow_config),
+                            self.expression_options_for_step(&step, &workflow_config),
                         )?;
                         let skill = self.skills.get(skill_name).ok_or_else(|| {
                             Error::NotFound(format!("skill '{}' not found", skill_name))
                         })?;
-                        let result = skill
-                            .execute(
-                                skill_input,
-                                &SkillExecutionContext {
-                                    working_directory: self.config.working_directory.clone(),
-                                    environment: Default::default(),
-                                },
-                            )
-                            .await?;
-                        (result.success, Self::parse_step_result(&result.output))
+                        let (retry_count, retry_backoff_ms, retry_multiplier, retry_backoff_max_ms) =
+                            Self::retry_settings(&step, &workflow_config);
+                        let execution_error_policy =
+                            Self::execution_error_policy(&step, &workflow_config).to_owned();
+                        let mut attempt = 0u32;
+                        let mut backoff_ms = retry_backoff_ms;
+                        loop {
+                            let result = skill
+                                .execute(
+                                    skill_input.clone(),
+                                    &SkillExecutionContext {
+                                        working_directory: self.config.working_directory.clone(),
+                                        environment: Default::default(),
+                                    },
+                                )
+                                .await;
+
+                            match result {
+                                Ok(result) => {
+                                    let parsed = Self::parse_step_result(&result.output);
+                                    if result.success || attempt >= retry_count {
+                                        break (result.success, parsed);
+                                    }
+                                }
+                                Err(err) => {
+                                    if attempt >= retry_count {
+                                        if execution_error_policy == "route_as_failure" {
+                                            break (
+                                                false,
+                                                json!({
+                                                    "error": err.to_string(),
+                                                    "policy": "route_as_failure"
+                                                }),
+                                            );
+                                        }
+                                        return Err(err);
+                                    }
+                                }
+                            }
+
+                            attempt += 1;
+                            sleep(Duration::from_millis(backoff_ms)).await;
+                            backoff_ms = Self::next_backoff_ms(
+                                backoff_ms,
+                                retry_multiplier,
+                                retry_backoff_max_ms,
+                            );
+                        }
                     }
                     WorkflowStepKind::Workflow => {
                         let nested_workflow = step
@@ -1229,31 +1599,112 @@ impl WorkflowExecutor {
                             &nested_input_template,
                             &outputs,
                             &step,
-                            self.expression_options_for_step(&step, workflow_config),
+                            self.expression_options_for_step(&step, &workflow_config),
                         )?;
 
-                        let nested = self
-                            .run_internal(
-                                WorkflowRunRequest {
-                                    workflow_name: nested_workflow.to_owned(),
-                                    entrypoint: nested_entrypoint.to_owned(),
-                                    session_id: request.session_id.clone(),
-                                    agent_name: request.agent_name.clone(),
-                                    input: nested_input,
-                                    recursion_depth: request.recursion_depth + 1,
-                                    workflow_stack: workflow_stack.clone(),
-                                },
-                                tools,
-                                event_tx.clone(),
-                            )
-                            .await?;
-                        (
-                            nested.success,
-                            json!({"outputs": nested.outputs, "steps_executed": nested.steps_executed}),
-                        )
+                        let (retry_count, retry_backoff_ms, retry_multiplier, retry_backoff_max_ms) =
+                            Self::retry_settings(&step, &workflow_config);
+                        let execution_error_policy =
+                            Self::execution_error_policy(&step, &workflow_config).to_owned();
+                        let mut attempt = 0u32;
+                        let mut backoff_ms = retry_backoff_ms;
+                        loop {
+                            let nested = self
+                                .run_internal(
+                                    WorkflowRunRequest {
+                                        workflow_name: nested_workflow.to_owned(),
+                                        entrypoint: nested_entrypoint.to_owned(),
+                                        session_id: request.session_id.clone(),
+                                        agent_name: request.agent_name.clone(),
+                                        input: nested_input.clone(),
+                                        recursion_depth: request.recursion_depth + 1,
+                                        workflow_stack: workflow_stack.clone(),
+                                    },
+                                    tools,
+                                    event_tx.clone(),
+                                )
+                                .await;
+
+                            match nested {
+                                Ok(nested) => {
+                                    let payload = json!({"outputs": nested.outputs, "steps_executed": nested.steps_executed});
+                                    if nested.success || attempt >= retry_count {
+                                        break (nested.success, payload);
+                                    }
+                                }
+                                Err(err) => {
+                                    if attempt >= retry_count {
+                                        if execution_error_policy == "route_as_failure" {
+                                            break (
+                                                false,
+                                                json!({
+                                                    "error": err.to_string(),
+                                                    "policy": "route_as_failure"
+                                                }),
+                                            );
+                                        }
+                                        return Err(err);
+                                    }
+                                }
+                            }
+
+                            attempt += 1;
+                            sleep(Duration::from_millis(backoff_ms)).await;
+                            backoff_ms = Self::next_backoff_ms(
+                                backoff_ms,
+                                retry_multiplier,
+                                retry_backoff_max_ms,
+                            );
+                        }
                     }
                     WorkflowStepKind::Condition => {
-                        let matched = self.evaluate_condition(&step, &outputs, workflow_config)?;
+                        let (retry_count, retry_backoff_ms, retry_multiplier, retry_backoff_max_ms) =
+                            Self::retry_settings(&step, &workflow_config);
+                        let execution_error_policy =
+                            Self::execution_error_policy(&step, &workflow_config).to_owned();
+                        let retry_on_false = step
+                            .config
+                            .get("retry_on_false")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        let mut attempts = 0u32;
+                        let mut backoff_ms = retry_backoff_ms;
+                        let matched = loop {
+                            match self.evaluate_condition(&step, &outputs, &workflow_config) {
+                                Ok(matched) => {
+                                    if !matched && retry_on_false && attempts < retry_count {
+                                        attempts += 1;
+                                        sleep(Duration::from_millis(backoff_ms)).await;
+                                        backoff_ms = Self::next_backoff_ms(
+                                            backoff_ms,
+                                            retry_multiplier,
+                                            retry_backoff_max_ms,
+                                        );
+                                        continue;
+                                    }
+                                    break matched;
+                                }
+                                Err(err) => {
+                                    if attempts >= retry_count {
+                                        if execution_error_policy == "route_as_failure" {
+                                            break false;
+                                        }
+                                        return Err(err);
+                                    }
+                                    attempts += 1;
+                                    sleep(Duration::from_millis(backoff_ms)).await;
+                                    backoff_ms = Self::next_backoff_ms(
+                                        backoff_ms,
+                                        retry_multiplier,
+                                        retry_backoff_max_ms,
+                                    );
+                                }
+                            }
+                        };
+                        outputs.insert(
+                            format!("step.{}.condition_attempts", step.id),
+                            Value::Number(serde_json::Number::from((attempts + 1) as u64)),
+                        );
                         let _ = event_tx.try_send(Event::WorkflowStepCompleted {
                             workflow: request.workflow_name.clone(),
                             step_id: step.id.clone(),
@@ -1303,21 +1754,28 @@ impl WorkflowExecutor {
                                 .get("timeout_seconds")
                                 .and_then(Value::as_u64)
                                 .unwrap_or(workflow_config.wait_default_timeout_seconds);
+                            let timeout_succeeds = step
+                                .config
+                                .get("timeout_succeeds")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(workflow_config.wait_timeout_succeeds);
                             let started = Instant::now();
                             let mut condition_met = false;
+                            let mut timed_out = false;
 
                             loop {
                                 if self.evaluate_expression(
                                     expression,
                                     &outputs,
                                     &step,
-                                    workflow_config,
+                                    &workflow_config,
                                 )? {
                                     condition_met = true;
                                     break;
                                 }
 
                                 if started.elapsed() >= Duration::from_secs(timeout_seconds) {
+                                    timed_out = true;
                                     break;
                                 }
 
@@ -1326,10 +1784,12 @@ impl WorkflowExecutor {
                             }
 
                             (
-                                condition_met,
+                                condition_met || (timed_out && timeout_succeeds),
                                 json!({
                                     "waited_ms": waited_ms,
                                     "condition_met": condition_met,
+                                    "timed_out": timed_out,
+                                    "timeout_succeeds": timeout_succeeds,
                                 }),
                             )
                         } else {
@@ -1343,25 +1803,93 @@ impl WorkflowExecutor {
                     }
                     WorkflowStepKind::Loop => (
                         true,
-                        self.execute_loop_step(&step, &outputs, workflow_config)
+                        self.execute_loop_step(&step, &outputs, &workflow_config)
                             .await?,
                     ),
                     WorkflowStepKind::Merge => (
                         true,
-                        self.execute_merge_step(&step, &outputs, workflow_config)?,
+                        self.execute_merge_step(&step, &outputs, &workflow_config)?,
                     ),
                     WorkflowStepKind::Switch => {
+                        let (retry_count, retry_backoff_ms, retry_multiplier, retry_backoff_max_ms) =
+                            Self::retry_settings(&step, &workflow_config);
+                        let execution_error_policy =
+                            Self::execution_error_policy(&step, &workflow_config).to_owned();
+                        let retry_on_no_match = step
+                            .config
+                            .get("retry_on_no_match")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
                         let value_template =
                             step.config.get("value").cloned().unwrap_or(Value::Null);
-                        let rendered = Self::render_value_with_outputs(
-                            &value_template,
-                            &outputs,
-                            &step,
-                            self.expression_options_for_step(&step, workflow_config),
-                        )?;
-                        let rendered_key = Self::switch_key_from_value(&rendered);
-                        let (target, match_type) =
-                            Self::resolve_switch_target(&step, &rendered_key)?;
+                        let mut attempts = 0u32;
+                        let mut backoff_ms = retry_backoff_ms;
+                        let (rendered_key, target, match_type) = loop {
+                            let rendered = Self::render_value_with_outputs(
+                                &value_template,
+                                &outputs,
+                                &step,
+                                self.expression_options_for_step(&step, &workflow_config),
+                            );
+                            match rendered {
+                                Ok(rendered) => {
+                                    let rendered_key = Self::switch_key_from_value(&rendered);
+                                    let resolved = Self::resolve_switch_target(
+                                        &step,
+                                        &rendered_key,
+                                        &workflow_config,
+                                    );
+                                    match resolved {
+                                        Ok((target, match_type)) => {
+                                            if target.is_none()
+                                                && retry_on_no_match
+                                                && attempts < retry_count
+                                            {
+                                                attempts += 1;
+                                                sleep(Duration::from_millis(backoff_ms)).await;
+                                                backoff_ms = Self::next_backoff_ms(
+                                                    backoff_ms,
+                                                    retry_multiplier,
+                                                    retry_backoff_max_ms,
+                                                );
+                                                continue;
+                                            }
+                                            break (rendered_key, target, match_type);
+                                        }
+                                        Err(err) => {
+                                            if attempts >= retry_count {
+                                                if execution_error_policy == "route_as_failure" {
+                                                    break (rendered_key, None, "error".to_owned());
+                                                }
+                                                return Err(err);
+                                            }
+                                            attempts += 1;
+                                            sleep(Duration::from_millis(backoff_ms)).await;
+                                            backoff_ms = Self::next_backoff_ms(
+                                                backoff_ms,
+                                                retry_multiplier,
+                                                retry_backoff_max_ms,
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    if attempts >= retry_count {
+                                        if execution_error_policy == "route_as_failure" {
+                                            break (String::new(), None, "error".to_owned());
+                                        }
+                                        return Err(err);
+                                    }
+                                    attempts += 1;
+                                    sleep(Duration::from_millis(backoff_ms)).await;
+                                    backoff_ms = Self::next_backoff_ms(
+                                        backoff_ms,
+                                        retry_multiplier,
+                                        retry_backoff_max_ms,
+                                    );
+                                }
+                            }
+                        };
 
                         let _ = event_tx.try_send(Event::WorkflowStepCompleted {
                             workflow: request.workflow_name.clone(),
@@ -1377,6 +1905,10 @@ impl WorkflowExecutor {
                         outputs.insert(
                             format!("step.{}.switch_match_type", step.id),
                             Value::String(match_type),
+                        );
+                        outputs.insert(
+                            format!("step.{}.switch_attempts", step.id),
+                            Value::Number(serde_json::Number::from((attempts + 1) as u64)),
                         );
 
                         if let Some(next) = target {
@@ -1417,7 +1949,7 @@ impl WorkflowExecutor {
                             &prompt_template,
                             &outputs,
                             &step,
-                            self.expression_options_for_step(&step, workflow_config),
+                            self.expression_options_for_step(&step, &workflow_config),
                         )?;
                         let prompt = match rendered_prompt {
                             Value::String(text) => text,
@@ -1433,21 +1965,54 @@ impl WorkflowExecutor {
                             })?;
 
                         let agent = self.agents.get_agent(Some(target_agent))?;
-                        agent
-                            .start_turn(session_uuid, prompt, event_tx.clone())
-                            .await?;
+                        let (retry_count, retry_backoff_ms, retry_multiplier, retry_backoff_max_ms) =
+                            Self::retry_settings(&step, &workflow_config);
+                        let execution_error_policy =
+                            Self::execution_error_policy(&step, &workflow_config).to_owned();
+                        let mut attempt = 0u32;
+                        let mut backoff_ms = retry_backoff_ms;
+                        loop {
+                            let result = agent
+                                .start_turn(session_uuid, prompt.clone(), event_tx.clone())
+                                .await;
+                            match result {
+                                Ok(()) => {
+                                    let messages = self
+                                        .session_manager
+                                        .get_session_messages(session_uuid)
+                                        .await?;
+                                    let latest_assistant = messages
+                                        .iter()
+                                        .rev()
+                                        .find(|msg| msg.role == "assistant")
+                                        .map(|msg| msg.content.clone())
+                                        .unwrap_or_default();
+                                    break (true, Value::String(latest_assistant));
+                                }
+                                Err(err) => {
+                                    if attempt >= retry_count {
+                                        if execution_error_policy == "route_as_failure" {
+                                            break (
+                                                false,
+                                                json!({
+                                                    "error": err.to_string(),
+                                                    "policy": "route_as_failure"
+                                                }),
+                                            );
+                                        }
+                                        return Err(err);
+                                    }
+                                }
+                            }
 
-                        let messages = self
-                            .session_manager
-                            .get_session_messages(session_uuid)
-                            .await?;
-                        let latest_assistant = messages
-                            .iter()
-                            .rev()
-                            .find(|msg| msg.role == "assistant")
-                            .map(|msg| msg.content.clone())
-                            .unwrap_or_default();
-                        (true, Value::String(latest_assistant))
+                            attempt += 1;
+                            sleep(Duration::from_millis(backoff_ms)).await;
+                            backoff_ms = Self::next_backoff_ms(
+                                backoff_ms,
+                                retry_multiplier,
+                                retry_backoff_max_ms,
+                            );
+                        }
                     }
                 };
 
@@ -1462,10 +2027,16 @@ impl WorkflowExecutor {
                     output_count: step.outputs.len(),
                 });
 
+                let continue_on_error = Self::effective_continue_on_error(&step, &workflow_config);
+                let failure_routing = Self::continue_on_error_routing(&step, &workflow_config);
                 let next = if success {
                     step.on_success.or(step.next)
-                } else if step.continue_on_error {
-                    step.next.or(step.on_failure)
+                } else if continue_on_error {
+                    if failure_routing == "on_failure_first" {
+                        step.on_failure.or(step.next)
+                    } else {
+                        step.next.or(step.on_failure)
+                    }
                 } else {
                     step.on_failure
                 };

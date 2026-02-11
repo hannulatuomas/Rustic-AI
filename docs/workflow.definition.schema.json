@@ -17,6 +17,27 @@
         "condition_group_max_depth": { "type": ["integer", "null"], "minimum": 1 },
         "expression_max_length": { "type": ["integer", "null"], "minimum": 16 },
         "expression_max_depth": { "type": ["integer", "null"], "minimum": 1 },
+        "switch_case_sensitive_default": { "type": ["boolean", "null"] },
+        "switch_pattern_priority": {
+          "type": ["string", "null"],
+          "enum": ["exact_first", "pattern_first", null]
+        },
+        "loop_continue_on_iteration_error_default": { "type": ["boolean", "null"] },
+        "wait_timeout_succeeds": { "type": ["boolean", "null"] },
+        "condition_missing_path_as_false": { "type": ["boolean", "null"] },
+        "default_continue_on_error": { "type": ["boolean", "null"] },
+        "continue_on_error_routing": {
+          "type": ["string", "null"],
+          "enum": ["next_first", "on_failure_first", null]
+        },
+        "execution_error_policy": {
+          "type": ["string", "null"],
+          "enum": ["abort", "route_as_failure", null]
+        },
+        "default_retry_count": { "type": ["integer", "null"], "minimum": 0 },
+        "default_retry_backoff_ms": { "type": ["integer", "null"], "minimum": 1 },
+        "default_retry_backoff_multiplier": { "type": ["number", "null"], "minimum": 1.0 },
+        "default_retry_backoff_max_ms": { "type": ["integer", "null"], "minimum": 1 },
         "loop_default_max_iterations": { "type": ["integer", "null"], "minimum": 1 },
         "loop_default_max_parallelism": { "type": ["integer", "null"], "minimum": 1 },
         "loop_hard_max_parallelism": { "type": ["integer", "null"], "minimum": 1 },
@@ -67,7 +88,14 @@
               "expression_error_mode": { "type": "string", "enum": ["strict", "null", "literal"] },
               "expression_max_length": { "type": "integer", "minimum": 16 },
               "expression_max_depth": { "type": "integer", "minimum": 1 },
-              "null_handling": { "type": "string", "enum": ["strict", "lenient"] }
+              "null_handling": { "type": "string", "enum": ["strict", "lenient"] },
+              "retry_count": { "type": "integer", "minimum": 0 },
+              "retry_backoff_ms": { "type": "integer", "minimum": 1 },
+              "retry_backoff_multiplier": { "type": "number", "minimum": 1.0 },
+              "retry_backoff_max_ms": { "type": "integer", "minimum": 1 },
+              "execution_error_policy": { "type": "string", "enum": ["abort", "route_as_failure"] },
+              "continue_on_error": { "type": "boolean" },
+              "continue_on_error_routing": { "type": "string", "enum": ["next_first", "on_failure_first"] }
             },
             "additionalProperties": true
           },
@@ -134,7 +162,8 @@
                     "operator": { "type": "string" },
                     "value": {},
                     "expression": { "type": "string", "minLength": 1 },
-                    "group": { "type": "object" }
+                    "group": { "type": "object" },
+                    "retry_on_false": { "type": "boolean" }
                   }
                 }
               }
@@ -149,7 +178,8 @@
                     "duration_seconds": { "type": "integer", "minimum": 1 },
                     "until_expression": { "type": "string", "minLength": 1 },
                     "poll_interval_ms": { "type": "integer", "minimum": 1 },
-                    "timeout_seconds": { "type": "integer", "minimum": 1 }
+                    "timeout_seconds": { "type": "integer", "minimum": 1 },
+                    "timeout_succeeds": { "type": "boolean" }
                   }
                 }
               }
@@ -215,6 +245,13 @@
                         "additionalProperties": false
                       }
                     }
+                    ,
+                    "case_sensitive": { "type": "boolean" },
+                    "pattern_priority": {
+                      "type": "string",
+                      "enum": ["exact_first", "pattern_first"]
+                    },
+                    "retry_on_no_match": { "type": "boolean" }
                   }
                 }
               }

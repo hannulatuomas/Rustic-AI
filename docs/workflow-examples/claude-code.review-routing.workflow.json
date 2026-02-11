@@ -1,0 +1,102 @@
+{
+  "name": "claude_code_review_routing",
+  "description": "Claude-code style routing with strict typed branches",
+  "version": "1.0.0",
+  "execution": {
+    "null_handling": "strict",
+    "condition_group_max_depth": 6,
+    "max_steps_per_run": 48
+  },
+  "entrypoints": {
+    "start": {
+      "step": "route",
+      "triggers": {
+        "events": ["review.requested"],
+        "cron": [],
+        "webhooks": []
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "route",
+      "name": "Route by language",
+      "kind": "switch",
+      "config": {
+        "value": "$input.language",
+        "cases": {
+          "rust": "rust_path",
+          "typescript": "ts_path"
+        },
+        "pattern_cases": [
+          {
+            "pattern": "^(js|jsx)$",
+            "target": "ts_path",
+            "flags": "i"
+          }
+        ],
+        "default": "general_path"
+      },
+      "continue_on_error": false,
+      "outputs": {}
+    },
+    {
+      "id": "rust_path",
+      "name": "Rust checks",
+      "kind": "tool",
+      "config": {
+        "tool": "bash",
+        "args": {
+          "command": "cargo clippy -q"
+        }
+      },
+      "next": "done",
+      "continue_on_error": false,
+      "outputs": {}
+    },
+    {
+      "id": "ts_path",
+      "name": "TS checks",
+      "kind": "tool",
+      "config": {
+        "tool": "bash",
+        "args": {
+          "command": "npm run lint --silent"
+        }
+      },
+      "next": "done",
+      "continue_on_error": false,
+      "outputs": {}
+    },
+    {
+      "id": "general_path",
+      "name": "General checks",
+      "kind": "tool",
+      "config": {
+        "tool": "bash",
+        "args": {
+          "command": "git status --short"
+        }
+      },
+      "next": "done",
+      "continue_on_error": false,
+      "outputs": {}
+    },
+    {
+      "id": "done",
+      "name": "Done",
+      "kind": "merge",
+      "config": {
+        "mode": "combine",
+        "inputs": {
+          "switch_key": "$step.route.switch_key",
+          "switch_match_type": "$step.route.switch_match_type"
+        }
+      },
+      "continue_on_error": false,
+      "outputs": {
+        "result": "$"
+      }
+    }
+  ]
+}

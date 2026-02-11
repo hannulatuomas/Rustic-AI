@@ -1,0 +1,52 @@
+{
+  "name": "claude_code_rework_subflow",
+  "description": "Nested rework subflow for iterative review fixes",
+  "version": "1.0.0",
+  "execution": {
+    "null_handling": "strict",
+    "default_retry_count": 1,
+    "default_retry_backoff_ms": 300,
+    "default_retry_backoff_multiplier": 2.0,
+    "default_retry_backoff_max_ms": 3000,
+    "execution_error_policy": "abort"
+  },
+  "entrypoints": {
+    "start": {
+      "step": "apply_fix",
+      "triggers": {
+        "events": [],
+        "cron": [],
+        "webhooks": []
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "apply_fix",
+      "name": "Apply requested fix",
+      "kind": "agent",
+      "config": {
+        "agent": "coder",
+        "input": "$input.feedback"
+      },
+      "outputs": {
+        "patch": "$"
+      },
+      "next": "verify_fix",
+      "continue_on_error": false
+    },
+    {
+      "id": "verify_fix",
+      "name": "Re-run reviewer",
+      "kind": "agent",
+      "config": {
+        "agent": "reviewer",
+        "input": "$patch"
+      },
+      "outputs": {
+        "review": "$"
+      },
+      "continue_on_error": false
+    }
+  ]
+}

@@ -478,10 +478,9 @@ Last updated: 2026-02-11
 
 ## Next (Immediate)
 
-- Finalize null/undefined handling policy across expressions and merge modes
-- Expand null-handling policy with explicit mode controls for switch/condition fallbacks
-- Add workflow definition examples for OpenCode/Claude-code/n8n-style patterns
-- Add configurable compatibility presets (opencode/claude_code/n8n) for execution defaults
+- Add additional Claude-code style examples with loop + merge fan-in patterns
+- Add preset-level docs for webhook signing key rotation and replay-window operations
+- Add operational runbook snippets for retry/backoff tuning in production
 
 ---
 

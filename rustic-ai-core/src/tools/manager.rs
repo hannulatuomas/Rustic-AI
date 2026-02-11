@@ -514,6 +514,25 @@ impl ToolManager {
                 max_recursion_depth: self.workflows_config.max_recursion_depth,
                 max_steps_per_run: self.workflows_config.max_steps_per_run,
                 working_directory: self.execution_context.working_directory.clone(),
+                compatibility_preset: self.workflows_config.compatibility_preset,
+                switch_case_sensitive_default: self.workflows_config.switch_case_sensitive_default,
+                switch_pattern_priority: self.workflows_config.switch_pattern_priority.clone(),
+                loop_continue_on_iteration_error_default: self
+                    .workflows_config
+                    .loop_continue_on_iteration_error_default,
+                wait_timeout_succeeds: self.workflows_config.wait_timeout_succeeds,
+                condition_missing_path_as_false: self
+                    .workflows_config
+                    .condition_missing_path_as_false,
+                default_continue_on_error: self.workflows_config.default_continue_on_error,
+                continue_on_error_routing: self.workflows_config.continue_on_error_routing.clone(),
+                execution_error_policy: self.workflows_config.execution_error_policy.clone(),
+                default_retry_count: self.workflows_config.default_retry_count,
+                default_retry_backoff_ms: self.workflows_config.default_retry_backoff_ms,
+                default_retry_backoff_multiplier: self
+                    .workflows_config
+                    .default_retry_backoff_multiplier,
+                default_retry_backoff_max_ms: self.workflows_config.default_retry_backoff_max_ms,
                 condition_group_max_depth: self.workflows_config.condition_group_max_depth,
                 expression_max_length: self.workflows_config.expression_max_length,
                 expression_max_depth: self.workflows_config.expression_max_depth,

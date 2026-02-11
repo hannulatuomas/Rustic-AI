@@ -169,6 +169,19 @@ pub struct WorkflowsConfig {
     pub directories: Vec<String>,
     pub max_discovery_depth: usize,
     pub default_timeout_seconds: u64,
+    pub compatibility_preset: WorkflowCompatibilityPreset,
+    pub switch_case_sensitive_default: Option<bool>,
+    pub switch_pattern_priority: Option<String>,
+    pub loop_continue_on_iteration_error_default: Option<bool>,
+    pub wait_timeout_succeeds: Option<bool>,
+    pub condition_missing_path_as_false: Option<bool>,
+    pub default_continue_on_error: Option<bool>,
+    pub continue_on_error_routing: Option<String>,
+    pub execution_error_policy: Option<String>,
+    pub default_retry_count: Option<u32>,
+    pub default_retry_backoff_ms: Option<u64>,
+    pub default_retry_backoff_multiplier: Option<f64>,
+    pub default_retry_backoff_max_ms: Option<u64>,
     pub max_recursion_depth: Option<usize>,
     pub max_steps_per_run: Option<usize>,
     pub condition_group_max_depth: usize,
@@ -181,6 +194,16 @@ pub struct WorkflowsConfig {
     pub wait_default_timeout_seconds: u64,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowCompatibilityPreset {
+    #[default]
+    Rustic,
+    OpenCode,
+    ClaudeCode,
+    N8n,
+}
+
 impl Default for WorkflowsConfig {
     fn default() -> Self {
         Self {
@@ -191,6 +214,19 @@ impl Default for WorkflowsConfig {
             ],
             max_discovery_depth: 4,
             default_timeout_seconds: 300,
+            compatibility_preset: WorkflowCompatibilityPreset::Rustic,
+            switch_case_sensitive_default: None,
+            switch_pattern_priority: None,
+            loop_continue_on_iteration_error_default: None,
+            wait_timeout_succeeds: None,
+            condition_missing_path_as_false: None,
+            default_continue_on_error: None,
+            continue_on_error_routing: None,
+            execution_error_policy: None,
+            default_retry_count: None,
+            default_retry_backoff_ms: None,
+            default_retry_backoff_multiplier: None,
+            default_retry_backoff_max_ms: None,
             max_recursion_depth: Some(16),
             max_steps_per_run: Some(256),
             condition_group_max_depth: 8,

@@ -1,0 +1,121 @@
+{
+  "name": "opencode_multi_agent_orchestration",
+  "description": "Multi-agent orchestration with strict branch semantics",
+  "version": "1.0.0",
+  "execution": {
+    "null_handling": "strict",
+    "default_continue_on_error": false,
+    "execution_error_policy": "abort",
+    "default_retry_count": 1,
+    "default_retry_backoff_ms": 300,
+    "default_retry_backoff_multiplier": 2.0,
+    "default_retry_backoff_max_ms": 3000
+  },
+  "entrypoints": {
+    "start": {
+      "step": "planner",
+      "triggers": {
+        "events": ["task.plan"],
+        "cron": [],
+        "webhooks": []
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "planner",
+      "name": "Planner agent",
+      "kind": "agent",
+      "config": {
+        "agent": "planner",
+        "input": "$input.prompt",
+        "retry_count": 2
+      },
+      "outputs": {
+        "plan": "$"
+      },
+      "next": "coder",
+      "continue_on_error": false
+    },
+    {
+      "id": "coder",
+      "name": "Coder agent",
+      "kind": "agent",
+      "config": {
+        "agent": "coder",
+        "input": "$plan"
+      },
+      "outputs": {
+        "implementation": "$"
+      },
+      "next": "reviewer",
+      "continue_on_error": false
+    },
+    {
+      "id": "reviewer",
+      "name": "Reviewer agent",
+      "kind": "agent",
+      "config": {
+        "agent": "reviewer",
+        "input": "$implementation",
+        "retry_count": 1
+      },
+      "outputs": {
+        "review": "$"
+      },
+      "next": "route",
+      "continue_on_error": false
+    },
+    {
+      "id": "route",
+      "name": "Route result",
+      "kind": "switch",
+      "config": {
+        "value": "$review",
+        "pattern_priority": "exact_first",
+        "cases": {
+          "approved": "complete"
+        },
+        "pattern_cases": [
+          {
+            "pattern": "^needs_changes",
+            "target": "rework",
+            "flags": "i"
+          }
+        ],
+        "default": "complete"
+      },
+      "continue_on_error": false,
+      "outputs": {}
+    },
+    {
+      "id": "rework",
+      "name": "Rework path",
+      "kind": "agent",
+      "config": {
+        "agent": "coder",
+        "input": "$review"
+      },
+      "next": "complete",
+      "continue_on_error": false,
+      "outputs": {}
+    },
+    {
+      "id": "complete",
+      "name": "Complete",
+      "kind": "merge",
+      "config": {
+        "mode": "combine",
+        "inputs": {
+          "plan": "$plan",
+          "implementation": "$implementation",
+          "review": "$review"
+        }
+      },
+      "outputs": {
+        "result": "$"
+      },
+      "continue_on_error": false
+    }
+  ]
+}

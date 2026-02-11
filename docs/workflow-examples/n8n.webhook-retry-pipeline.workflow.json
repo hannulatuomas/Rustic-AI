@@ -1,0 +1,96 @@
+{
+  "name": "n8n_webhook_retry_pipeline",
+  "description": "Webhook-first flow with retry/backoff and lenient failure routing",
+  "version": "1.0.0",
+  "execution": {
+    "null_handling": "lenient",
+    "default_continue_on_error": true,
+    "execution_error_policy": "route_as_failure",
+    "default_retry_count": 3,
+    "default_retry_backoff_ms": 500,
+    "default_retry_backoff_multiplier": 2.0,
+    "default_retry_backoff_max_ms": 10000
+  },
+  "entrypoints": {
+    "webhook": {
+      "step": "normalize",
+      "triggers": {
+        "events": [],
+        "cron": [],
+        "webhooks": ["incoming-order"]
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "normalize",
+      "name": "Normalize payload",
+      "kind": "merge",
+      "config": {
+        "mode": "combine",
+        "null_handling": "lenient",
+        "inputs": {
+          "order": "$input.order",
+          "customer": "$input.customer",
+          "source": "$input.source"
+        }
+      },
+      "outputs": {
+        "normalized": "$"
+      },
+      "next": "enqueue",
+      "continue_on_error": true
+    },
+    {
+      "id": "enqueue",
+      "name": "Enqueue external job",
+      "kind": "tool",
+      "config": {
+        "tool": "http",
+        "args": {
+          "method": "POST",
+          "url": "https://example.internal/jobs",
+          "body": "$normalized"
+        },
+        "retry_count": 5,
+        "retry_backoff_ms": 1000,
+        "retry_backoff_multiplier": 1.8,
+        "retry_backoff_max_ms": 15000,
+        "execution_error_policy": "route_as_failure"
+      },
+      "on_failure": "dead_letter",
+      "next": "complete",
+      "continue_on_error": true
+    },
+    {
+      "id": "dead_letter",
+      "name": "Fallback dead-letter",
+      "kind": "merge",
+      "config": {
+        "mode": "combine",
+        "inputs": {
+          "status": "failed",
+          "payload": "$normalized"
+        }
+      },
+      "next": "complete",
+      "continue_on_error": true
+    },
+    {
+      "id": "complete",
+      "name": "Complete",
+      "kind": "merge",
+      "config": {
+        "mode": "combine",
+        "inputs": {
+          "ok": true,
+          "result": "$step.enqueue.result"
+        }
+      },
+      "outputs": {
+        "result": "$"
+      },
+      "continue_on_error": true
+    }
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "name": "n8n_lenient_fanout",
+  "description": "n8n-style lenient fanout + merge behavior",
+  "version": "1.0.0",
+  "execution": {
+    "null_handling": "lenient",
+    "loop_default_max_parallelism": 20,
+    "wait_default_poll_interval_ms": 500,
+    "wait_default_timeout_seconds": 120
+  },
+  "entrypoints": {
+    "start": {
+      "step": "fanout",
+      "triggers": {
+        "events": ["sync.external"],
+        "cron": ["*/10 * * * *"],
+        "webhooks": []
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "fanout",
+      "name": "Fanout IDs",
+      "kind": "loop",
+      "config": {
+        "items": "$input.ids",
+        "result_expression": "item",
+        "parallel": true,
+        "max_parallelism": 10,
+        "continue_on_iteration_error": true,
+        "expression_error_mode": "null"
+      },
+      "next": "merge_results",
+      "continue_on_error": true,
+      "outputs": {
+        "ids": "$.results"
+      }
+    },
+    {
+      "id": "merge_results",
+      "name": "Merge with optional payload",
+      "kind": "merge",
+      "config": {
+        "mode": "combine",
+        "null_handling": "lenient",
+        "inputs": {
+          "ids": "$ids",
+          "metadata": "$input.metadata",
+          "optional": "$input.optional"
+        }
+      },
+      "continue_on_error": true,
+      "outputs": {
+        "result": "$"
+      }
+    }
+  ]
+}

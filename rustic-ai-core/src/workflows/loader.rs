@@ -356,6 +356,38 @@ impl WorkflowLoader {
                 )));
             }
         }
+        if let Some(priority) = workflow.execution.switch_pattern_priority.as_deref() {
+            if !matches!(priority, "exact_first" | "pattern_first") {
+                return Err(Error::Validation(format!(
+                    "workflow '{}' execution.switch_pattern_priority must be exact_first or pattern_first",
+                    workflow.name
+                )));
+            }
+        }
+        if let Some(routing) = workflow.execution.continue_on_error_routing.as_deref() {
+            if !matches!(routing, "next_first" | "on_failure_first") {
+                return Err(Error::Validation(format!(
+                    "workflow '{}' execution.continue_on_error_routing must be next_first or on_failure_first",
+                    workflow.name
+                )));
+            }
+        }
+        if let Some(policy) = workflow.execution.execution_error_policy.as_deref() {
+            if !matches!(policy, "abort" | "route_as_failure") {
+                return Err(Error::Validation(format!(
+                    "workflow '{}' execution.execution_error_policy must be abort or route_as_failure",
+                    workflow.name
+                )));
+            }
+        }
+        if let Some(multiplier) = workflow.execution.default_retry_backoff_multiplier {
+            if !(1.0..=10.0).contains(&multiplier) {
+                return Err(Error::Validation(format!(
+                    "workflow '{}' execution.default_retry_backoff_multiplier must be between 1.0 and 10.0",
+                    workflow.name
+                )));
+            }
+        }
 
         let effective_condition_depth = workflow
             .execution
@@ -407,6 +439,45 @@ impl WorkflowLoader {
                     return Err(Error::Validation(format!(
                         "workflow '{}' step '{}' has unsupported expression_error_mode '{}'; expected strict|null|literal",
                         workflow.name, step.id, mode
+                    )));
+                }
+            }
+
+            if let Some(policy) = step
+                .config
+                .get("execution_error_policy")
+                .and_then(|value| value.as_str())
+            {
+                if !matches!(policy, "abort" | "route_as_failure") {
+                    return Err(Error::Validation(format!(
+                        "workflow '{}' step '{}' has unsupported execution_error_policy '{}'; expected abort|route_as_failure",
+                        workflow.name, step.id, policy
+                    )));
+                }
+            }
+
+            if let Some(routing) = step
+                .config
+                .get("continue_on_error_routing")
+                .and_then(|value| value.as_str())
+            {
+                if !matches!(routing, "next_first" | "on_failure_first") {
+                    return Err(Error::Validation(format!(
+                        "workflow '{}' step '{}' has unsupported continue_on_error_routing '{}'; expected next_first|on_failure_first",
+                        workflow.name, step.id, routing
+                    )));
+                }
+            }
+
+            if let Some(multiplier) = step
+                .config
+                .get("retry_backoff_multiplier")
+                .and_then(|value| value.as_f64())
+            {
+                if !(1.0..=10.0).contains(&multiplier) {
+                    return Err(Error::Validation(format!(
+                        "workflow '{}' step '{}' retry_backoff_multiplier must be between 1.0 and 10.0",
+                        workflow.name, step.id
                     )));
                 }
             }
@@ -626,6 +697,19 @@ impl WorkflowLoader {
                                     workflow.name, step.id, index
                                 ))
                             })?;
+                    }
+                }
+
+                if let Some(priority) = step
+                    .config
+                    .get("pattern_priority")
+                    .and_then(|value| value.as_str())
+                {
+                    if !matches!(priority, "exact_first" | "pattern_first") {
+                        return Err(Error::Validation(format!(
+                            "workflow '{}' switch step '{}' has unsupported pattern_priority '{}'; expected exact_first|pattern_first",
+                            workflow.name, step.id, priority
+                        )));
                     }
                 }
             }
