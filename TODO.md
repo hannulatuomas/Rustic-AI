@@ -2,99 +2,489 @@
 
 Single source of truth for active implementation work.
 
-Last updated: 2026-02-10
+Last updated: 2026-02-11
 
-## Current Focus
-- Wire agent turn loop to handle permission-approved follow-up
+## Project Status
 
-## In Progress
-- [ ] Wire agent turn loop to handle permission-approved follow-up
-  - [x] Add `PendingToolState` model to storage
-  - [x] Add `pending_tool_timeout_secs` to `PermissionConfig` schema (default: 300s)
-  - [x] Add `StorageBackend` trait methods for pending tool operations
-  - [x] Implement SQLite pending tool storage with schema migration (v2)
-  - [x] Add `SessionManager` methods for pending tool operations
-  - [x] Modify `Agent::run_assistant_tool_loop` to store pending state on None
-  - [x] Add `Agent::resume_from_pending_tool` resume method
-  - [x] Modify `Agent::continue_after_tool` to use resume path
-  - [x] Add `RusticAI` cleanup for stale pending tools on startup
+**Overall Requirements Coverage: ~52%**
 
-- [ ] Implement Filesystem tool
-  - [x] Implement core filesystem operations (`read`, `write`, `edit`, `list`, `mkdir`, `delete`, `copy`, `move`, `info`, `glob`, `hash`)
-  - [x] Wire `filesystem` tool registration in `ToolManager`
-  - [x] Add runtime tool execution context plumbing (working directory) and apply it to shell/filesystem
-  - [x] Extend permission model foundation to path-aware and agent-scoped allow/deny checks
-  - [x] Add explicit permission prompts/resolutions integration for path-outside-root "ask" flows in active agent loop
-- [ ] Implement HTTP tool
-  - [x] Implement HTTP tool request execution (`GET`/`POST`/`PUT`/`PATCH`/`DELETE` and generic methods)
-  - [x] Add bounded response streaming and timeout handling
-  - [x] Wire `http` tool registration in `ToolManager`
-  - [x] Integrate HTTP tool invocation into active agent tool-calling loop (JSON tool call protocol)
+**Current Implementation vs Requirements:**
+- LLM Providers: 175% (7 implemented, 4 required)
+- Tool System: 23% (7 implemented, 30+ required)
+- Permissions: 50% (allow/deny/ask, missing read/write)
+- Agent Coordination: 30% (partial, missing direct agent calling)
+- Context Handling: 20% (simple LIFO, no summarization/RAG)
+- Big Codebases: 0% (no indexing, vector DB, semantic search)
+- Self-Learning: 0% (no feedback, patterns, adaptation)
+- Taxonomy: 10% (schema only, no implementation)
 
-- [ ] Agent tool-call orchestration improvements
-  - [x] Parse JSON tool-call responses and execute via ToolManager
-  - [x] Feed tool outputs back into follow-up model response generation
-  - [x] Implement interactive permission resolution flow in REPL (`PermissionRequest` -> user decision -> `resolve_permission`)
-  - [x] Trigger assistant follow-up completion after permission-approved delayed tool execution
-  - [x] Support multi-round autonomous tool loops with configurable per-agent limits
-  - [x] Add per-agent total tool-call cap per turn (`max_total_tool_calls_per_turn`)
-  - [x] Add per-agent turn duration cap (`max_turn_duration_seconds`) with unlimited option (`0`)
-  - [ ] Add provider-focused integration tests (auth modes, non-stream and stream responses)
+**Estimated Completion: 22-26 weeks of work remaining**
 
-- [x] Implement skills + workflows foundation (n8n-oriented)
-  - [x] Add config schema for skills/workflows (including script execution mode and recursion limits)
-  - [x] Implement skill discovery/registry with instruction + script skill loading
-  - [x] Implement workflow discovery/registry with JSON+YAML loading and entrypoint/step validation
-  - [x] Add CLI inspection commands (`/skills list|show`, `/workflows list|show`)
-  - [x] Integrate workflow execution engine with named outputs and downstream step routing
-    - [x] Add initial executor for `tool`/`skill`/`condition` step kinds and named output mapping
-    - [x] Add CLI manual run command (`/workflow run <name> [entrypoint]`)
-    - [x] Add nested workflow step execution with recursion depth controls
-    - [x] Add `agent` step execution
-    - [x] Emit workflow lifecycle events (`started`, `step_started`, `step_completed`, `completed`)
-    - [x] Extend condition evaluation with expression mode and comparison operators
-  - [x] Add agent invocation support for skills/workflows
-    - [x] Add `skill` tool adapter and registration (agent-callable)
-    - [x] Add `workflow` tool adapter and registration (agent-callable)
+---
 
-- [ ] Permission ergonomics and policy scopes
-  - [x] Add config-level global/project allowed path lists
-  - [x] Add config-level global/project shell command pattern policies (`allow`/`ask`/`deny`)
-  - [x] Add runtime session/project/global permission overrides via REPL `/perm` commands
-  - [x] Persist runtime `/perm global|project` additions back into config scopes automatically
+## Implementation Roadmap
 
-- [x] Harden shell sudo execution flow
-  - [x] Add permission/tool config fields for sudo TTL + privileged command matching
-  - [x] Add `SudoSecretPrompt` event and renderer support
-  - [x] Detect privileged shell commands and emit sudo prompt event
-  - [x] Wire secure secret input + sudo command resume path (no persistence)
+### Phase 1: Foundation - Agent Capabilities (Weeks 1-3)
+**Priority: HIGH - Enables other features**
 
-- [x] Implement SSH persistent session tool
-  - [x] Add `ssh` tool registration in `ToolManager`
-  - [x] Implement `connect`/`exec`/`disconnect` operations with streamed output
-  - [x] Reuse existing SSH control session across multiple commands
-  - [x] Add `list_sessions` and `close_all` operations
-  - [x] Add PTY mode (`exec` with `pty=true`) and SCP upload/download operations
+1. **Gap 4: Agent Registry Implementation** (2 days)
+    - [x] Implement full AgentRegistry with query methods
+    - [x] Add filtering by tool/skill/permission
+    - [x] Add task suitability heuristics
 
-- [x] Implement MCP adapter integration
-  - [x] Add MCP config schema (`mcp.servers`) with validation
-  - [x] Register `mcp` tool behind `features.mcp_enabled`
-  - [x] Implement MCP stdio adapter operations (`list_servers`, `list_tools`, `call_tool`)
-  - [x] Add config schema/example documentation updates
+2. **Gap 1: Agent Permission Model (Read-Only vs Read-Write)** (4-5 days)
+    - [x] Extend PermissionPolicy with AgentPermissionMode
+    - [ ] Add PermissionAction::AllowRead/AllowWrite variants
+    - [x] Add agent-level permission_mode config field
+    - [x] Enforce read-only in Filesystem tool (read operations only)
+    - [x] Enforce read-only in Shell tool (no write commands)
+    - [x] Enforce read-only in SSH tool (read-only mode)
+    - [x] Update ToolManager to pass permission mode to context
+    - [ ] Update CLI to show agent permission modes
 
-- [x] Implement plugin tool loader wiring
-  - [x] Add plugins config schema (`plugins.directories`, `plugins.manifest_file_name`, `plugins.max_discovery_depth`)
-  - [x] Implement manifest discovery + validation for plugin command tools
-  - [x] Load and register plugin tools in `ToolManager` behind `features.plugins_enabled`
+3. **Gap 6: Agent-to-Agent Calling Protocol** (5 days)
+    - [x] Create SubAgentTool with filtered context support
+    - [x] Implement filtered context building (OpenCode-style)
+    - [ ] Implement workspace context summarization
+    - [x] Add sub-agent execution in AgentCoordinator
+    - [ ] Add ContextFilter types (last_messages, include_keys, include_workspace)
+    - [ ] Add max_context_tokens control
+    - [x] Register sub_agent tool in ToolManager
+    - [x] Add allow_sub_agent_calls config to AgentConfig
+    - [x] Update CLI to render sub-agent call events
 
-- [x] Config ergonomics
-  - [x] Support layered config fragments for global and project scopes
-  - [x] Add explicit docs/examples for recommended split-file layouts (`agents.json`, `tools.json`, `providers.json`, `permissions.json`)
+### Phase 2: Organization & Context (Weeks 4-6)
+**Priority: HIGH - Better organization and context usage**
 
-## Next
-- [ ] Add provider-focused integration tests (auth modes, non-stream and stream responses)
+4. **Gap 2: Taxonomy Implementation** (5-6 days)
+    - [ ] Extend AgentConfig with taxonomy_membership field
+    - [ ] Extend ToolConfig and skill structures with taxonomy
+    - [ ] Create TaxonomyRegistry module
+    - [ ] Implement Basket and SubBasket structures
+    - [ ] Implement filtering APIs (by_basket, by_sub_basket, search)
+    - [ ] Validate depth limit (max 2 levels)
+    - [ ] Wire taxonomy into initialization
+    - [ ] Update AgentRegistry to use taxonomy for filtering
+    - [ ] Update ToolRegistry to use taxonomy for filtering
+    - [ ] Add CLI commands: `/taxonomy list|show <basket> [sub_basket]|search <query>`
 
-## Done
+5. **Gap 7: Advanced Context Management** (8-10 days)
+    - [ ] Create MessageScorer module (importance levels)
+    - [ ] Implement importance scoring logic (critical/high/medium/low)
+    - [ ] Add context pruning with importance-based selection
+    - [ ] Create ContextDeduplicator module
+    - [ ] Implement duplicate detection and removal
+    - [ ] Implement provider-assisted summarization
+    - [ ] Add ConversationSummary storage structure
+    - [ ] Implement summary caching and expansion
+    - [ ] Implement dynamic context optimization per task
+    - [ ] Add keyword extraction from current task
+    - [ ] Implement task-relevance scoring
+    - [ ] Update AgentMemory to use new context building
+
+6. **Gap 5: Dynamic Tool Loading** (3 days)
+    - [ ] Refactor ToolManager to support lazy loading
+    - [ ] Add lazy_loaders HashMap for heavy tools
+    - [ ] Implement lazy tool loading on demand
+    - [ ] Add active_tools tracking
+    - [ ] Implement unload_unused method
+    - [ ] Add get_tool_descriptions for agent tool lists
+    - [ ] Implement context-aware tool description selection
+    - [ ] Add tool priority ordering for truncation
+
+### Phase 3: Code Quality & Refactoring (Weeks 7-8)
+**Priority: HIGH - Technical debt and improvements**
+
+7. **Address Code Duplication** (3-4 days)
+    - [ ] Extract common streaming logic from providers
+    - [ ] Create shared SSE streaming utility
+    - [ ] Extract provider option building logic
+    - [ ] Create provider option builder trait
+    - [ ] Simplify ToolManager::execute_tool()
+    - [ ] Extract helpers from ToolManager
+    - [ ] Reduce `Agent::resume_from_pending_tool()` complexity
+    - [ ] Extract pending tool state machine
+
+8. **Complete Loose Integrations** (3-4 days)
+    - [ ] Wire workflow trigger execution
+    - [ ] Implement cron scheduling
+    - [ ] Implement event-based triggers
+    - [ ] Integrate topic inference into agent prompts
+    - [ ] Implement topic inference completion
+    - [ ] Implement project mode rule scoping
+    - [ ] Complete project mode profile loading
+    - [ ] Wire PostgreSQL backend
+    - [ ] Implement PostgreSQL storage backend
+    - [ ] Add custom storage backend support
+
+9. **Plugin System & Examples** (4-5 days)
+    - [ ] Add sample plugins to demonstrate loading framework
+    - [ ] Document plugin development
+    - [ ] Consider plugin sandboxing/security
+    - [ ] Create plugin examples directory
+    - [ ] Add plugin manifest examples
+    - [ ] Write plugin development guide
+
+### Phase 4: Workflow Engine Enhancements (Weeks 8-12)
+**Priority: HIGH - N8n-like workflow capabilities**
+
+10. **Phase 1: Grouped Conditions** (2-3 days)
+    - [ ] Add `LogicalOperator`, `Condition`, `ConditionGroup` types to `types.rs`
+    - [ ] Implement `evaluate_condition_group()` in `executor.rs`
+    - [ ] Add cycle detection to `loader.rs`
+    - [ ] Add depth validation to `loader.rs`
+    - [ ] Update CLI to display condition groups
+    - [ ] Add backward compatibility support for legacy conditions
+
+11. **Phase 2: Expression Language** (3-4 days)
+    - [ ] Implement tokenizer in `expressions.rs`
+    - [ ] Implement parser in `expressions.rs`
+    - [ ] Implement evaluator with function library
+    - [ ] Implement string functions (upper, lower, trim, split, join, replace, length, matches)
+    - [ ] Implement number functions (abs, floor, ceil, round)
+    - [ ] Implement array functions (first, last, at, map, filter, sum, avg, min, max, count)
+    - [ ] Implement object functions (keys, values, get, has)
+    - [ ] Implement type functions (to_string, to_number, to_boolean, type)
+    - [ ] Integrate into executor (replace `render_value_with_outputs`)
+    - [ ] Add error handling and edge case support
+    - [ ] Update config schema for expression syntax
+
+12. **Phase 3: New Step Types** (5-6 days)
+
+    **3.1 Wait Step** (1 day)
+    - [ ] Add `WorkflowStepKind::Wait` variant
+    - [ ] Implement `execute_wait_step()`
+    - [ ] Add validation for wait config
+    - [ ] Support duration_seconds and until_expression modes
+
+    **3.2 Loop Step** (2-3 days)
+    - [ ] Add `WorkflowStepKind::Loop` variant
+    - [ ] Implement `execute_loop_step()` with sequential mode
+    - [ ] Add parallel execution support
+    - [ ] Add iteration limit validation
+    - [ ] Implement loop variable scoping
+
+    **3.3 Merge Step** (1 day)
+    - [ ] Add `WorkflowStepKind::Merge` variant
+    - [ ] Implement `execute_merge_step()`
+    - [ ] Support merge modes (merge, append, combine, multiplex)
+
+    **3.4 Switch Step** (1 day)
+    - [ ] Add `WorkflowStepKind::Switch` variant
+    - [ ] Implement `execute_switch_step()`
+    - [ ] Integrate routing logic into main executor loop
+    - [ ] Support exact value and pattern matching
+
+13. **Workflow Edge Cases & Error Handling** (2-3 days)
+    - [ ] Handle empty arrays (loop, sum, avg)
+    - [ ] Handle null/undefined values gracefully
+    - [ ] Add null handling configuration (strict vs lenient)
+    - [ ] Add depth limit enforcement (conditions, expressions)
+    - [ ] Detect circular references in step graphs
+    - [ ] Detect mutual workflow recursion
+    - [ ] Handle large data (iteration limits, streaming)
+    - [ ] Add error propagation with continue_on_error
+    - [ ] Implement graceful failure for loop iterations
+
+### Phase 5: Tools Expansion (Weeks 13-19)
+**Priority: HIGH - Covers all use cases from REQUIREMENTS**
+
+14. **Gap 3: Tool Coverage Gap** (28-30 days total)
+
+#### Priority 1: Essential Development Tools (Weeks 13-14)
+    - [ ] **3.1 Git Tool** (3 days)
+      - [ ] Create git.rs tool module
+      - [ ] Implement GitCommand enum (Clone, Pull, Push, Commit, Status, Diff, Branch, Tag, Log, Checkout)
+      - [ ] Use git2 crate for Rust bindings
+      - [ ] Implement streaming output for long operations
+      - [ ] Add permission checks (read-only for status/diff/log, read-write for others)
+      - [ ] Add working directory support
+      - [ ] Add error handling and context
+
+    - [ ] **3.2 Grep Tool** (2 days)
+      - [ ] Create grep.rs tool module
+      - [ ] Implement GrepArgs (pattern, path, glob, ignore_case, etc.)
+      - [ ] Use regex crate for pattern matching
+      - [ ] Use ignore crate for file walking with .gitignore
+      - [ ] Implement streaming results
+      - [ ] Add line numbers, context, max_results
+
+    - [ ] **3.3 Database Tool** (4 days)
+      - [ ] Create database.rs tool module
+      - [ ] Implement DatabaseCommand enum (Connect, Query, ListTables, DescribeTable)
+      - [ ] Add DatabaseType (Sqlite, Postgres, Mysql)
+      - [ ] Use sqlx for database abstraction
+      - [ ] Add connection pooling
+      - [ ] Implement query streaming
+      - [ ] Add timeout and cancellation support
+
+#### Priority 2: Web & Search Tools (Week 15)
+    - [ ] **3.4 Web Search Tool** (2 days)
+      - [ ] Create web_search.rs tool module
+      - [ ] Implement WebSearchArgs (query, num_results, engine, lang)
+      - [ ] Add SearchEngine enum (Google, Bing, DuckDuckGo, Auto)
+      - [ ] Implement search via APIs
+      - [ ] Parse HTML responses
+      - [ ] Implement result ranking
+
+    - [ ] **3.5 Download Tool** (2 days)
+      - [ ] Create download.rs tool module
+      - [ ] Implement DownloadArgs (url, output, resume, chunk_size, max_size, timeout)
+      - [ ] Use reqwest with streaming
+      - [ ] Support range requests for resume
+      - [ ] Implement progress reporting via events
+      - [ ] Add size limits and SHA256 verification
+
+#### Priority 3: Text & Data Tools (Week 16)
+    - [ ] **3.6 Regex Tool** (1 day)
+      - [ ] Create regex.rs tool module
+      - [ ] Implement RegexArgs and RegexOperation (Match, Replace, FindAll)
+      - [ ] Use regex crate with all flags
+      - [ ] Return structured matches with groups
+
+    - [ ] **3.7 Format Tool** (1 day)
+      - [ ] Create format.rs tool module
+      - [ ] Implement FormatArgs and FormatOperation (Json, Xml, Minify variants)
+      - [ ] Use serde_json for JSON
+      - [ ] Use quick-xml for XML
+      - [ ] Implement pretty printing and minify
+
+    - [ ] **3.8 Encoding Tool** (1 day)
+      - [ ] Create encoding.rs tool module
+      - [ ] Implement EncodingArgs and EncodingOperation (Base64, Url, HtmlEntities, ValidateUtf8)
+      - [ ] Use base64, percent-encoding, html-escape crates
+
+    - [ ] **3.9 Convert Tool** (2 days)
+      - [ ] Create convert.rs tool module
+      - [ ] Implement ConvertArgs (input, from, to) and DataFormat enum
+      - [ ] Use serde_json, serde_yaml, quick-xml, csv crates
+      - [ ] Use pulldown-cmark for MD->HTML
+      - [ ] Use html2md for HTML->MD
+
+#### Priority 4: Code Intelligence (Weeks 17-18)
+    - [ ] **3.10 LSP Tool** (7 days)
+      - [ ] Create lsp.rs tool module
+      - [ ] Implement LspArgs and LspOperation (SymbolSearch, Definition, References, Hover)
+      - [ ] Add SymbolKind enum (Function, Method, Struct, etc.)
+      - [ ] Use lsp-types crate
+      - [ ] Implement LSP server communication via stdio
+      - [ ] Add server lifecycle management (start/stop)
+      - [ ] Implement caching for workspace symbols
+      - [ ] Implement search and navigation
+
+#### Priority 5: Image Tools (Week 19)
+    - [ ] **3.11 Image Tool** (3 days)
+      - [ ] Create image.rs tool module
+      - [ ] Implement ImageArgs and ImageOperation (Resize, Crop, Rotate, Convert, Metadata)
+      - [ ] Add ImageFormat enum (Png, Jpeg, Webp, Gif)
+      - [ ] Use image crate for processing
+      - [ ] Implement resize, crop, rotate, format conversion
+      - [ ] Extract and return metadata
+      - [ ] Implement progress reporting
+
+### Phase 6: Advanced Features (Weeks 20-24)
+**Priority: MEDIUM - Continuous improvement**
+
+15. **Gap 9: Self-Learning System** (14-18 days total)
+
+#### Phase 1: Feedback Collection (Week 20)
+    - [ ] Create learning module (mod.rs, feedback.rs, storage.rs, types.rs)
+    - [ ] Implement UserFeedback structure (id, session_id, agent_name, feedback_type, rating, comment, context)
+    - [ ] Implement FeedbackContext (task_description, tools_used, model_response, error_occurred, error_message)
+    - [ ] Add SQLite table for feedback storage
+    - [ ] Create migration script for feedback table
+    - [ ] Implement feedback collection API
+    - [ ] Add CLI command: `/feedback --type <type> --rating <-1..1> --comment <text>`
+    - [ ] Add implicit feedback collection from events
+
+#### Phase 2: Mistake Pattern Learning (Weeks 21-22)
+    - [ ] Create pattern learning module (patterns.rs)
+    - [ ] Implement MistakePattern structure (pattern_type, trigger, frequency, last_seen, suggested_fix)
+    - [ ] Implement MistakeType enum (PermissionDenied, ToolTimeout, FileNotFound, CompilationError, TestFailure, WrongApproach)
+    - [ ] Implement PatternLearner
+    - [ ] Implement event recording (ToolFailed, PermissionDenied)
+    - [ ] Implement error classification (classify_error method)
+    - [ ] Implement pattern frequency tracking
+    - [ ] Implement fix suggestion (suggest_fix method)
+    - [ ] Implement active pattern retrieval (get_active_patterns)
+    - [ ] Implement pattern-based warnings before task execution
+    - [ ] Add SQLite table for mistake patterns
+    - [ ] Create migration script for patterns table
+
+#### Phase 3: Preference Adaptation (Week 23)
+    - [ ] Create preference learning module (preferences.rs)
+    - [ ] Implement UserPreferences structure (id, session_id, preferences HashMap)
+    - [ ] Implement PreferenceValue enum (String, Int, Float, Bool)
+    - [ ] Implement PreferenceLearner
+    - [ ] Implement choice recording (record_choice)
+    - [ ] Implement rating recording (record_rating)
+    - [ ] Implement preference retrieval (get_preference)
+    - [ ] Implement preferred approach retrieval (get_preferred_approach)
+    - [ ] Add SQLite table for user preferences
+    - [ ] Create migration script for preferences table
+
+#### Phase 4: Success Pattern Library (Week 24)
+    - [ ] Create success patterns module (success_patterns.rs)
+    - [ ] Implement SuccessPattern structure (id, name, category, description, template, frequency, last_used, success_rate)
+    - [ ] Implement PatternCategory enum (ErrorFixing, Refactoring, Debugging, FeatureImplementation, Testing)
+    - [ ] Implement SuccessPatternLibrary
+    - [ ] Implement success recording (record_success)
+    - [ ] Implement pattern similarity scoring (similarity method)
+    - [ ] Implement pattern finding (find_patterns)
+    - [ ] Implement top pattern retrieval (get_top_patterns)
+    - [ ] Implement name generation (generate_name)
+    - [ ] Implement template extraction (extract_template)
+    - [ ] Add SQLite table for success patterns
+    - [ ] Create migration script for success patterns table
+
+#### Phase 5: Integration with Agent
+    - [ ] Modify Agent::run to incorporate learning
+    - [ ] Add pattern check before task execution (show known patterns)
+    - [ ] Record task completion for success patterns
+    - [ ] Record errors for mistake patterns
+    - [ ] Apply user preferences in agent behavior
+    - [ ] Emit learning-related events
+
+### Phase 7: Big Codebase Support (Weeks 25-28)
+**Priority: CRITICAL - Required for large codebases (100K+ files)**
+
+16. **Gap 8: Big Codebase Support (RAG, Vector DB, Indexing)** (26-30 days total)
+
+#### Phase 1: Code Indexing (Weeks 25-26)
+    - [ ] Create indexing module (mod.rs, parser.rs, symbols.rs, types.rs)
+    - [ ] Implement CodeIndex structure (workspace, files, symbols, dependencies, updated_at)
+    - [ ] Implement FileIndex structure (path, language, functions, classes, imports)
+    - [ ] Implement SymbolIndex structure (name, symbol_type, file_path, line, column, docstring, signature)
+    - [ ] Implement SymbolType enum (Function, Method, Struct, Enum, Trait, Impl, Type, Variable, Constant, Module)
+    - [ ] Add tree-sitter for multi-language parsing
+    - [ ] Support Rust, Python, JavaScript/TypeScript, Go, C/C++
+    - [ ] Implement AST node extraction for symbols
+    - [ ] Build call graph tracking
+    - [ ] Add SQLite tables for code index
+    - [ ] Create migration scripts for index tables
+    - [ ] Implement incremental index updates
+
+#### Phase 2: Vector Database Integration (Weeks 26-27)
+    - [ ] Create vector module (mod.rs, db.rs, embedding.rs)
+    - [ ] Implement VectorDB with VectorBackend (SqliteVector, PostgresVector, etc.)
+    - [ ] Implement EmbeddingProvider trait (embed, dimension)
+    - [ ] Implement OpenAI embedding provider (text-embedding-3-small/large)
+    - [ ] Implement OpenAI-compatible local embedding provider
+    - [ ] Implement sentence-transformers provider (local Python)
+    - [ ] Implement Embedding structure (id, vector, metadata)
+    - [ ] Implement SearchQuery structure (text, top_k, filter)
+    - [ ] Implement SearchResult structure (id, score, metadata)
+    - [ ] Add vector-sqlite extension integration
+    - [ ] Implement vector storage and retrieval
+    - [ ] Implement cosine similarity search
+    - [ ] Add SQLite tables for vectors
+    - [ ] Create migration scripts for vector tables
+
+#### Phase 3: RAG System (Weeks 27-28)
+    - [ ] Create rag module (mod.rs, retriever.rs, augmenter.rs)
+    - [ ] Implement RAGRetriever (index, vector_db)
+    - [ ] Implement RetrievalRequest (query, top_k, min_score, filters)
+    - [ ] Implement RetrievalResult (snippets, symbols)
+    - [ ] Implement CodeSnippet structure (file_path, content, line_start, line_end, score, contexts)
+    - [ ] Implement SymbolMatch structure (symbol, score, usage_context)
+    - [ ] Implement hybrid search (keyword + semantic)
+    - [ ] Implement context expansion (surrounding lines)
+    - [ ] Implement result ranking (relevance, recency, importance)
+    - [ ] Implement prompt augmentation
+    - [ ] Implement code context formatting
+
+#### Phase 4: Integration with Agent
+    - [ ] Modify Agent::build_context_window to use RAG
+    - [ ] Implement RAG-based context building
+    - [ ] Extract last query from conversation
+    - [ ] Retrieve relevant code snippets
+    - [ ] Build code context from retrieval
+    - [ ] Inject code context as system message
+    - [ ] Limit conversation history to fit RAG context
+    - [ ] Implement token budget management for RAG
+
+---
+
+## Release Preparation
+
+17. **Update README.md** (1 day)
+    - [ ] Fix "scaffold + foundation stage" claim
+    - [ ] Reflect completion status
+    - [ ] Add quick start examples
+    - [ ] Update feature matrix
+
+18. **Advanced Tools** (5-7 days)
+    - [ ] Git tool (clone, commit, push, pull, status, diff, log, branch)
+    - [ ] Database tool (query, list tables, describe table)
+    - [ ] LSP client tool (symbol search, definition, references, hover)
+
+19. **Code Graph Analysis** (7-10 days)
+    - [ ] AST parsing/indexing
+    - [ ] Dependency tracking
+    - [ ] Impact analysis for changes
+    - [ ] Code visualization
+
+20. **API Server** (7-10 days)
+    - [ ] REST API for programmatic access
+    - [ ] SSE/WebSocket API for streaming
+    - [ ] Remote execution capability
+    - [ ] Multi-user support
+    - [ ] API authentication
+
+21. **TUI Frontend** (10-14 days)
+    - [ ] Terminal UI using ratatui or similar
+    - [ ] Interactive workflow builder
+    - [ ] Better than current text-only REPL
+    - [ ] Multi-panel layout
+
+22. **Add Comprehensive Tests** (7-10 days)
+    - [ ] Add unit tests for all core modules (config, providers, tools, workflows, agents, permissions, storage)
+    - [ ] Add integration tests for provider integrations (all 7 providers)
+    - [ ] Add integration tests for tool execution (all tools with streaming)
+    - [ ] Add integration tests for workflow execution (all step types, conditions, expressions)
+    - [ ] Add integration tests for agent coordination (tool calling loops, sub-agent calls)
+    - [ ] Add integration tests for permission enforcement (allow/deny/ask, read/write)
+    - [ ] Add integration tests for storage backends (SQLite, PostgreSQL)
+    - [ ] Add E2E tests for complex workflows
+    - [ ] Add E2E tests for multi-agent scenarios
+    - [ ] Add performance tests (large workflows, big codebases)
+    - [ ] Add load tests (concurrent sessions, parallel workflows)
+    - [ ] Target: 80%+ code coverage
+    - [ ] Ensure all tests pass
+
+---
+
+## Release
+
+- [ ] Release v1.0.0
+    - [ ] Update version numbers
+    - [ ] Generate CHANGELOG.md
+    - [ ] Create release notes
+    - [ ] Tag release in git
+    - [ ] Publish to crates.io
+    - [ ] Create GitHub release
+    - [ ] Announce in relevant communities
+
+---
+
+## Current Focus (Continuing)
+
+- [ ] Workflow enhancements (from previous TODO)
+    - [ ] Phase 1: Grouped conditions with nested logic (2-3 days)
+    - [ ] Phase 2: Expression language (3-4 days)
+    - [ ] Phase 3: New step types (Wait, Loop, Merge, Switch) (4-6 days)
+
+---
+
+## Next (Immediate)
+
+- Start with Phase 1 (Foundation - Agent Capabilities)
+- Prioritize by impact and dependencies
+
+---
+
+## Completed (Migrated from previous TODO)
+
 - [x] Initialize workspace (`rustic-ai-core`, `frontend/rustic-ai-cli`)
 - [x] Build/lint/test baseline green for initial foundation
 - [x] Implement core config loading, merge, and validation framework
@@ -102,56 +492,53 @@ Last updated: 2026-02-10
 - [x] Implement storage abstraction and SQLite backend with session/message persistence
 - [x] Implement provider registry and factory boundary
 - [x] Implement OpenAI provider baseline (`generate`)
-- [x] Extend provider generation model (`GenerateOptions`, `ChatMessage`, function-call metadata)
-- [x] Extend `ModelProvider` trait with `stream_generate`, `count_tokens`, capability flags
-- [x] Add provider SSE parsing utility module (`providers/streaming.rs`)
-- [x] Upgrade OpenAI provider:
-  - [x] robust request construction (advanced options + typed payload)
-  - [x] streaming response handling via SSE parser
-  - [x] `auth_mode: subscription` support with explicit header/config handling
-  - [x] remove panic-based header/client construction in runtime path
-- [x] Implement subscription auth subsystem:
-  - [x] browser OAuth login flow (local callback receiver + PKCE)
-  - [x] headless/device-code flow
-  - [x] credential persistence in local auth store (`~/.rustic-ai/data/auth.json` by default)
-  - [x] token refresh handling for runtime provider requests
-  - [x] CLI auth commands (`auth connect`, `auth list`, `auth logout`)
-- [x] Integrate OpenAI provider subscription auth with persisted credentials (API key no longer required for subscription mode)
-- [x] Implement Anthropic provider (generate + stream + token count) and wire into provider factory
-- [x] Implement Anthropic authentication parity:
-  - [x] `auth_mode: api_key`
-  - [x] `auth_mode: subscription` via shared browser/headless auth subsystem
-  - [x] runtime token refresh integration for subscription calls
-- [x] Implement Google provider (generate + stream + token count) and wire into provider factory
-- [x] Implement Google authentication parity:
-  - [x] `auth_mode: api_key`
-  - [x] `auth_mode: subscription` via shared browser/headless auth subsystem
-  - [x] runtime token refresh integration for subscription calls
-- [x] Implement Grok provider (generate + stream + token count) with API-key-only auth
-- [x] Implement Z.ai provider with dual endpoint support (general and coding) and API-key auth
-- [x] Implement custom OpenAI-compatible provider (endpoint + api key)
-- [x] Implement Ollama provider (generate + stream + token count)
-- [x] Add provider auth capability visibility and enforcement:
-  - [x] central provider auth-mode capability mapping
-  - [x] validation errors list supported auth modes per provider type
-  - [x] CLI command `auth methods` to show configured vs supported auth modes
-  - [x] default `api_key` path available across configured provider types
-  - [x] `subscription` limited to open_ai, anthropic, google
-- [x] Update OpenAI factory wiring for auth-mode aware construction and settings parsing
-- [x] Update config validation/schema for `auth_mode: subscription`
+- [x] Implement Anthropic, Google, Grok, Z.ai, Ollama, Custom providers
+- [x] Implement subscription auth subsystem (OAuth PKCE, device-code)
 - [x] Implement tool system foundation (`Tool` trait, registry, manager)
-- [x] Implement Shell tool baseline with permission checks and streaming events
+- [x] Implement Shell, Filesystem, HTTP, SSH tools
 - [x] Implement permission policy foundation (`allow` / `deny` / `ask`)
-- [x] Implement agent/session flow foundation and CLI interactive loop baseline
+- [x] Implement agent/session flow foundation and CLI interactive loop
+- [x] Wire agent turn loop to handle permission-approved follow-up
+- [x] Implement Filesystem, HTTP tools
+- [x] Implement agent tool-call orchestration
+- [x] Implement SSH persistent session tool
+- [x] Implement MCP adapter integration
+- [x] Implement plugin tool loader wiring
+- [x] Config ergonomics (layered configs, split-file layouts)
+- [x] Implement skills + workflows foundation (n8n-oriented)
+- [x] Implement workflow execution engine with named outputs
+- [x] Add CLI commands for skills/workflows/permissions
+- [x] Document comprehensive workflow enhancement plan
+- [x] Document comprehensive state analysis
+- [x] Document implementation gaps (all 9 gaps with full plans)
+- [x] Document agent-to-agent calling protocol
+
+---
 
 ## Verification Commands
 - `export PATH="$HOME/.cargo/bin:$PATH" && cargo fmt --all`
 - `export PATH="$HOME/.cargo/bin:$PATH" && cargo build --workspace`
 - `export PATH="$HOME/.cargo/bin:$PATH" && cargo clippy --workspace --all-targets --all-features -- -D warnings`
-- `export PATH="$HOME/.cargo/bin:$PATH" && cargo test --workspace --all-features`
+
+---
 
 ## Update Rules
-- Every non-trivial change updates this file in the same change.
+- Every non-trivial change updates this file in same change.
 - Keep only one active tracker (this file).
 - Move completed work to Done immediately.
 - Reflect scope changes before implementation proceeds.
+
+---
+
+## Reference Documents
+
+- **Requirements:** `docs/initial-planning/REQUIREMENTS.md`
+- **Implementation Gaps:** `docs/implementation-gaps.md` (comprehensive gap analysis)
+- **Workflow Plan:** `docs/workflow-enhancement-plan.md`
+- **State Analysis:** `docs/comprehensive-state-analysis.md`
+- **Agent Protocol:** `docs/agent-to-agent-protocol.md` (OpenCode-style agent calling)
+- **Design Guide:** `docs/DESIGN_GUIDE.md`
+- **Decisions:** `docs/DECISIONS.md`
+- **Integration Plan:** `docs/initial-planning/integration-plan.md`
+- **Big Picture:** `docs/initial-planning/big-picture.md`
+- **Tools:** `docs/initial-planning/tools.md`
