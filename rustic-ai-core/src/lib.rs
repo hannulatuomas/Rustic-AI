@@ -61,11 +61,27 @@ impl RusticAI {
         }
 
         let storage_backend = storage::create_storage_backend(&config, &storage_paths)?;
+        let project_profile = if config.mode == crate::config::schema::RuntimeMode::Project {
+            config
+                .project
+                .as_ref()
+                .map(|project| crate::project::profile::ProjectProfile {
+                    name: project.name.clone(),
+                    root_path: project.root_path.clone(),
+                    tech_stack: project.tech_stack.clone(),
+                    goals: project.goals.clone(),
+                    preferences: project.preferences.clone(),
+                    style_guidelines: project.style_guidelines.clone(),
+                })
+        } else {
+            None
+        };
         let session_manager =
             std::sync::Arc::new(conversation::session_manager::SessionManager::new(
                 storage_backend,
                 config.rules.discovered_rules.clone(),
                 work_dir.clone(),
+                project_profile,
             ));
 
         // Cleanup stale pending tool states on startup using a dedicated runtime

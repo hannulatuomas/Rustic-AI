@@ -51,7 +51,15 @@
     "max_discovery_depth": 4,
     "default_timeout_seconds": 300,
     "max_recursion_depth": 16,
-    "max_steps_per_run": 256
+    "max_steps_per_run": 256,
+    "condition_group_max_depth": 8,
+    "expression_max_length": 8192,
+    "expression_max_depth": 64,
+    "loop_default_max_iterations": 1000,
+    "loop_default_max_parallelism": 8,
+    "loop_hard_max_parallelism": 256,
+    "wait_default_poll_interval_ms": 250,
+    "wait_default_timeout_seconds": 300
   },
   "storage": {
     "backend": "sqlite",

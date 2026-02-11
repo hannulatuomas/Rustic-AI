@@ -466,6 +466,66 @@ pub fn validate_config(config: &Config) -> Result<()> {
             ));
         }
     }
+    if config.workflows.condition_group_max_depth == 0
+        || config.workflows.condition_group_max_depth > 64
+    {
+        return Err(Error::Validation(
+            "workflows.condition_group_max_depth must be between 1 and 64".to_owned(),
+        ));
+    }
+    if config.workflows.expression_max_length < 16
+        || config.workflows.expression_max_length > 65_536
+    {
+        return Err(Error::Validation(
+            "workflows.expression_max_length must be between 16 and 65536".to_owned(),
+        ));
+    }
+    if config.workflows.expression_max_depth == 0 || config.workflows.expression_max_depth > 512 {
+        return Err(Error::Validation(
+            "workflows.expression_max_depth must be between 1 and 512".to_owned(),
+        ));
+    }
+    if config.workflows.loop_default_max_iterations == 0
+        || config.workflows.loop_default_max_iterations > 1_000_000
+    {
+        return Err(Error::Validation(
+            "workflows.loop_default_max_iterations must be between 1 and 1000000".to_owned(),
+        ));
+    }
+    if config.workflows.loop_default_max_parallelism == 0
+        || config.workflows.loop_default_max_parallelism > 10_000
+    {
+        return Err(Error::Validation(
+            "workflows.loop_default_max_parallelism must be between 1 and 10000".to_owned(),
+        ));
+    }
+    if config.workflows.loop_hard_max_parallelism == 0
+        || config.workflows.loop_hard_max_parallelism > 10_000
+    {
+        return Err(Error::Validation(
+            "workflows.loop_hard_max_parallelism must be between 1 and 10000".to_owned(),
+        ));
+    }
+    if config.workflows.loop_default_max_parallelism > config.workflows.loop_hard_max_parallelism {
+        return Err(Error::Validation(
+            "workflows.loop_default_max_parallelism cannot exceed workflows.loop_hard_max_parallelism"
+                .to_owned(),
+        ));
+    }
+    if config.workflows.wait_default_poll_interval_ms == 0
+        || config.workflows.wait_default_poll_interval_ms > 60_000
+    {
+        return Err(Error::Validation(
+            "workflows.wait_default_poll_interval_ms must be between 1 and 60000".to_owned(),
+        ));
+    }
+    if config.workflows.wait_default_timeout_seconds == 0
+        || config.workflows.wait_default_timeout_seconds > 86_400
+    {
+        return Err(Error::Validation(
+            "workflows.wait_default_timeout_seconds must be between 1 and 86400".to_owned(),
+        ));
+    }
     for (idx, dir) in config.workflows.directories.iter().enumerate() {
         if dir.trim().is_empty() {
             return Err(Error::Validation(format!(

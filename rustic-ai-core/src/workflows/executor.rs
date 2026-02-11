@@ -1,5 +1,12 @@
+use super::expressions::{
+    evaluate_expression_with_locals_and_options, evaluate_expression_with_options, is_truthy,
+    EvaluationOptions,
+};
 use super::registry::WorkflowRegistry;
-use super::types::{ConditionOperator, WorkflowStep, WorkflowStepKind};
+use super::types::{
+    ConditionClause, ConditionGroup, ConditionOperator, LogicalOperator, NullHandlingMode,
+    WorkflowExecutionConfig, WorkflowStep, WorkflowStepKind,
+};
 use crate::agents::AgentCoordinator;
 use crate::conversation::session_manager::SessionManager;
 use crate::error::{Error, Result};
@@ -7,18 +14,43 @@ use crate::events::Event;
 use crate::skills::{SkillExecutionContext, SkillRegistry};
 use crate::tools::ToolManager;
 use futures::future::BoxFuture;
-use regex::Regex;
+use futures::stream::{self, StreamExt};
+use regex::{Regex, RegexBuilder};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tokio::time::{sleep, Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub struct WorkflowExecutorConfig {
     pub max_recursion_depth: Option<usize>,
     pub max_steps_per_run: Option<usize>,
     pub working_directory: PathBuf,
+    pub condition_group_max_depth: usize,
+    pub expression_max_length: usize,
+    pub expression_max_depth: usize,
+    pub loop_default_max_iterations: u64,
+    pub loop_default_max_parallelism: u64,
+    pub loop_hard_max_parallelism: u64,
+    pub wait_default_poll_interval_ms: u64,
+    pub wait_default_timeout_seconds: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EffectiveWorkflowConfig {
+    max_recursion_depth: Option<usize>,
+    max_steps_per_run: Option<usize>,
+    condition_group_max_depth: usize,
+    expression_max_length: usize,
+    expression_max_depth: usize,
+    loop_default_max_iterations: u64,
+    loop_default_max_parallelism: u64,
+    loop_hard_max_parallelism: u64,
+    wait_default_poll_interval_ms: u64,
+    wait_default_timeout_seconds: u64,
+    null_handling: NullHandlingMode,
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +68,7 @@ pub struct WorkflowRunRequest {
     pub agent_name: Option<String>,
     pub input: Value,
     pub recursion_depth: usize,
+    pub workflow_stack: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -89,30 +122,62 @@ impl WorkflowExecutor {
         Some(current.clone())
     }
 
-    fn render_value_with_outputs(value: &Value, outputs: &BTreeMap<String, Value>) -> Value {
+    fn render_value_with_outputs(
+        value: &Value,
+        outputs: &BTreeMap<String, Value>,
+        step: &WorkflowStep,
+        expression_options: EvaluationOptions,
+    ) -> Result<Value> {
         match value {
             Value::String(text) => {
-                if text.starts_with("$") {
-                    let root = Self::outputs_root(outputs);
-                    Self::extract_path(&root, text).unwrap_or(Value::Null)
+                if Self::is_expression_candidate(text) {
+                    let expression = Self::expression_from_template(text);
+                    match evaluate_expression_with_options(expression, outputs, expression_options)
+                    {
+                        Ok(v) => Ok(v),
+                        Err(err) => {
+                            let mode = Self::expression_error_mode(step);
+                            match mode {
+                                "null" => Ok(Value::Null),
+                                "literal" => Ok(Value::String(text.clone())),
+                                "strict" => Err(Error::Tool(format!(
+                                    "workflow step '{}' failed evaluating expression '{}': {err}",
+                                    step.id, expression
+                                ))),
+                                other => Err(Error::Tool(format!(
+                                    "workflow step '{}' has unsupported expression_error_mode '{}'",
+                                    step.id, other
+                                ))),
+                            }
+                        }
+                    }
                 } else {
-                    Value::String(text.clone())
+                    Ok(Value::String(text.clone()))
                 }
             }
-            Value::Array(items) => Value::Array(
-                items
-                    .iter()
-                    .map(|item| Self::render_value_with_outputs(item, outputs))
-                    .collect(),
-            ),
+            Value::Array(items) => {
+                let mut rendered_items = Vec::with_capacity(items.len());
+                for item in items {
+                    rendered_items.push(Self::render_value_with_outputs(
+                        item,
+                        outputs,
+                        step,
+                        expression_options,
+                    )?);
+                }
+                Ok(Value::Array(rendered_items))
+            }
             Value::Object(map) => {
                 let mut rendered = serde_json::Map::new();
                 for (key, item) in map {
-                    rendered.insert(key.clone(), Self::render_value_with_outputs(item, outputs));
+                    rendered.insert(
+                        key.clone(),
+                        Self::render_value_with_outputs(item, outputs, step, expression_options)?,
+                    );
                 }
-                Value::Object(rendered)
+                Ok(Value::Object(rendered))
             }
-            _ => value.clone(),
+            _ => Ok(value.clone()),
         }
     }
 
@@ -127,33 +192,301 @@ impl WorkflowExecutor {
             WorkflowStepKind::Agent => "agent",
             WorkflowStepKind::Workflow => "workflow",
             WorkflowStepKind::Condition => "condition",
+            WorkflowStepKind::Wait => "wait",
+            WorkflowStepKind::Loop => "loop",
+            WorkflowStepKind::Merge => "merge",
+            WorkflowStepKind::Switch => "switch",
         }
     }
 
-    fn evaluate_condition(step: &WorkflowStep, outputs: &BTreeMap<String, Value>) -> Result<bool> {
-        if let Some(expression) = step.config.get("expression").and_then(Value::as_str) {
-            return Self::evaluate_expression(expression, outputs, step);
+    fn is_expression_candidate(text: &str) -> bool {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return false;
         }
 
-        let path = step
-            .config
-            .get("path")
+        if trimmed.starts_with("${") && trimmed.ends_with('}') {
+            return true;
+        }
+
+        if trimmed.starts_with('$') {
+            return true;
+        }
+
+        const MARKERS: [&str; 8] = ["==", "!=", ">=", "<=", " > ", " < ", "&&", "||"];
+        if MARKERS.iter().any(|marker| trimmed.contains(marker))
+            || trimmed.contains(" contains ")
+            || trimmed.contains(" matches ")
+        {
+            return true;
+        }
+
+        if let Some(open_paren) = trimmed.find('(') {
+            if trimmed.ends_with(')') {
+                let name = trimmed[..open_paren].trim();
+                if !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    fn expression_from_template(text: &str) -> &str {
+        let trimmed = text.trim();
+        if trimmed.starts_with("${") && trimmed.ends_with('}') && trimmed.len() > 3 {
+            &trimmed[2..trimmed.len() - 1]
+        } else {
+            trimmed
+        }
+    }
+
+    fn expression_error_mode(step: &WorkflowStep) -> &str {
+        step.config
+            .get("expression_error_mode")
             .and_then(Value::as_str)
-            .ok_or_else(|| {
-                Error::Tool(format!(
-                    "workflow condition step '{}' missing config.path",
-                    step.id
-                ))
-            })?;
-        let op = step
+            .unwrap_or("strict")
+    }
+
+    fn effective_config_for_workflow(
+        &self,
+        overrides: &WorkflowExecutionConfig,
+    ) -> EffectiveWorkflowConfig {
+        EffectiveWorkflowConfig {
+            max_recursion_depth: overrides
+                .max_recursion_depth
+                .or(self.config.max_recursion_depth),
+            max_steps_per_run: overrides
+                .max_steps_per_run
+                .or(self.config.max_steps_per_run),
+            condition_group_max_depth: overrides
+                .condition_group_max_depth
+                .unwrap_or(self.config.condition_group_max_depth),
+            expression_max_length: overrides
+                .expression_max_length
+                .unwrap_or(self.config.expression_max_length),
+            expression_max_depth: overrides
+                .expression_max_depth
+                .unwrap_or(self.config.expression_max_depth),
+            loop_default_max_iterations: overrides
+                .loop_default_max_iterations
+                .unwrap_or(self.config.loop_default_max_iterations),
+            loop_default_max_parallelism: overrides
+                .loop_default_max_parallelism
+                .unwrap_or(self.config.loop_default_max_parallelism),
+            loop_hard_max_parallelism: overrides
+                .loop_hard_max_parallelism
+                .unwrap_or(self.config.loop_hard_max_parallelism),
+            wait_default_poll_interval_ms: overrides
+                .wait_default_poll_interval_ms
+                .unwrap_or(self.config.wait_default_poll_interval_ms),
+            wait_default_timeout_seconds: overrides
+                .wait_default_timeout_seconds
+                .unwrap_or(self.config.wait_default_timeout_seconds),
+            null_handling: overrides.null_handling.unwrap_or(NullHandlingMode::Strict),
+        }
+    }
+
+    fn null_handling_for_step(
+        step: &WorkflowStep,
+        workflow_config: EffectiveWorkflowConfig,
+    ) -> NullHandlingMode {
+        if let Some(mode) = step.config.get("null_handling").and_then(Value::as_str) {
+            return match mode {
+                "lenient" => NullHandlingMode::Lenient,
+                _ => NullHandlingMode::Strict,
+            };
+        }
+        workflow_config.null_handling
+    }
+
+    fn expression_options_for_step(
+        &self,
+        step: &WorkflowStep,
+        workflow_config: EffectiveWorkflowConfig,
+    ) -> EvaluationOptions {
+        let max_length = step
             .config
+            .get("expression_max_length")
+            .and_then(Value::as_u64)
+            .map(|v| v as usize)
+            .unwrap_or(workflow_config.expression_max_length);
+        let max_depth = step
+            .config
+            .get("expression_max_depth")
+            .and_then(Value::as_u64)
+            .map(|v| v as usize)
+            .unwrap_or(workflow_config.expression_max_depth);
+        EvaluationOptions {
+            max_length,
+            max_depth,
+        }
+    }
+
+    fn evaluate_condition(
+        &self,
+        step: &WorkflowStep,
+        outputs: &BTreeMap<String, Value>,
+        workflow_config: EffectiveWorkflowConfig,
+    ) -> Result<bool> {
+        if let Some(group_value) = step.config.get("group") {
+            let group: ConditionGroup =
+                serde_json::from_value(group_value.clone()).map_err(|err| {
+                    Error::Tool(format!(
+                        "workflow condition step '{}' has invalid config.group: {err}",
+                        step.id
+                    ))
+                })?;
+            return self.evaluate_condition_group(&group, outputs, step, workflow_config, 1);
+        }
+
+        self.evaluate_condition_config(&step.config, outputs, step, workflow_config)
+    }
+
+    fn evaluate_condition_group(
+        &self,
+        group: &ConditionGroup,
+        outputs: &BTreeMap<String, Value>,
+        step: &WorkflowStep,
+        workflow_config: EffectiveWorkflowConfig,
+        depth: usize,
+    ) -> Result<bool> {
+        if depth > workflow_config.condition_group_max_depth {
+            return Err(Error::Tool(format!(
+                "workflow condition step '{}' exceeded condition group max depth {}",
+                step.id, workflow_config.condition_group_max_depth
+            )));
+        }
+
+        if group.conditions.is_empty() {
+            return Ok(false);
+        }
+
+        match group.operator {
+            LogicalOperator::And => {
+                for condition in &group.conditions {
+                    if !self.evaluate_condition_clause(
+                        condition,
+                        outputs,
+                        step,
+                        workflow_config,
+                        depth + 1,
+                    )? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            LogicalOperator::Or => {
+                for condition in &group.conditions {
+                    if self.evaluate_condition_clause(
+                        condition,
+                        outputs,
+                        step,
+                        workflow_config,
+                        depth + 1,
+                    )? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+        }
+    }
+
+    fn evaluate_condition_clause(
+        &self,
+        clause: &ConditionClause,
+        outputs: &BTreeMap<String, Value>,
+        step: &WorkflowStep,
+        workflow_config: EffectiveWorkflowConfig,
+        depth: usize,
+    ) -> Result<bool> {
+        if let Some(group) = &clause.group {
+            return self.evaluate_condition_group(group, outputs, step, workflow_config, depth);
+        }
+
+        if let Some(expression) = clause.expression.as_deref() {
+            return self.evaluate_expression(expression, outputs, step, workflow_config);
+        }
+
+        let Some(path) = clause.path.as_deref() else {
+            return Err(Error::Tool(format!(
+                "workflow condition step '{}' has grouped clause without path/expression/group",
+                step.id
+            )));
+        };
+
+        let operator = clause.operator.unwrap_or(ConditionOperator::Exists);
+        let mut config = serde_json::Map::new();
+        config.insert("path".to_owned(), Value::String(path.to_owned()));
+        config.insert(
+            "operator".to_owned(),
+            Value::String(
+                match operator {
+                    ConditionOperator::Exists => "exists",
+                    ConditionOperator::Equals => "equals",
+                    ConditionOperator::NotEquals => "not_equals",
+                    ConditionOperator::GreaterThan => "greater_than",
+                    ConditionOperator::GreaterThanOrEqual => "greater_than_or_equal",
+                    ConditionOperator::LessThan => "less_than",
+                    ConditionOperator::LessThanOrEqual => "less_than_or_equal",
+                    ConditionOperator::Contains => "contains",
+                    ConditionOperator::Matches => "matches",
+                    ConditionOperator::Truthy => "truthy",
+                    ConditionOperator::Falsy => "falsy",
+                }
+                .to_owned(),
+            ),
+        );
+        if let Some(value) = &clause.value {
+            config.insert("value".to_owned(), value.clone());
+        }
+
+        self.evaluate_condition_config(&Value::Object(config), outputs, step, workflow_config)
+    }
+
+    fn evaluate_condition_config(
+        &self,
+        config: &Value,
+        outputs: &BTreeMap<String, Value>,
+        step: &WorkflowStep,
+        workflow_config: EffectiveWorkflowConfig,
+    ) -> Result<bool> {
+        if let Some(expression) = config.get("expression").and_then(Value::as_str) {
+            return self.evaluate_expression(expression, outputs, step, workflow_config);
+        }
+
+        let path = config.get("path").and_then(Value::as_str).ok_or_else(|| {
+            Error::Tool(format!(
+                "workflow condition step '{}' missing config.path",
+                step.id
+            ))
+        })?;
+        let op = config
             .get("operator")
             .and_then(Value::as_str)
             .unwrap_or("exists");
-        let expected = step.config.get("value").cloned();
+        let expected = config.get("value").cloned();
+        let null_mode = Self::null_handling_for_step(step, workflow_config);
 
         let root = Self::outputs_root(outputs);
         let actual = Self::extract_path(&root, path);
+
+        if actual.is_none()
+            && !matches!(op, "exists" | "truthy" | "falsy")
+            && null_mode == NullHandlingMode::Strict
+        {
+            return Err(Error::Tool(format!(
+                "workflow condition step '{}' missing path '{}' under strict null handling",
+                step.id, path
+            )));
+        }
 
         let operator = match op {
             "exists" => ConditionOperator::Exists,
@@ -231,74 +564,22 @@ impl WorkflowExecutor {
         })
     }
 
-    fn parse_literal_or_path(token: &str, outputs: &BTreeMap<String, Value>) -> Value {
-        let trimmed = token.trim();
-        if trimmed.starts_with('$') {
-            let root = Self::outputs_root(outputs);
-            return Self::extract_path(&root, trimmed).unwrap_or(Value::Null);
-        }
-
-        if ((trimmed.starts_with('"') && trimmed.ends_with('"'))
-            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
-            && trimmed.len() >= 2
-        {
-            return Value::String(trimmed[1..trimmed.len() - 1].to_owned());
-        }
-
-        if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
-            return v;
-        }
-
-        Value::String(trimmed.to_owned())
-    }
-
     fn evaluate_expression(
+        &self,
         expression: &str,
         outputs: &BTreeMap<String, Value>,
         step: &WorkflowStep,
+        workflow_config: EffectiveWorkflowConfig,
     ) -> Result<bool> {
-        let operators = ["==", "!=", ">=", "<=", ">", "<", "contains", "matches"];
-        for operator in operators {
-            if let Some((left, right)) = expression.split_once(operator) {
-                let left_value = Self::parse_literal_or_path(left, outputs);
-                let right_value = Self::parse_literal_or_path(right, outputs);
-                return match operator {
-                    "==" => Ok(left_value == right_value),
-                    "!=" => Ok(left_value != right_value),
-                    ">" => {
-                        Self::compare_values(&Some(left_value), &Some(right_value), step, operator)
-                    }
-                    ">=" => {
-                        Self::compare_values(&Some(left_value), &Some(right_value), step, operator)
-                    }
-                    "<" => {
-                        Self::compare_values(&Some(left_value), &Some(right_value), step, operator)
-                    }
-                    "<=" => {
-                        Self::compare_values(&Some(left_value), &Some(right_value), step, operator)
-                    }
-                    "contains" => Ok(Self::contains_value(&left_value, &right_value)),
-                    "matches" => {
-                        let Value::String(left_text) = left_value else {
-                            return Ok(false);
-                        };
-                        let Value::String(pattern) = right_value else {
-                            return Ok(false);
-                        };
-                        let regex = Regex::new(&pattern).map_err(|err| {
-                            Error::Tool(format!(
-                                "workflow condition step '{}' has invalid expression regex '{}': {err}",
-                                step.id, pattern
-                            ))
-                        })?;
-                        Ok(regex.is_match(&left_text))
-                    }
-                    _ => Ok(false),
-                };
-            }
-        }
-
-        Ok(false)
+        let options = self.expression_options_for_step(step, workflow_config);
+        let value =
+            evaluate_expression_with_options(expression, outputs, options).map_err(|err| {
+                Error::Tool(format!(
+                    "workflow condition step '{}' has invalid expression '{}': {err}",
+                    step.id, expression
+                ))
+            })?;
+        Ok(is_truthy(&value))
     }
 
     fn compare_values(
@@ -349,6 +630,392 @@ impl WorkflowExecutor {
         }
     }
 
+    fn switch_key_from_value(value: &Value) -> String {
+        match value {
+            Value::String(text) => text.clone(),
+            Value::Number(number) => number.to_string(),
+            Value::Bool(value) => value.to_string(),
+            Value::Null => "null".to_owned(),
+            other => serde_json::to_string(other).unwrap_or_default(),
+        }
+    }
+
+    fn build_regex(pattern: &str, flags: &str, step_id: &str) -> Result<Regex> {
+        let mut builder = RegexBuilder::new(pattern);
+        for flag in flags.chars() {
+            match flag {
+                'i' => {
+                    builder.case_insensitive(true);
+                }
+                'm' => {
+                    builder.multi_line(true);
+                }
+                's' => {
+                    builder.dot_matches_new_line(true);
+                }
+                'U' => {
+                    builder.swap_greed(true);
+                }
+                'u' => {
+                    builder.unicode(true);
+                }
+                _ => {
+                    return Err(Error::Tool(format!(
+                        "workflow switch step '{}' has unsupported regex flag '{}'",
+                        step_id, flag
+                    )));
+                }
+            }
+        }
+
+        builder.build().map_err(|err| {
+            Error::Tool(format!(
+                "workflow switch step '{}' has invalid regex pattern '{}': {err}",
+                step_id, pattern
+            ))
+        })
+    }
+
+    fn resolve_switch_target(step: &WorkflowStep, key: &str) -> Result<(Option<String>, String)> {
+        if let Some(target) = step
+            .config
+            .get("cases")
+            .and_then(Value::as_object)
+            .and_then(|cases| cases.get(key))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+        {
+            return Ok((Some(target), "exact".to_owned()));
+        }
+
+        if let Some(pattern_cases) = step.config.get("pattern_cases").and_then(Value::as_array) {
+            for case in pattern_cases {
+                let pattern = case.get("pattern").and_then(Value::as_str).ok_or_else(|| {
+                    Error::Tool(format!(
+                        "workflow switch step '{}' pattern_cases entries must include 'pattern'",
+                        step.id
+                    ))
+                })?;
+                let target = case.get("target").and_then(Value::as_str).ok_or_else(|| {
+                    Error::Tool(format!(
+                        "workflow switch step '{}' pattern_cases entries must include 'target'",
+                        step.id
+                    ))
+                })?;
+                let flags = case.get("flags").and_then(Value::as_str).unwrap_or("");
+                let regex = Self::build_regex(pattern, flags, &step.id)?;
+                if regex.is_match(key) {
+                    return Ok((Some(target.to_owned()), "pattern".to_owned()));
+                }
+            }
+        }
+
+        if let Some(target) = step
+            .config
+            .get("default")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+        {
+            return Ok((Some(target), "default".to_owned()));
+        }
+
+        if let Some(target) = step.next.clone() {
+            return Ok((Some(target), "next".to_owned()));
+        }
+
+        Ok((None, "none".to_owned()))
+    }
+
+    async fn execute_loop_step(
+        &self,
+        step: &WorkflowStep,
+        outputs: &BTreeMap<String, Value>,
+        workflow_config: EffectiveWorkflowConfig,
+    ) -> Result<Value> {
+        let items_config = step.config.get("items").ok_or_else(|| {
+            Error::Tool(format!(
+                "workflow loop step '{}' missing config.items",
+                step.id
+            ))
+        })?;
+
+        let expression_options = self.expression_options_for_step(step, workflow_config);
+        let items_value =
+            Self::render_value_with_outputs(items_config, outputs, step, expression_options)?;
+        let null_mode = Self::null_handling_for_step(step, workflow_config);
+        let Value::Array(items) = items_value else {
+            if null_mode == NullHandlingMode::Lenient && items_value.is_null() {
+                return Ok(json!({
+                    "count": 0,
+                    "results": [],
+                    "error_count": 0,
+                    "errors": [],
+                    "mode": "sequential",
+                }));
+            }
+            return Err(Error::Tool(format!(
+                "workflow loop step '{}' expected config.items to resolve to array",
+                step.id
+            )));
+        };
+
+        let max_iterations = step
+            .config
+            .get("max_iterations")
+            .and_then(Value::as_u64)
+            .unwrap_or(workflow_config.loop_default_max_iterations);
+        if (items.len() as u64) > max_iterations {
+            return Err(Error::Tool(format!(
+                "workflow loop step '{}' has {} items exceeding max_iterations {}",
+                step.id,
+                items.len(),
+                max_iterations
+            )));
+        }
+
+        let item_variable = step
+            .config
+            .get("item_variable")
+            .and_then(Value::as_str)
+            .unwrap_or("item")
+            .to_owned();
+        let index_variable = step
+            .config
+            .get("index_variable")
+            .and_then(Value::as_str)
+            .unwrap_or("index")
+            .to_owned();
+        let result_expression = step
+            .config
+            .get("result_expression")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        let parallel = step
+            .config
+            .get("parallel")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            && result_expression.is_some();
+        let max_parallelism =
+            step.config
+                .get("max_parallelism")
+                .and_then(Value::as_u64)
+                .unwrap_or(workflow_config.loop_default_max_parallelism)
+                .clamp(1, workflow_config.loop_hard_max_parallelism) as usize;
+        let continue_on_iteration_error = step
+            .config
+            .get("continue_on_iteration_error")
+            .and_then(Value::as_bool)
+            .unwrap_or(step.continue_on_error);
+
+        let mut results = Vec::with_capacity(items.len());
+        let mut errors = Vec::new();
+
+        if let Some(expression) = result_expression {
+            if parallel {
+                let outputs_owned = outputs.clone();
+                let item_variable_owned = item_variable.clone();
+                let index_variable_owned = index_variable.clone();
+                let expression_owned = expression.clone();
+                let step_id = step.id.clone();
+
+                let mut evaluated = stream::iter(items.into_iter().enumerate().map(move |(index, item)| {
+                    let outputs = outputs_owned.clone();
+                    let item_variable = item_variable_owned.clone();
+                    let index_variable = index_variable_owned.clone();
+                    let expression = expression_owned.clone();
+                    let step_id = step_id.clone();
+
+                    async move {
+                        let mut locals = BTreeMap::new();
+                        locals.insert(item_variable, item);
+                        locals.insert(index_variable, json!(index));
+                        let value = evaluate_expression_with_locals_and_options(
+                            &expression,
+                            &outputs,
+                            &locals,
+                            expression_options,
+                        )
+                        .map_err(|err| {
+                            format!(
+                                "workflow loop step '{}' failed evaluating result expression for index {}: {err}",
+                                step_id, index
+                            )
+                        });
+                        (index, value)
+                    }
+                }))
+                .buffer_unordered(max_parallelism)
+                .collect::<Vec<_>>()
+                .await;
+
+                evaluated.sort_by_key(|(index, _)| *index);
+
+                for (index, value) in evaluated {
+                    match value {
+                        Ok(value) => results.push(value),
+                        Err(message) if continue_on_iteration_error => {
+                            errors.push(json!({"index": index, "error": message}));
+                            results.push(Value::Null);
+                        }
+                        Err(message) => {
+                            return Err(Error::Tool(message));
+                        }
+                    }
+                }
+            } else {
+                for (index, item) in items.into_iter().enumerate() {
+                    let mut locals = BTreeMap::new();
+                    locals.insert(item_variable.clone(), item.clone());
+                    locals.insert(index_variable.clone(), json!(index));
+                    let value = evaluate_expression_with_locals_and_options(
+                        &expression,
+                        outputs,
+                        &locals,
+                        expression_options,
+                    )
+                    .map_err(|err| {
+                        Error::Tool(format!(
+                            "workflow loop step '{}' failed evaluating result expression for index {}: {err}",
+                            step.id, index
+                        ))
+                    });
+
+                    match value {
+                        Ok(value) => results.push(value),
+                        Err(err) if continue_on_iteration_error => {
+                            errors.push(json!({"index": index, "error": err.to_string()}));
+                            results.push(Value::Null);
+                        }
+                        Err(err) => return Err(err),
+                    }
+                }
+            }
+        } else {
+            for item in items {
+                results.push(item);
+            }
+        }
+
+        Ok(json!({
+            "count": results.len(),
+            "results": results,
+            "error_count": errors.len(),
+            "errors": errors,
+            "mode": if parallel { "parallel" } else { "sequential" },
+        }))
+    }
+
+    fn execute_merge_step(
+        &self,
+        step: &WorkflowStep,
+        outputs: &BTreeMap<String, Value>,
+        workflow_config: EffectiveWorkflowConfig,
+    ) -> Result<Value> {
+        let mode = step
+            .config
+            .get("mode")
+            .and_then(Value::as_str)
+            .unwrap_or("merge");
+        let lenient_nulls =
+            Self::null_handling_for_step(step, workflow_config) == NullHandlingMode::Lenient;
+        let inputs = step
+            .config
+            .get("inputs")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                Error::Tool(format!(
+                    "workflow merge step '{}' missing config.inputs object",
+                    step.id
+                ))
+            })?;
+
+        let mut resolved = BTreeMap::new();
+        for (name, value) in inputs {
+            resolved.insert(
+                name.clone(),
+                Self::render_value_with_outputs(
+                    value,
+                    outputs,
+                    step,
+                    self.expression_options_for_step(step, workflow_config),
+                )?,
+            );
+        }
+
+        match mode {
+            "merge" => {
+                let mut merged = serde_json::Map::new();
+                for (name, value) in &resolved {
+                    let Value::Object(map) = value else {
+                        if lenient_nulls && value.is_null() {
+                            continue;
+                        }
+                        if lenient_nulls {
+                            continue;
+                        }
+                        return Err(Error::Tool(format!(
+                            "workflow merge step '{}' input '{}' is not object for mode 'merge'",
+                            step.id, name
+                        )));
+                    };
+                    for (key, entry) in map {
+                        merged.insert(key.clone(), entry.clone());
+                    }
+                }
+                Ok(Value::Object(merged))
+            }
+            "append" => {
+                let mut items = Vec::new();
+                for (name, value) in &resolved {
+                    let Value::Array(array) = value else {
+                        if lenient_nulls && value.is_null() {
+                            continue;
+                        }
+                        if lenient_nulls {
+                            continue;
+                        }
+                        return Err(Error::Tool(format!(
+                            "workflow merge step '{}' input '{}' is not array for mode 'append'",
+                            step.id, name
+                        )));
+                    };
+                    items.extend(array.iter().cloned());
+                }
+                Ok(Value::Array(items))
+            }
+            "combine" => Ok(serde_json::to_value(&resolved).unwrap_or(Value::Null)),
+            "multiplex" => {
+                let keys = resolved.keys().cloned().collect::<Vec<_>>();
+                let max_len = resolved
+                    .values()
+                    .filter_map(Value::as_array)
+                    .map(Vec::len)
+                    .max()
+                    .unwrap_or(0);
+
+                let mut rows = Vec::with_capacity(max_len);
+                for index in 0..max_len {
+                    let mut row = serde_json::Map::new();
+                    for key in &keys {
+                        let value = resolved.get(key).cloned().unwrap_or(Value::Null);
+                        let item = match value {
+                            Value::Array(items) => items.get(index).cloned().unwrap_or(Value::Null),
+                            other => other,
+                        };
+                        row.insert(key.clone(), item);
+                    }
+                    rows.push(Value::Object(row));
+                }
+                Ok(Value::Array(rows))
+            }
+            other => Err(Error::Tool(format!(
+                "workflow merge step '{}' has unsupported mode '{}'",
+                step.id, other
+            ))),
+        }
+    }
+
     fn map_named_outputs(
         step: &WorkflowStep,
         result: &Value,
@@ -377,7 +1044,16 @@ impl WorkflowExecutor {
         event_tx: mpsc::Sender<Event>,
     ) -> BoxFuture<'a, Result<WorkflowExecutionResult>> {
         Box::pin(async move {
-            if let Some(max_depth) = self.config.max_recursion_depth {
+            let workflow = self
+                .workflows
+                .get(&request.workflow_name)
+                .ok_or_else(|| {
+                    Error::NotFound(format!("workflow '{}' not found", request.workflow_name))
+                })?
+                .clone();
+            let workflow_config = self.effective_config_for_workflow(&workflow.execution);
+
+            if let Some(max_depth) = workflow_config.max_recursion_depth {
                 if request.recursion_depth > max_depth {
                     return Err(Error::Tool(format!(
                         "workflow recursion depth {} exceeded configured max_recursion_depth {}",
@@ -386,13 +1062,17 @@ impl WorkflowExecutor {
                 }
             }
 
-            let workflow = self
-                .workflows
-                .get(&request.workflow_name)
-                .ok_or_else(|| {
-                    Error::NotFound(format!("workflow '{}' not found", request.workflow_name))
-                })?
-                .clone();
+            if request.workflow_stack.contains(&request.workflow_name) {
+                let mut cycle_chain = request.workflow_stack.clone();
+                cycle_chain.push(request.workflow_name.clone());
+                return Err(Error::Tool(format!(
+                    "workflow recursion cycle detected: {}",
+                    cycle_chain.join(" -> ")
+                )));
+            }
+
+            let mut workflow_stack = request.workflow_stack.clone();
+            workflow_stack.push(request.workflow_name.clone());
 
             let entry = workflow
                 .entrypoints
@@ -421,7 +1101,7 @@ impl WorkflowExecutor {
             });
 
             loop {
-                if let Some(max_steps) = self.config.max_steps_per_run {
+                if let Some(max_steps) = workflow_config.max_steps_per_run {
                     if step_count >= max_steps {
                         return Err(Error::Tool(format!(
                             "workflow '{}' exceeded max_steps_per_run ({})",
@@ -462,7 +1142,12 @@ impl WorkflowExecutor {
                             .get("args")
                             .cloned()
                             .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-                        let args = Self::render_value_with_outputs(&args_template, &outputs);
+                        let args = Self::render_value_with_outputs(
+                            &args_template,
+                            &outputs,
+                            &step,
+                            self.expression_options_for_step(&step, workflow_config),
+                        )?;
 
                         let tool_result = tools
                             .execute_tool(
@@ -499,8 +1184,12 @@ impl WorkflowExecutor {
                             .get("input")
                             .cloned()
                             .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-                        let skill_input =
-                            Self::render_value_with_outputs(&input_template, &outputs);
+                        let skill_input = Self::render_value_with_outputs(
+                            &input_template,
+                            &outputs,
+                            &step,
+                            self.expression_options_for_step(&step, workflow_config),
+                        )?;
                         let skill = self.skills.get(skill_name).ok_or_else(|| {
                             Error::NotFound(format!("skill '{}' not found", skill_name))
                         })?;
@@ -536,8 +1225,12 @@ impl WorkflowExecutor {
                             .get("input")
                             .cloned()
                             .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-                        let nested_input =
-                            Self::render_value_with_outputs(&nested_input_template, &outputs);
+                        let nested_input = Self::render_value_with_outputs(
+                            &nested_input_template,
+                            &outputs,
+                            &step,
+                            self.expression_options_for_step(&step, workflow_config),
+                        )?;
 
                         let nested = self
                             .run_internal(
@@ -548,6 +1241,7 @@ impl WorkflowExecutor {
                                     agent_name: request.agent_name.clone(),
                                     input: nested_input,
                                     recursion_depth: request.recursion_depth + 1,
+                                    workflow_stack: workflow_stack.clone(),
                                 },
                                 tools,
                                 event_tx.clone(),
@@ -559,7 +1253,7 @@ impl WorkflowExecutor {
                         )
                     }
                     WorkflowStepKind::Condition => {
-                        let matched = Self::evaluate_condition(&step, &outputs)?;
+                        let matched = self.evaluate_condition(&step, &outputs, workflow_config)?;
                         let _ = event_tx.try_send(Event::WorkflowStepCompleted {
                             workflow: request.workflow_name.clone(),
                             step_id: step.id.clone(),
@@ -586,6 +1280,121 @@ impl WorkflowExecutor {
                             steps_executed: step_count,
                         });
                     }
+                    WorkflowStepKind::Wait => {
+                        let mut waited_ms = 0u64;
+                        if let Some(seconds) =
+                            step.config.get("duration_seconds").and_then(Value::as_u64)
+                        {
+                            let duration = Duration::from_secs(seconds);
+                            sleep(duration).await;
+                            waited_ms = waited_ms.saturating_add(duration.as_millis() as u64);
+                        }
+
+                        if let Some(expression) =
+                            step.config.get("until_expression").and_then(Value::as_str)
+                        {
+                            let poll_interval_ms = step
+                                .config
+                                .get("poll_interval_ms")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(workflow_config.wait_default_poll_interval_ms);
+                            let timeout_seconds = step
+                                .config
+                                .get("timeout_seconds")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(workflow_config.wait_default_timeout_seconds);
+                            let started = Instant::now();
+                            let mut condition_met = false;
+
+                            loop {
+                                if self.evaluate_expression(
+                                    expression,
+                                    &outputs,
+                                    &step,
+                                    workflow_config,
+                                )? {
+                                    condition_met = true;
+                                    break;
+                                }
+
+                                if started.elapsed() >= Duration::from_secs(timeout_seconds) {
+                                    break;
+                                }
+
+                                sleep(Duration::from_millis(poll_interval_ms)).await;
+                                waited_ms = waited_ms.saturating_add(poll_interval_ms);
+                            }
+
+                            (
+                                condition_met,
+                                json!({
+                                    "waited_ms": waited_ms,
+                                    "condition_met": condition_met,
+                                }),
+                            )
+                        } else {
+                            (
+                                true,
+                                json!({
+                                    "waited_ms": waited_ms,
+                                }),
+                            )
+                        }
+                    }
+                    WorkflowStepKind::Loop => (
+                        true,
+                        self.execute_loop_step(&step, &outputs, workflow_config)
+                            .await?,
+                    ),
+                    WorkflowStepKind::Merge => (
+                        true,
+                        self.execute_merge_step(&step, &outputs, workflow_config)?,
+                    ),
+                    WorkflowStepKind::Switch => {
+                        let value_template =
+                            step.config.get("value").cloned().unwrap_or(Value::Null);
+                        let rendered = Self::render_value_with_outputs(
+                            &value_template,
+                            &outputs,
+                            &step,
+                            self.expression_options_for_step(&step, workflow_config),
+                        )?;
+                        let rendered_key = Self::switch_key_from_value(&rendered);
+                        let (target, match_type) =
+                            Self::resolve_switch_target(&step, &rendered_key)?;
+
+                        let _ = event_tx.try_send(Event::WorkflowStepCompleted {
+                            workflow: request.workflow_name.clone(),
+                            step_id: step.id.clone(),
+                            success: target.is_some(),
+                            output_count: 1,
+                        });
+
+                        outputs.insert(
+                            format!("step.{}.switch_key", step.id),
+                            Value::String(rendered_key.clone()),
+                        );
+                        outputs.insert(
+                            format!("step.{}.switch_match_type", step.id),
+                            Value::String(match_type),
+                        );
+
+                        if let Some(next) = target {
+                            current = next;
+                            continue;
+                        }
+
+                        let _ = event_tx.try_send(Event::WorkflowCompleted {
+                            workflow: request.workflow_name.clone(),
+                            success: true,
+                            steps_executed: step_count,
+                        });
+                        return Ok(WorkflowExecutionResult {
+                            success: true,
+                            outputs,
+                            steps_executed: step_count,
+                        });
+                    }
                     WorkflowStepKind::Agent => {
                         let target_agent = step
                             .config
@@ -604,8 +1413,12 @@ impl WorkflowExecutor {
                             .get("input")
                             .cloned()
                             .unwrap_or_else(|| Value::String(String::new()));
-                        let rendered_prompt =
-                            Self::render_value_with_outputs(&prompt_template, &outputs);
+                        let rendered_prompt = Self::render_value_with_outputs(
+                            &prompt_template,
+                            &outputs,
+                            &step,
+                            self.expression_options_for_step(&step, workflow_config),
+                        )?;
                         let prompt = match rendered_prompt {
                             Value::String(text) => text,
                             other => serde_json::to_string(&other).unwrap_or_default(),

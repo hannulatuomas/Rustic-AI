@@ -9,6 +9,7 @@ pub struct WorkflowDefinition {
     pub description: String,
     pub version: String,
     pub timeout_seconds: Option<u64>,
+    pub execution: WorkflowExecutionConfig,
     pub entrypoints: BTreeMap<String, WorkflowEntrypoint>,
     pub steps: Vec<WorkflowStep>,
 }
@@ -20,10 +21,35 @@ impl Default for WorkflowDefinition {
             description: String::new(),
             version: "0.1.0".to_owned(),
             timeout_seconds: None,
+            execution: WorkflowExecutionConfig::default(),
             entrypoints: BTreeMap::new(),
             steps: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct WorkflowExecutionConfig {
+    pub max_recursion_depth: Option<usize>,
+    pub max_steps_per_run: Option<usize>,
+    pub condition_group_max_depth: Option<usize>,
+    pub expression_max_length: Option<usize>,
+    pub expression_max_depth: Option<usize>,
+    pub loop_default_max_iterations: Option<u64>,
+    pub loop_default_max_parallelism: Option<u64>,
+    pub loop_hard_max_parallelism: Option<u64>,
+    pub wait_default_poll_interval_ms: Option<u64>,
+    pub wait_default_timeout_seconds: Option<u64>,
+    pub null_handling: Option<NullHandlingMode>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NullHandlingMode {
+    #[default]
+    Strict,
+    Lenient,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -80,6 +106,35 @@ pub enum WorkflowStepKind {
     Agent,
     Workflow,
     Condition,
+    Wait,
+    Loop,
+    Merge,
+    Switch,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LogicalOperator {
+    #[default]
+    And,
+    Or,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ConditionClause {
+    pub path: Option<String>,
+    pub operator: Option<ConditionOperator>,
+    pub value: Option<Value>,
+    pub expression: Option<String>,
+    pub group: Option<ConditionGroup>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ConditionGroup {
+    pub operator: LogicalOperator,
+    pub conditions: Vec<ConditionClause>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]

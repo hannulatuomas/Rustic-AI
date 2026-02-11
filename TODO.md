@@ -106,16 +106,16 @@ Last updated: 2026-02-11
     - [x] Extract pending tool state machine
 
 8. **Complete Loose Integrations** (3-4 days)
-    - [ ] Wire workflow trigger execution
-    - [ ] Implement cron scheduling
-    - [ ] Implement event-based triggers
-    - [ ] Integrate topic inference into agent prompts
-    - [ ] Implement topic inference completion
-    - [ ] Implement project mode rule scoping
-    - [ ] Complete project mode profile loading
-    - [ ] Wire PostgreSQL backend
-    - [ ] Implement PostgreSQL storage backend
-    - [ ] Add custom storage backend support
+    - [x] Wire workflow trigger execution
+    - [x] Implement cron scheduling
+    - [x] Implement event-based triggers
+    - [x] Integrate topic inference into agent prompts
+    - [x] Implement topic inference completion
+    - [x] Implement project mode rule scoping
+    - [x] Complete project mode profile loading
+    - [x] Wire PostgreSQL backend
+    - [x] Implement PostgreSQL storage backend
+    - [x] Add custom storage backend support
 
 9. **Plugin System & Examples** (4-5 days)
     - [ ] Add sample plugins to demonstrate loading framework
@@ -129,62 +129,62 @@ Last updated: 2026-02-11
 **Priority: HIGH - N8n-like workflow capabilities**
 
 10. **Phase 1: Grouped Conditions** (2-3 days)
-    - [ ] Add `LogicalOperator`, `Condition`, `ConditionGroup` types to `types.rs`
-    - [ ] Implement `evaluate_condition_group()` in `executor.rs`
-    - [ ] Add cycle detection to `loader.rs`
-    - [ ] Add depth validation to `loader.rs`
-    - [ ] Update CLI to display condition groups
-    - [ ] Add backward compatibility support for legacy conditions
+    - [x] Add `LogicalOperator`, `Condition`, `ConditionGroup` types to `types.rs`
+    - [x] Implement `evaluate_condition_group()` in `executor.rs`
+    - [x] Add cycle detection to `loader.rs`
+    - [x] Add depth validation to `loader.rs`
+    - [x] Update CLI to display condition groups
+    - [x] Add backward compatibility support for legacy conditions
 
 11. **Phase 2: Expression Language** (3-4 days)
-    - [ ] Implement tokenizer in `expressions.rs`
-    - [ ] Implement parser in `expressions.rs`
-    - [ ] Implement evaluator with function library
-    - [ ] Implement string functions (upper, lower, trim, split, join, replace, length, matches)
-    - [ ] Implement number functions (abs, floor, ceil, round)
-    - [ ] Implement array functions (first, last, at, map, filter, sum, avg, min, max, count)
-    - [ ] Implement object functions (keys, values, get, has)
-    - [ ] Implement type functions (to_string, to_number, to_boolean, type)
-    - [ ] Integrate into executor (replace `render_value_with_outputs`)
-    - [ ] Add error handling and edge case support
-    - [ ] Update config schema for expression syntax
+    - [x] Implement tokenizer in `expressions.rs`
+    - [x] Implement parser in `expressions.rs`
+    - [x] Implement evaluator with function library
+    - [x] Implement string functions (upper, lower, trim, split, join, replace, length, matches)
+    - [x] Implement number functions (abs, floor, ceil, round)
+    - [x] Implement array functions (first, last, at, map, filter, sum, avg, min, max, count)
+    - [x] Implement object functions (keys, values, get, has)
+    - [x] Implement type functions (to_string, to_number, to_boolean, type)
+    - [x] Integrate into executor (replace `render_value_with_outputs`)
+    - [x] Add error handling and edge case support
+    - [x] Update config schema for expression syntax
 
 12. **Phase 3: New Step Types** (5-6 days)
 
     **3.1 Wait Step** (1 day)
-    - [ ] Add `WorkflowStepKind::Wait` variant
-    - [ ] Implement `execute_wait_step()`
-    - [ ] Add validation for wait config
-    - [ ] Support duration_seconds and until_expression modes
+    - [x] Add `WorkflowStepKind::Wait` variant
+    - [x] Implement `execute_wait_step()`
+    - [x] Add validation for wait config
+    - [x] Support duration_seconds and until_expression modes
 
     **3.2 Loop Step** (2-3 days)
-    - [ ] Add `WorkflowStepKind::Loop` variant
-    - [ ] Implement `execute_loop_step()` with sequential mode
-    - [ ] Add parallel execution support
-    - [ ] Add iteration limit validation
-    - [ ] Implement loop variable scoping
+    - [x] Add `WorkflowStepKind::Loop` variant
+    - [x] Implement `execute_loop_step()` with sequential mode
+    - [x] Add parallel execution support
+    - [x] Add iteration limit validation
+    - [x] Implement loop variable scoping
 
     **3.3 Merge Step** (1 day)
-    - [ ] Add `WorkflowStepKind::Merge` variant
-    - [ ] Implement `execute_merge_step()`
-    - [ ] Support merge modes (merge, append, combine, multiplex)
+    - [x] Add `WorkflowStepKind::Merge` variant
+    - [x] Implement `execute_merge_step()`
+    - [x] Support merge modes (merge, append, combine, multiplex)
 
     **3.4 Switch Step** (1 day)
-    - [ ] Add `WorkflowStepKind::Switch` variant
-    - [ ] Implement `execute_switch_step()`
-    - [ ] Integrate routing logic into main executor loop
-    - [ ] Support exact value and pattern matching
+    - [x] Add `WorkflowStepKind::Switch` variant
+    - [x] Implement `execute_switch_step()`
+    - [x] Integrate routing logic into main executor loop
+    - [x] Support exact value and pattern matching
 
 13. **Workflow Edge Cases & Error Handling** (2-3 days)
-    - [ ] Handle empty arrays (loop, sum, avg)
+    - [x] Handle empty arrays (loop, sum, avg)
     - [ ] Handle null/undefined values gracefully
     - [ ] Add null handling configuration (strict vs lenient)
-    - [ ] Add depth limit enforcement (conditions, expressions)
-    - [ ] Detect circular references in step graphs
-    - [ ] Detect mutual workflow recursion
-    - [ ] Handle large data (iteration limits, streaming)
-    - [ ] Add error propagation with continue_on_error
-    - [ ] Implement graceful failure for loop iterations
+    - [x] Add depth limit enforcement (conditions, expressions)
+    - [x] Detect circular references in step graphs
+    - [x] Detect mutual workflow recursion
+    - [x] Handle large data (iteration limits, streaming)
+    - [x] Add error propagation with continue_on_error
+    - [x] Implement graceful failure for loop iterations
 
 ### Phase 5: Tools Expansion (Weeks 13-19)
 **Priority: HIGH - Covers all use cases from REQUIREMENTS**
@@ -470,16 +470,18 @@ Last updated: 2026-02-11
 ## Current Focus (Continuing)
 
 - [ ] Workflow enhancements (from previous TODO)
-    - [ ] Phase 1: Grouped conditions with nested logic (2-3 days)
-    - [ ] Phase 2: Expression language (3-4 days)
-    - [ ] Phase 3: New step types (Wait, Loop, Merge, Switch) (4-6 days)
+    - [x] Phase 1: Grouped conditions with nested logic (2-3 days)
+    - [x] Phase 2: Expression language hardening (error model + schema update)
+    - [x] Phase 3: New step types follow-up (loop parallel mode, switch pattern matching)
 
 ---
 
 ## Next (Immediate)
 
-- Start with Phase 1 (Foundation - Agent Capabilities)
-- Prioritize by impact and dependencies
+- Finalize null/undefined handling policy across expressions and merge modes
+- Expand null-handling policy with explicit mode controls for switch/condition fallbacks
+- Add workflow definition examples for OpenCode/Claude-code/n8n-style patterns
+- Add configurable compatibility presets (opencode/claude_code/n8n) for execution defaults
 
 ---
 

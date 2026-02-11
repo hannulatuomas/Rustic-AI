@@ -171,6 +171,14 @@ pub struct WorkflowsConfig {
     pub default_timeout_seconds: u64,
     pub max_recursion_depth: Option<usize>,
     pub max_steps_per_run: Option<usize>,
+    pub condition_group_max_depth: usize,
+    pub expression_max_length: usize,
+    pub expression_max_depth: usize,
+    pub loop_default_max_iterations: u64,
+    pub loop_default_max_parallelism: u64,
+    pub loop_hard_max_parallelism: u64,
+    pub wait_default_poll_interval_ms: u64,
+    pub wait_default_timeout_seconds: u64,
 }
 
 impl Default for WorkflowsConfig {
@@ -185,6 +193,14 @@ impl Default for WorkflowsConfig {
             default_timeout_seconds: 300,
             max_recursion_depth: Some(16),
             max_steps_per_run: Some(256),
+            condition_group_max_depth: 8,
+            expression_max_length: 8_192,
+            expression_max_depth: 64,
+            loop_default_max_iterations: 1_000,
+            loop_default_max_parallelism: 8,
+            loop_hard_max_parallelism: 256,
+            wait_default_poll_interval_ms: 250,
+            wait_default_timeout_seconds: 300,
         }
     }
 }

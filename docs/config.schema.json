@@ -128,7 +128,15 @@
         "max_discovery_depth",
         "default_timeout_seconds",
         "max_recursion_depth",
-        "max_steps_per_run"
+        "max_steps_per_run",
+        "condition_group_max_depth",
+        "expression_max_length",
+        "expression_max_depth",
+        "loop_default_max_iterations",
+        "loop_default_max_parallelism",
+        "loop_hard_max_parallelism",
+        "wait_default_poll_interval_ms",
+        "wait_default_timeout_seconds"
       ],
       "properties": {
         "directories": {
@@ -138,7 +146,15 @@
         "max_discovery_depth": { "type": "integer", "minimum": 1, "maximum": 32 },
         "default_timeout_seconds": { "type": "integer", "minimum": 1 },
         "max_recursion_depth": { "type": ["integer", "null"], "minimum": 1, "maximum": 256 },
-        "max_steps_per_run": { "type": ["integer", "null"], "minimum": 1, "maximum": 10000 }
+        "max_steps_per_run": { "type": ["integer", "null"], "minimum": 1, "maximum": 10000 },
+        "condition_group_max_depth": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "expression_max_length": { "type": "integer", "minimum": 16, "maximum": 65536 },
+        "expression_max_depth": { "type": "integer", "minimum": 1, "maximum": 512 },
+        "loop_default_max_iterations": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+        "loop_default_max_parallelism": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "loop_hard_max_parallelism": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "wait_default_poll_interval_ms": { "type": "integer", "minimum": 1, "maximum": 60000 },
+        "wait_default_timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 86400 }
       },
       "additionalProperties": false
     },

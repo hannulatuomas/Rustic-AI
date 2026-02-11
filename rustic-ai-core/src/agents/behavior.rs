@@ -262,9 +262,76 @@ impl Agent {
             .collect();
 
         let system_prompt = self.system_prompt();
-        self.memory
+        let mut context = self
+            .memory
             .build_context_window(chat_messages, &system_prompt, Some(self.provider.as_ref()))
-            .await
+            .await?;
+
+        let mut system_context_blocks = Vec::new();
+
+        if let Some(topics) = self.session_manager.get_session_topics(session_id).await? {
+            if !topics.is_empty() {
+                system_context_blocks.push(format!(
+                    "Active topics for this session: {}",
+                    topics.join(", ")
+                ));
+            }
+        }
+
+        let rules = self
+            .session_manager
+            .get_applicable_rules(session_id, None, None)
+            .await?
+            .into_iter()
+            .take(8)
+            .map(|rule| format!("[{}] {}", rule.metadata.path, rule.content.trim()))
+            .collect::<Vec<_>>();
+        if !rules.is_empty() {
+            system_context_blocks.push(format!("Applicable rules:\n{}", rules.join("\n\n")));
+        }
+
+        if let Some(profile) = self.session_manager.project_profile() {
+            let mut profile_lines = Vec::new();
+            if !profile.name.trim().is_empty() {
+                profile_lines.push(format!("name={}", profile.name));
+            }
+            if !profile.root_path.trim().is_empty() {
+                profile_lines.push(format!("root_path={}", profile.root_path));
+            }
+            if !profile.tech_stack.is_empty() {
+                profile_lines.push(format!("tech_stack={}", profile.tech_stack.join(", ")));
+            }
+            if !profile.goals.is_empty() {
+                profile_lines.push(format!("goals={}", profile.goals.join(" | ")));
+            }
+            if !profile.preferences.is_empty() {
+                profile_lines.push(format!("preferences={}", profile.preferences.join(" | ")));
+            }
+            if !profile.style_guidelines.is_empty() {
+                profile_lines.push(format!(
+                    "style_guidelines={}",
+                    profile.style_guidelines.join(" | ")
+                ));
+            }
+            if !profile_lines.is_empty() {
+                system_context_blocks
+                    .push(format!("Project profile:\n{}", profile_lines.join("\n")));
+            }
+        }
+
+        if !system_context_blocks.is_empty() {
+            context.insert(
+                1,
+                ChatMessage {
+                    role: "system".to_owned(),
+                    content: system_context_blocks.join("\n\n"),
+                    name: None,
+                    tool_calls: None,
+                },
+            );
+        }
+
+        Ok(context)
     }
 
     async fn run_assistant_tool_loop(

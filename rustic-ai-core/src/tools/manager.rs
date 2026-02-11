@@ -514,6 +514,14 @@ impl ToolManager {
                 max_recursion_depth: self.workflows_config.max_recursion_depth,
                 max_steps_per_run: self.workflows_config.max_steps_per_run,
                 working_directory: self.execution_context.working_directory.clone(),
+                condition_group_max_depth: self.workflows_config.condition_group_max_depth,
+                expression_max_length: self.workflows_config.expression_max_length,
+                expression_max_depth: self.workflows_config.expression_max_depth,
+                loop_default_max_iterations: self.workflows_config.loop_default_max_iterations,
+                loop_default_max_parallelism: self.workflows_config.loop_default_max_parallelism,
+                loop_hard_max_parallelism: self.workflows_config.loop_hard_max_parallelism,
+                wait_default_poll_interval_ms: self.workflows_config.wait_default_poll_interval_ms,
+                wait_default_timeout_seconds: self.workflows_config.wait_default_timeout_seconds,
             },
         );
 
@@ -526,6 +534,7 @@ impl ToolManager {
                     agent_name,
                     input,
                     recursion_depth: 0,
+                    workflow_stack: Vec::new(),
                 },
                 self,
                 event_tx,

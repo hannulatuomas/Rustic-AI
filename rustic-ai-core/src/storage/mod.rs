@@ -1,6 +1,7 @@
 pub mod factory;
 pub mod model;
 pub mod paths;
+pub mod postgres;
 pub mod sqlite;
 
 use async_trait::async_trait;

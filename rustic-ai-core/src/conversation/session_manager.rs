@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::config::schema::{Config, DiscoveredRuleConfig};
 use crate::error::{Error, Result};
+use crate::project::profile::ProjectProfile;
 use crate::providers::registry::ProviderRegistry;
 use crate::providers::types::ChatMessage;
 use crate::rules::discovery::simple_glob_match;
@@ -33,6 +34,7 @@ pub struct SessionManager {
     storage: Arc<dyn StorageBackend>,
     discovered_rules: Vec<DiscoveredRuleConfig>,
     work_dir: PathBuf,
+    project_profile: Option<ProjectProfile>,
 }
 
 impl SessionManager {
@@ -40,13 +42,19 @@ impl SessionManager {
         storage: Arc<dyn StorageBackend>,
         mut discovered_rules: Vec<DiscoveredRuleConfig>,
         work_dir: PathBuf,
+        project_profile: Option<ProjectProfile>,
     ) -> Self {
         sort_rule_files_by_precedence(&mut discovered_rules, &work_dir);
         Self {
             storage,
             discovered_rules,
             work_dir,
+            project_profile,
         }
+    }
+
+    pub fn project_profile(&self) -> Option<&ProjectProfile> {
+        self.project_profile.as_ref()
     }
 
     pub async fn create_session(&self, agent_name: &str) -> Result<Uuid> {

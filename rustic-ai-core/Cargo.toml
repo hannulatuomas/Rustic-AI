@@ -23,6 +23,7 @@ futures.workspace = true
 libloading = { workspace = true, optional = true }
 reqwest.workspace = true
 regex.workspace = true
+jsonschema.workspace = true
 russh = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
@@ -36,3 +37,4 @@ toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+cron.workspace = true

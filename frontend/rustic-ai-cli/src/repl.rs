@@ -1,8 +1,10 @@
 use crate::cli::OutputFormat;
 use crate::renderer::Renderer;
+use chrono::Utc;
 use rustic_ai_core::error::Result;
 use rustic_ai_core::events::Event;
 use rustic_ai_core::permissions::{AskResolution, CommandPatternBucket};
+use rustic_ai_core::rules::TopicTracker;
 use rustic_ai_core::workflows::{WorkflowExecutor, WorkflowExecutorConfig, WorkflowRunRequest};
 use rustic_ai_core::RusticAI;
 use serde_json::Value;
@@ -237,6 +239,101 @@ impl Repl {
         Ok(fragment_path)
     }
 
+    async fn run_workflow(
+        &self,
+        session_id: uuid::Uuid,
+        agent_name: &str,
+        workflow_name: &str,
+        entrypoint: &str,
+        event_tx: mpsc::Sender<Event>,
+    ) -> Result<rustic_ai_core::workflows::WorkflowExecutionResult> {
+        let wf_cfg = &self.app.config().workflows;
+        let executor = WorkflowExecutor::new(
+            self.app.runtime().workflows.clone(),
+            self.app.runtime().skills.clone(),
+            std::sync::Arc::new(self.app.runtime().agents.clone()),
+            self.app.session_manager().clone(),
+            WorkflowExecutorConfig {
+                max_recursion_depth: wf_cfg.max_recursion_depth,
+                max_steps_per_run: wf_cfg.max_steps_per_run,
+                working_directory: self.app.work_dir().to_path_buf(),
+                condition_group_max_depth: wf_cfg.condition_group_max_depth,
+                expression_max_length: wf_cfg.expression_max_length,
+                expression_max_depth: wf_cfg.expression_max_depth,
+                loop_default_max_iterations: wf_cfg.loop_default_max_iterations,
+                loop_default_max_parallelism: wf_cfg.loop_default_max_parallelism,
+                loop_hard_max_parallelism: wf_cfg.loop_hard_max_parallelism,
+                wait_default_poll_interval_ms: wf_cfg.wait_default_poll_interval_ms,
+                wait_default_timeout_seconds: wf_cfg.wait_default_timeout_seconds,
+            },
+        );
+
+        executor
+            .run(
+                WorkflowRunRequest {
+                    workflow_name: workflow_name.to_owned(),
+                    entrypoint: entrypoint.to_owned(),
+                    session_id: session_id.to_string(),
+                    agent_name: Some(agent_name.to_owned()),
+                    input: Value::Object(serde_json::Map::new()),
+                    recursion_depth: 0,
+                    workflow_stack: Vec::new(),
+                },
+                self.app.runtime().tools.as_ref(),
+                event_tx,
+            )
+            .await
+    }
+
+    async fn run_trigger_matches(
+        &self,
+        session_id: uuid::Uuid,
+        agent_name: &str,
+        matches: Vec<rustic_ai_core::workflows::WorkflowTriggerMatch>,
+        event_tx: mpsc::Sender<Event>,
+    ) -> Result<()> {
+        for matched in matches {
+            let result = self
+                .run_workflow(
+                    session_id,
+                    agent_name,
+                    &matched.workflow_name,
+                    &matched.entrypoint,
+                    event_tx.clone(),
+                )
+                .await;
+
+            match (&matched.reason, result) {
+                (
+                    rustic_ai_core::workflows::WorkflowTriggerReason::Event { event_name },
+                    Ok(run),
+                ) => {
+                    println!(
+                        "Triggered by event '{}' -> workflow '{}' (entrypoint '{}'): success={}, steps={}",
+                        event_name, matched.workflow_name, matched.entrypoint, run.success, run.steps_executed
+                    );
+                }
+                (
+                    rustic_ai_core::workflows::WorkflowTriggerReason::Cron { expression },
+                    Ok(run),
+                ) => {
+                    println!(
+                        "Triggered by cron '{}' -> workflow '{}' (entrypoint '{}'): success={}, steps={}",
+                        expression, matched.workflow_name, matched.entrypoint, run.success, run.steps_executed
+                    );
+                }
+                (_, Err(err)) => {
+                    println!(
+                        "Triggered workflow '{}' (entrypoint '{}') failed: {}",
+                        matched.workflow_name, matched.entrypoint, err
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     pub async fn run(&self) -> Result<()> {
         let runtime = tokio::runtime::Runtime::new().map_err(|err| {
             rustic_ai_core::Error::Config(format!("failed to create tokio runtime: {err}"))
@@ -250,6 +347,12 @@ impl Repl {
                 Ok(sessions[0].id)
             }
         })?;
+
+        let mut topic_tracker = TopicTracker::new(
+            self.app.config().rules.topic_debounce_interval_secs,
+            self.app.config().rules.topic_similarity_threshold,
+        );
+        let mut trigger_engine = rustic_ai_core::workflows::WorkflowTriggerEngine::new(Utc::now());
 
         println!("Session: {session_id}");
 
@@ -317,6 +420,7 @@ impl Repl {
         println!(
             "Permission shortcuts: /perm path add [global|project|session] <path>, /perm cmd <allow|ask|deny> [global|project|session] <pattern>"
         );
+        println!("Workflow triggers: /workflow trigger event <name> | /workflow trigger cron");
         println!();
 
         loop {
@@ -396,6 +500,15 @@ impl Repl {
                         *sudo_guard = None;
                         continue;
                     }
+                }
+            }
+
+            if self.app.config().features.triggers_enabled {
+                let due =
+                    trigger_engine.due_cron(self.app.runtime().workflows.as_ref(), Utc::now());
+                if !due.is_empty() {
+                    self.run_trigger_matches(session_id, &agent_name, due, event_tx.clone())
+                        .await?;
                 }
             }
 
@@ -681,30 +794,12 @@ impl Repl {
                 let workflow_name = parts[0];
                 let entrypoint = parts.get(1).copied().unwrap_or("start");
 
-                let wf_cfg = &self.app.config().workflows;
-                let executor = WorkflowExecutor::new(
-                    self.app.runtime().workflows.clone(),
-                    self.app.runtime().skills.clone(),
-                    std::sync::Arc::new(self.app.runtime().agents.clone()),
-                    self.app.session_manager().clone(),
-                    WorkflowExecutorConfig {
-                        max_recursion_depth: wf_cfg.max_recursion_depth,
-                        max_steps_per_run: wf_cfg.max_steps_per_run,
-                        working_directory: self.app.work_dir().to_path_buf(),
-                    },
-                );
-
-                match executor
-                    .run(
-                        WorkflowRunRequest {
-                            workflow_name: workflow_name.to_owned(),
-                            entrypoint: entrypoint.to_owned(),
-                            session_id: session_id.to_string(),
-                            agent_name: Some(agent_name.clone()),
-                            input: Value::Object(serde_json::Map::new()),
-                            recursion_depth: 0,
-                        },
-                        self.app.runtime().tools.as_ref(),
+                match self
+                    .run_workflow(
+                        session_id,
+                        &agent_name,
+                        workflow_name,
+                        entrypoint,
                         event_tx.clone(),
                     )
                     .await
@@ -762,10 +857,212 @@ impl Repl {
                         );
                     }
                     println!("Steps: {}", workflow.steps.len());
+                    for step in &workflow.steps {
+                        let kind = match step.kind {
+                            rustic_ai_core::workflows::WorkflowStepKind::Tool => "tool",
+                            rustic_ai_core::workflows::WorkflowStepKind::Skill => "skill",
+                            rustic_ai_core::workflows::WorkflowStepKind::Agent => "agent",
+                            rustic_ai_core::workflows::WorkflowStepKind::Workflow => "workflow",
+                            rustic_ai_core::workflows::WorkflowStepKind::Condition => "condition",
+                            rustic_ai_core::workflows::WorkflowStepKind::Wait => "wait",
+                            rustic_ai_core::workflows::WorkflowStepKind::Loop => "loop",
+                            rustic_ai_core::workflows::WorkflowStepKind::Merge => "merge",
+                            rustic_ai_core::workflows::WorkflowStepKind::Switch => "switch",
+                        };
+
+                        let next = step.next.as_deref().unwrap_or("<end>");
+                        println!("  - {} [{}] next={}", step.id, kind, next);
+
+                        match step.kind {
+                            rustic_ai_core::workflows::WorkflowStepKind::Condition => {
+                                if let Some(group) =
+                                    step.config.get("group").and_then(Value::as_object)
+                                {
+                                    let op = group
+                                        .get("operator")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("and");
+                                    let count = group
+                                        .get("conditions")
+                                        .and_then(Value::as_array)
+                                        .map(|v| v.len())
+                                        .unwrap_or(0);
+                                    println!("      group: operator={}, conditions={}", op, count);
+                                } else if let Some(expression) =
+                                    step.config.get("expression").and_then(Value::as_str)
+                                {
+                                    println!("      expression: {}", expression);
+                                } else if let Some(path) =
+                                    step.config.get("path").and_then(Value::as_str)
+                                {
+                                    let op = step
+                                        .config
+                                        .get("operator")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("exists");
+                                    println!("      path: {} ({})", path, op);
+                                }
+                            }
+                            rustic_ai_core::workflows::WorkflowStepKind::Wait => {
+                                let duration = step
+                                    .config
+                                    .get("duration_seconds")
+                                    .and_then(Value::as_u64)
+                                    .map(|v| v.to_string())
+                                    .unwrap_or_else(|| "none".to_owned());
+                                let until = step
+                                    .config
+                                    .get("until_expression")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("none");
+                                println!("      duration_seconds={}, until={}", duration, until);
+                            }
+                            rustic_ai_core::workflows::WorkflowStepKind::Loop => {
+                                let parallel = step
+                                    .config
+                                    .get("parallel")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(false);
+                                let max_iterations = step
+                                    .config
+                                    .get("max_iterations")
+                                    .and_then(Value::as_u64)
+                                    .unwrap_or(1_000);
+                                let max_parallelism = step
+                                    .config
+                                    .get("max_parallelism")
+                                    .and_then(Value::as_u64)
+                                    .unwrap_or(8);
+                                let item_var = step
+                                    .config
+                                    .get("item_variable")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("item");
+                                println!(
+                                    "      parallel={}, max_iterations={}, max_parallelism={}, item_variable={}",
+                                    parallel, max_iterations, max_parallelism, item_var
+                                );
+                            }
+                            rustic_ai_core::workflows::WorkflowStepKind::Merge => {
+                                let mode = step
+                                    .config
+                                    .get("mode")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("merge");
+                                let input_count = step
+                                    .config
+                                    .get("inputs")
+                                    .and_then(Value::as_object)
+                                    .map(|v| v.len())
+                                    .unwrap_or(0);
+                                println!("      mode={}, inputs={}", mode, input_count);
+                            }
+                            rustic_ai_core::workflows::WorkflowStepKind::Switch => {
+                                let case_count = step
+                                    .config
+                                    .get("cases")
+                                    .and_then(Value::as_object)
+                                    .map(|v| v.len())
+                                    .unwrap_or(0);
+                                let pattern_case_count = step
+                                    .config
+                                    .get("pattern_cases")
+                                    .and_then(Value::as_array)
+                                    .map(|v| v.len())
+                                    .unwrap_or(0);
+                                let default = step
+                                    .config
+                                    .get("default")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("none");
+                                println!(
+                                    "      cases={}, pattern_cases={}, default={}",
+                                    case_count, pattern_case_count, default
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
                 } else {
                     println!("Workflow '{name}' not found.");
                 }
                 continue;
+            }
+
+            if let Some(rest) = input
+                .strip_prefix("/workflow trigger ")
+                .or_else(|| input.strip_prefix("/workflows trigger "))
+            {
+                let parts = rest.split_whitespace().collect::<Vec<_>>();
+                if parts.is_empty() {
+                    println!("Usage: /workflow trigger <event <name>|cron>");
+                    continue;
+                }
+
+                match parts[0] {
+                    "event" => {
+                        if parts.len() < 2 {
+                            println!("Usage: /workflow trigger event <event_name>");
+                            continue;
+                        }
+                        let event_name = parts[1..].join(" ");
+                        let matches = rustic_ai_core::workflows::WorkflowTriggerEngine::for_event(
+                            self.app.runtime().workflows.as_ref(),
+                            &event_name,
+                        );
+                        if matches.is_empty() {
+                            println!("No workflows matched event '{}'.", event_name);
+                            continue;
+                        }
+                        self.run_trigger_matches(
+                            session_id,
+                            &agent_name,
+                            matches,
+                            event_tx.clone(),
+                        )
+                        .await?;
+                    }
+                    "cron" => {
+                        let matches = trigger_engine
+                            .due_cron(self.app.runtime().workflows.as_ref(), Utc::now());
+                        if matches.is_empty() {
+                            println!("No cron workflows due.");
+                            continue;
+                        }
+                        self.run_trigger_matches(
+                            session_id,
+                            &agent_name,
+                            matches,
+                            event_tx.clone(),
+                        )
+                        .await?;
+                    }
+                    other => {
+                        println!(
+                            "Unknown trigger source '{}'. Use '/workflow trigger event <name>' or '/workflow trigger cron'.",
+                            other
+                        );
+                    }
+                }
+                continue;
+            }
+
+            let topic_updated = self
+                .app
+                .session_manager()
+                .maybe_refresh_topics(
+                    session_id,
+                    &self.app.runtime().providers,
+                    self.app.topic_inference(),
+                    &mut topic_tracker,
+                )
+                .await
+                .unwrap_or(false);
+            if topic_updated {
+                let current = topic_tracker.current_topics();
+                if !current.is_empty() {
+                    println!("[topics] {}", current.join(", "));
+                }
             }
 
             let agent = self.app.runtime().agents.get_agent(Some(&agent_name))?;
