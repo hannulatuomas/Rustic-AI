@@ -52,6 +52,7 @@ Last updated: 2026-02-10
     - [x] Add nested workflow step execution with recursion depth controls
     - [x] Add `agent` step execution
     - [x] Emit workflow lifecycle events (`started`, `step_started`, `step_completed`, `completed`)
+    - [x] Extend condition evaluation with expression mode and comparison operators
   - [x] Add agent invocation support for skills/workflows
     - [x] Add `skill` tool adapter and registration (agent-callable)
     - [x] Add `workflow` tool adapter and registration (agent-callable)

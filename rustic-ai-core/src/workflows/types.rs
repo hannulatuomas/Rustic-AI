@@ -89,6 +89,12 @@ pub enum ConditionOperator {
     Exists,
     Equals,
     NotEquals,
+    GreaterThan,
+    GreaterThanOrEqual,
+    LessThan,
+    LessThanOrEqual,
+    Contains,
+    Matches,
     Truthy,
     Falsy,
 }

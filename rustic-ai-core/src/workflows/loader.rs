@@ -140,9 +140,14 @@ impl WorkflowLoader {
                     .get("path")
                     .and_then(|value| value.as_str())
                     .is_some();
-                if !path_present {
+                let expression_present = step
+                    .config
+                    .get("expression")
+                    .and_then(|value| value.as_str())
+                    .is_some();
+                if !path_present && !expression_present {
                     return Err(Error::Validation(format!(
-                        "workflow '{}' condition step '{}' must define config.path",
+                        "workflow '{}' condition step '{}' must define config.path or config.expression",
                         workflow.name, step.id
                     )));
                 }

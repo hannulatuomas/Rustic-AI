@@ -7,6 +7,7 @@ use crate::events::Event;
 use crate::skills::{SkillExecutionContext, SkillRegistry};
 use crate::tools::ToolManager;
 use futures::future::BoxFuture;
+use regex::Regex;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -130,6 +131,10 @@ impl WorkflowExecutor {
     }
 
     fn evaluate_condition(step: &WorkflowStep, outputs: &BTreeMap<String, Value>) -> Result<bool> {
+        if let Some(expression) = step.config.get("expression").and_then(Value::as_str) {
+            return Self::evaluate_expression(expression, outputs, step);
+        }
+
         let path = step
             .config
             .get("path")
@@ -154,6 +159,12 @@ impl WorkflowExecutor {
             "exists" => ConditionOperator::Exists,
             "equals" => ConditionOperator::Equals,
             "not_equals" => ConditionOperator::NotEquals,
+            "greater_than" => ConditionOperator::GreaterThan,
+            "greater_than_or_equal" => ConditionOperator::GreaterThanOrEqual,
+            "less_than" => ConditionOperator::LessThan,
+            "less_than_or_equal" => ConditionOperator::LessThanOrEqual,
+            "contains" => ConditionOperator::Contains,
+            "matches" => ConditionOperator::Matches,
             "truthy" => ConditionOperator::Truthy,
             "falsy" => ConditionOperator::Falsy,
             other => {
@@ -168,6 +179,33 @@ impl WorkflowExecutor {
             ConditionOperator::Exists => actual.is_some(),
             ConditionOperator::Equals => actual == expected,
             ConditionOperator::NotEquals => actual != expected,
+            ConditionOperator::GreaterThan => Self::compare_values(&actual, &expected, step, ">")?,
+            ConditionOperator::GreaterThanOrEqual => {
+                Self::compare_values(&actual, &expected, step, ">=")?
+            }
+            ConditionOperator::LessThan => Self::compare_values(&actual, &expected, step, "<")?,
+            ConditionOperator::LessThanOrEqual => {
+                Self::compare_values(&actual, &expected, step, "<=")?
+            }
+            ConditionOperator::Contains => match (actual, expected) {
+                (Some(a), Some(b)) => Self::contains_value(&a, &b),
+                _ => false,
+            },
+            ConditionOperator::Matches => {
+                let Some(Value::String(actual_text)) = actual else {
+                    return Ok(false);
+                };
+                let Some(Value::String(pattern)) = expected else {
+                    return Ok(false);
+                };
+                let regex = Regex::new(&pattern).map_err(|err| {
+                    Error::Tool(format!(
+                        "workflow condition step '{}' has invalid regex '{}': {err}",
+                        step.id, pattern
+                    ))
+                })?;
+                regex.is_match(&actual_text)
+            }
             ConditionOperator::Truthy => actual
                 .as_ref()
                 .map(|value| match value {
@@ -191,6 +229,124 @@ impl WorkflowExecutor {
                 })
                 .unwrap_or(true),
         })
+    }
+
+    fn parse_literal_or_path(token: &str, outputs: &BTreeMap<String, Value>) -> Value {
+        let trimmed = token.trim();
+        if trimmed.starts_with('$') {
+            let root = Self::outputs_root(outputs);
+            return Self::extract_path(&root, trimmed).unwrap_or(Value::Null);
+        }
+
+        if ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
+            && trimmed.len() >= 2
+        {
+            return Value::String(trimmed[1..trimmed.len() - 1].to_owned());
+        }
+
+        if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+            return v;
+        }
+
+        Value::String(trimmed.to_owned())
+    }
+
+    fn evaluate_expression(
+        expression: &str,
+        outputs: &BTreeMap<String, Value>,
+        step: &WorkflowStep,
+    ) -> Result<bool> {
+        let operators = ["==", "!=", ">=", "<=", ">", "<", "contains", "matches"];
+        for operator in operators {
+            if let Some((left, right)) = expression.split_once(operator) {
+                let left_value = Self::parse_literal_or_path(left, outputs);
+                let right_value = Self::parse_literal_or_path(right, outputs);
+                return match operator {
+                    "==" => Ok(left_value == right_value),
+                    "!=" => Ok(left_value != right_value),
+                    ">" => {
+                        Self::compare_values(&Some(left_value), &Some(right_value), step, operator)
+                    }
+                    ">=" => {
+                        Self::compare_values(&Some(left_value), &Some(right_value), step, operator)
+                    }
+                    "<" => {
+                        Self::compare_values(&Some(left_value), &Some(right_value), step, operator)
+                    }
+                    "<=" => {
+                        Self::compare_values(&Some(left_value), &Some(right_value), step, operator)
+                    }
+                    "contains" => Ok(Self::contains_value(&left_value, &right_value)),
+                    "matches" => {
+                        let Value::String(left_text) = left_value else {
+                            return Ok(false);
+                        };
+                        let Value::String(pattern) = right_value else {
+                            return Ok(false);
+                        };
+                        let regex = Regex::new(&pattern).map_err(|err| {
+                            Error::Tool(format!(
+                                "workflow condition step '{}' has invalid expression regex '{}': {err}",
+                                step.id, pattern
+                            ))
+                        })?;
+                        Ok(regex.is_match(&left_text))
+                    }
+                    _ => Ok(false),
+                };
+            }
+        }
+
+        Ok(false)
+    }
+
+    fn compare_values(
+        actual: &Option<Value>,
+        expected: &Option<Value>,
+        step: &WorkflowStep,
+        operator: &str,
+    ) -> Result<bool> {
+        let Some(actual) = actual else {
+            return Ok(false);
+        };
+        let Some(expected) = expected else {
+            return Ok(false);
+        };
+
+        if let (Some(a), Some(b)) = (actual.as_f64(), expected.as_f64()) {
+            return Ok(match operator {
+                ">" => a > b,
+                ">=" => a >= b,
+                "<" => a < b,
+                "<=" => a <= b,
+                _ => false,
+            });
+        }
+
+        if let (Some(a), Some(b)) = (actual.as_str(), expected.as_str()) {
+            return Ok(match operator {
+                ">" => a > b,
+                ">=" => a >= b,
+                "<" => a < b,
+                "<=" => a <= b,
+                _ => false,
+            });
+        }
+
+        Err(Error::Tool(format!(
+            "workflow condition step '{}' cannot apply operator '{}' to values '{}' and '{}'",
+            step.id, operator, actual, expected
+        )))
+    }
+
+    fn contains_value(actual: &Value, expected: &Value) -> bool {
+        match (actual, expected) {
+            (Value::String(a), Value::String(b)) => a.contains(b),
+            (Value::Array(items), value) => items.iter().any(|item| item == value),
+            (Value::Object(map), Value::String(key)) => map.contains_key(key),
+            _ => false,
+        }
     }
 
     fn map_named_outputs(
