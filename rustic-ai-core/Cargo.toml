@@ -20,10 +20,21 @@ async-trait.workspace = true
 base64.workspace = true
 chrono.workspace = true
 futures.workspace = true
+git2.workspace = true
+globset.workspace = true
+ignore.workspace = true
 libloading = { workspace = true, optional = true }
 reqwest.workspace = true
 regex.workspace = true
 jsonschema.workspace = true
+quick-xml.workspace = true
+percent-encoding.workspace = true
+html-escape.workspace = true
+csv.workspace = true
+pulldown-cmark.workspace = true
+html2md.workspace = true
+lsp-types.workspace = true
+image.workspace = true
 russh = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true

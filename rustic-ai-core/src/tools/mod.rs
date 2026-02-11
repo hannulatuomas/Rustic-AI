@@ -1,14 +1,25 @@
+pub mod convert;
+pub mod database;
+pub mod download;
+pub mod encoding;
 pub mod filesystem;
+pub mod format;
+pub mod git;
+pub mod grep;
 pub mod http;
+pub mod image;
+pub mod lsp;
 pub mod manager;
 pub mod mcp;
 pub mod plugin;
+pub mod regex;
 pub mod registry;
 pub mod shell;
 pub mod skill;
 pub mod ssh;
 pub mod sub_agent;
 pub mod types;
+pub mod web_search;
 
 pub use manager::{ToolManager, ToolManagerInit};
 pub use types::{Tool, ToolExecutionContext, ToolResult};

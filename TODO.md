@@ -192,95 +192,95 @@ Last updated: 2026-02-11
 14. **Gap 3: Tool Coverage Gap** (28-30 days total)
 
 #### Priority 1: Essential Development Tools (Weeks 13-14)
-    - [ ] **3.1 Git Tool** (3 days)
-      - [ ] Create git.rs tool module
-      - [ ] Implement GitCommand enum (Clone, Pull, Push, Commit, Status, Diff, Branch, Tag, Log, Checkout)
-      - [ ] Use git2 crate for Rust bindings
-      - [ ] Implement streaming output for long operations
-      - [ ] Add permission checks (read-only for status/diff/log, read-write for others)
-      - [ ] Add working directory support
-      - [ ] Add error handling and context
+    - [x] **3.1 Git Tool** (3 days)
+      - [x] Create git.rs tool module
+      - [x] Implement GitCommand enum (Clone, Pull, Push, Commit, Status, Diff, Branch, Tag, Log, Checkout)
+      - [x] Use git2 crate for Rust bindings
+      - [x] Implement streaming output for long operations
+      - [x] Add permission checks (read-only for status/diff/log, read-write for others)
+      - [x] Add working directory support
+      - [x] Add error handling and context
 
-    - [ ] **3.2 Grep Tool** (2 days)
-      - [ ] Create grep.rs tool module
-      - [ ] Implement GrepArgs (pattern, path, glob, ignore_case, etc.)
-      - [ ] Use regex crate for pattern matching
-      - [ ] Use ignore crate for file walking with .gitignore
-      - [ ] Implement streaming results
-      - [ ] Add line numbers, context, max_results
+    - [x] **3.2 Grep Tool** (2 days)
+      - [x] Create grep.rs tool module
+      - [x] Implement GrepArgs (pattern, path, glob, ignore_case, etc.)
+      - [x] Use regex crate for pattern matching
+      - [x] Use ignore crate for file walking with .gitignore
+      - [x] Implement streaming results
+      - [x] Add line numbers, context, max_results
 
-    - [ ] **3.3 Database Tool** (4 days)
-      - [ ] Create database.rs tool module
-      - [ ] Implement DatabaseCommand enum (Connect, Query, ListTables, DescribeTable)
-      - [ ] Add DatabaseType (Sqlite, Postgres, Mysql)
-      - [ ] Use sqlx for database abstraction
-      - [ ] Add connection pooling
-      - [ ] Implement query streaming
-      - [ ] Add timeout and cancellation support
+    - [x] **3.3 Database Tool** (4 days)
+      - [x] Create database.rs tool module
+      - [x] Implement DatabaseCommand enum (Connect, Query, ListTables, DescribeTable)
+      - [x] Add DatabaseType (Sqlite, Postgres, Mysql)
+      - [x] Use sqlx for database abstraction
+      - [x] Add connection pooling
+      - [x] Implement query streaming
+      - [x] Add timeout and cancellation support
 
 #### Priority 2: Web & Search Tools (Week 15)
-    - [ ] **3.4 Web Search Tool** (2 days)
-      - [ ] Create web_search.rs tool module
-      - [ ] Implement WebSearchArgs (query, num_results, engine, lang)
-      - [ ] Add SearchEngine enum (Google, Bing, DuckDuckGo, Auto)
-      - [ ] Implement search via APIs
-      - [ ] Parse HTML responses
-      - [ ] Implement result ranking
+    - [x] **3.4 Web Search Tool** (2 days)
+      - [x] Create web_search.rs tool module
+      - [x] Implement WebSearchArgs (query, num_results, engine, lang)
+      - [x] Add SearchEngine enum (Google, Bing, DuckDuckGo, Auto)
+      - [x] Implement search via APIs
+      - [x] Parse HTML responses
+      - [x] Implement result ranking
 
-    - [ ] **3.5 Download Tool** (2 days)
-      - [ ] Create download.rs tool module
-      - [ ] Implement DownloadArgs (url, output, resume, chunk_size, max_size, timeout)
-      - [ ] Use reqwest with streaming
-      - [ ] Support range requests for resume
-      - [ ] Implement progress reporting via events
-      - [ ] Add size limits and SHA256 verification
+    - [x] **3.5 Download Tool** (2 days)
+      - [x] Create download.rs tool module
+      - [x] Implement DownloadArgs (url, output, resume, chunk_size, max_size, timeout)
+      - [x] Use reqwest with streaming
+      - [x] Support range requests for resume
+      - [x] Implement progress reporting via events
+      - [x] Add size limits and SHA256 verification
 
 #### Priority 3: Text & Data Tools (Week 16)
-    - [ ] **3.6 Regex Tool** (1 day)
-      - [ ] Create regex.rs tool module
-      - [ ] Implement RegexArgs and RegexOperation (Match, Replace, FindAll)
-      - [ ] Use regex crate with all flags
-      - [ ] Return structured matches with groups
+    - [x] **3.6 Regex Tool** (1 day)
+      - [x] Create regex.rs tool module
+      - [x] Implement RegexArgs and RegexOperation (Match, Replace, FindAll)
+      - [x] Use regex crate with all flags
+      - [x] Return structured matches with groups
 
-    - [ ] **3.7 Format Tool** (1 day)
-      - [ ] Create format.rs tool module
-      - [ ] Implement FormatArgs and FormatOperation (Json, Xml, Minify variants)
-      - [ ] Use serde_json for JSON
-      - [ ] Use quick-xml for XML
-      - [ ] Implement pretty printing and minify
+    - [x] **3.7 Format Tool** (1 day)
+      - [x] Create format.rs tool module
+      - [x] Implement FormatArgs and FormatOperation (Json, Xml, Minify variants)
+      - [x] Use serde_json for JSON
+      - [x] Use quick-xml for XML
+      - [x] Implement pretty printing and minify
 
-    - [ ] **3.8 Encoding Tool** (1 day)
-      - [ ] Create encoding.rs tool module
-      - [ ] Implement EncodingArgs and EncodingOperation (Base64, Url, HtmlEntities, ValidateUtf8)
-      - [ ] Use base64, percent-encoding, html-escape crates
+    - [x] **3.8 Encoding Tool** (1 day)
+      - [x] Create encoding.rs tool module
+      - [x] Implement EncodingArgs and EncodingOperation (Base64, Url, HtmlEntities, ValidateUtf8)
+      - [x] Use base64, percent-encoding, html-escape crates
 
-    - [ ] **3.9 Convert Tool** (2 days)
-      - [ ] Create convert.rs tool module
-      - [ ] Implement ConvertArgs (input, from, to) and DataFormat enum
-      - [ ] Use serde_json, serde_yaml, quick-xml, csv crates
-      - [ ] Use pulldown-cmark for MD->HTML
-      - [ ] Use html2md for HTML->MD
+    - [x] **3.9 Convert Tool** (2 days)
+      - [x] Create convert.rs tool module
+      - [x] Implement ConvertArgs (input, from, to) and DataFormat enum
+      - [x] Use serde_json, serde_yaml, quick-xml, csv crates
+      - [x] Use pulldown-cmark for MD->HTML
+      - [x] Use html2md for HTML->MD
 
 #### Priority 4: Code Intelligence (Weeks 17-18)
-    - [ ] **3.10 LSP Tool** (7 days)
-      - [ ] Create lsp.rs tool module
-      - [ ] Implement LspArgs and LspOperation (SymbolSearch, Definition, References, Hover)
-      - [ ] Add SymbolKind enum (Function, Method, Struct, etc.)
-      - [ ] Use lsp-types crate
-      - [ ] Implement LSP server communication via stdio
-      - [ ] Add server lifecycle management (start/stop)
-      - [ ] Implement caching for workspace symbols
-      - [ ] Implement search and navigation
+    - [x] **3.10 LSP Tool** (7 days)
+      - [x] Create lsp.rs tool module
+      - [x] Implement LspArgs and LspOperation (SymbolSearch, Definition, References, Hover)
+      - [x] Add SymbolKind enum (Function, Method, Struct, etc.)
+      - [x] Use lsp-types crate
+      - [x] Implement LSP server communication via stdio
+      - [x] Add server lifecycle management (start/stop)
+      - [x] Implement caching for workspace symbols
+      - [x] Implement search and navigation
 
 #### Priority 5: Image Tools (Week 19)
-    - [ ] **3.11 Image Tool** (3 days)
-      - [ ] Create image.rs tool module
-      - [ ] Implement ImageArgs and ImageOperation (Resize, Crop, Rotate, Convert, Metadata)
-      - [ ] Add ImageFormat enum (Png, Jpeg, Webp, Gif)
-      - [ ] Use image crate for processing
-      - [ ] Implement resize, crop, rotate, format conversion
-      - [ ] Extract and return metadata
-      - [ ] Implement progress reporting
+    - [x] **3.11 Image Tool** (3 days)
+      - [x] Create image.rs tool module
+      - [x] Implement ImageArgs and ImageOperation (Resize, Crop, Rotate, Convert, Metadata)
+      - [x] Add ImageFormat enum (Png, Jpeg, Webp, Gif)
+      - [x] Use image crate for processing
+      - [x] Implement resize, crop, rotate, format conversion
+      - [x] Extract and return metadata
+      - [x] Implement progress reporting
 
 ### Phase 6: Advanced Features (Weeks 20-24)
 **Priority: MEDIUM - Continuous improvement**
@@ -481,6 +481,7 @@ Last updated: 2026-02-11
 - [x] Add timeout policy controls to route step timeout as failure when configured
 - [x] Add per-step cancel-signal integration for long-running tool/plugin executions
 - [x] Surface workflow retry/timeout aggregates in CLI workflow run summaries
+- [ ] Implement full OpenCode-parity interrupt: user-triggered cancellation for active agent and sub-agent turns (not only tool/process timeout cancellation)
 
 ---
 
