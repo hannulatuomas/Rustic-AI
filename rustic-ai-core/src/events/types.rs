@@ -25,6 +25,28 @@ pub enum Event {
         tool: String,
         exit_code: i32,
     },
+    WorkflowStarted {
+        workflow: String,
+        entrypoint: String,
+        recursion_depth: usize,
+    },
+    WorkflowStepStarted {
+        workflow: String,
+        step_id: String,
+        step_name: String,
+        kind: String,
+    },
+    WorkflowStepCompleted {
+        workflow: String,
+        step_id: String,
+        success: bool,
+        output_count: usize,
+    },
+    WorkflowCompleted {
+        workflow: String,
+        success: bool,
+        steps_executed: usize,
+    },
     PermissionRequest {
         session_id: String,
         tool: String,

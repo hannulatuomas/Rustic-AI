@@ -69,6 +69,10 @@ impl Runtime {
             mcp_config: Arc::new(config.mcp.clone()),
             skills_enabled: config.features.skills_enabled,
             skills: skills.clone(),
+            workflows_enabled: config.features.workflows_enabled,
+            workflows: workflows.clone(),
+            workflows_config: Arc::new(config.workflows.clone()),
+            session_manager: session_manager.clone(),
             plugins_enabled: config.features.plugins_enabled,
             plugin_config: Arc::new(config.plugins.clone()),
             tool_configs: config.tools.clone(),
@@ -84,6 +88,7 @@ impl Runtime {
             tools.clone(),
             session_manager.clone(),
         )?;
+        tools.attach_agents(Arc::new(agents.clone()));
 
         Ok(Self {
             event_bus: EventBus::default(),

@@ -56,6 +56,43 @@ impl Renderer {
                 println!();
                 println!("[tool:{tool}] {status} (exit {exit_code})");
             }
+            Event::WorkflowStarted {
+                workflow,
+                entrypoint,
+                recursion_depth,
+            } => {
+                println!();
+                println!(
+                    "[workflow:{workflow}] started (entrypoint={entrypoint}, depth={recursion_depth})"
+                );
+            }
+            Event::WorkflowStepStarted {
+                workflow,
+                step_id,
+                step_name,
+                kind,
+            } => {
+                println!("[workflow:{workflow}] step {step_id} ({step_name}) started [{kind}]");
+            }
+            Event::WorkflowStepCompleted {
+                workflow,
+                step_id,
+                success,
+                output_count,
+            } => {
+                let status = if *success { "OK" } else { "FAILED" };
+                println!(
+                    "[workflow:{workflow}] step {step_id} {status} (mapped outputs: {output_count})"
+                );
+            }
+            Event::WorkflowCompleted {
+                workflow,
+                success,
+                steps_executed,
+            } => {
+                let status = if *success { "OK" } else { "FAILED" };
+                println!("[workflow:{workflow}] {status} (steps executed: {steps_executed})");
+            }
             Event::PermissionRequest { tool, args, .. } => {
                 println!();
                 println!(
@@ -131,6 +168,50 @@ impl Renderer {
                 "type": "tool_completed",
                 "tool": tool,
                 "exit_code": exit_code
+            }),
+            Event::WorkflowStarted {
+                workflow,
+                entrypoint,
+                recursion_depth,
+            } => serde_json::json!({
+                "type": "workflow_started",
+                "workflow": workflow,
+                "entrypoint": entrypoint,
+                "recursion_depth": recursion_depth,
+            }),
+            Event::WorkflowStepStarted {
+                workflow,
+                step_id,
+                step_name,
+                kind,
+            } => serde_json::json!({
+                "type": "workflow_step_started",
+                "workflow": workflow,
+                "step_id": step_id,
+                "step_name": step_name,
+                "kind": kind,
+            }),
+            Event::WorkflowStepCompleted {
+                workflow,
+                step_id,
+                success,
+                output_count,
+            } => serde_json::json!({
+                "type": "workflow_step_completed",
+                "workflow": workflow,
+                "step_id": step_id,
+                "success": success,
+                "output_count": output_count,
+            }),
+            Event::WorkflowCompleted {
+                workflow,
+                success,
+                steps_executed,
+            } => serde_json::json!({
+                "type": "workflow_completed",
+                "workflow": workflow,
+                "success": success,
+                "steps_executed": steps_executed,
             }),
             Event::PermissionRequest {
                 session_id,

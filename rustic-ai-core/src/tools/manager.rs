@@ -1,4 +1,6 @@
-use crate::config::schema::{McpConfig, PermissionConfig, PluginConfig, ToolConfig};
+use crate::config::schema::{
+    McpConfig, PermissionConfig, PluginConfig, ToolConfig, WorkflowsConfig,
+};
 use crate::error::{Error, Result};
 use crate::events::Event;
 use crate::permissions::{
@@ -10,9 +12,13 @@ use crate::tools::{
     filesystem::FilesystemTool, http::HttpTool, mcp::McpToolAdapter, shell::ShellTool,
     skill::SkillTool, ssh::SshTool, Tool, ToolExecutionContext,
 };
-use serde_json::Value;
+use crate::workflows::{
+    WorkflowExecutor, WorkflowExecutorConfig, WorkflowRegistry, WorkflowRunRequest,
+};
+use crate::{agents::coordinator::AgentCoordinator, conversation::session_manager::SessionManager};
+use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 
@@ -22,6 +28,12 @@ pub struct ToolManager {
     tool_configs: Arc<RwLock<HashMap<String, ToolConfig>>>,
     permission_policy: Arc<RwLock<Box<dyn PermissionPolicy + Send + Sync>>>,
     execution_context: ToolExecutionContext,
+    workflows_enabled: bool,
+    workflows: Arc<WorkflowRegistry>,
+    workflows_config: Arc<WorkflowsConfig>,
+    skills: Arc<SkillRegistry>,
+    agents: Arc<StdRwLock<Option<Arc<AgentCoordinator>>>>,
+    session_manager: Arc<SessionManager>,
 }
 
 pub struct ToolManagerInit {
@@ -31,6 +43,10 @@ pub struct ToolManagerInit {
     pub mcp_config: Arc<McpConfig>,
     pub skills_enabled: bool,
     pub skills: Arc<SkillRegistry>,
+    pub workflows_enabled: bool,
+    pub workflows: Arc<WorkflowRegistry>,
+    pub workflows_config: Arc<WorkflowsConfig>,
+    pub session_manager: Arc<SessionManager>,
     pub plugins_enabled: bool,
     pub plugin_config: Arc<PluginConfig>,
     pub tool_configs: Vec<ToolConfig>,
@@ -120,6 +136,10 @@ impl ToolManager {
             mcp_config,
             skills_enabled,
             skills,
+            workflows_enabled,
+            workflows,
+            workflows_config,
+            session_manager,
             plugins_enabled,
             plugin_config,
             tool_configs,
@@ -187,7 +207,97 @@ impl ToolManager {
             tool_configs: Arc::new(RwLock::new(configs)),
             permission_policy: Arc::new(RwLock::new(permission_policy)),
             execution_context,
+            workflows_enabled,
+            workflows,
+            workflows_config,
+            skills,
+            agents: Arc::new(StdRwLock::new(None)),
+            session_manager,
         }
+    }
+
+    pub fn attach_agents(&self, agents: Arc<AgentCoordinator>) {
+        let mut guard = self
+            .agents
+            .write()
+            .expect("tool manager agents lock poisoned");
+        *guard = Some(agents);
+    }
+
+    async fn execute_workflow_call(
+        &self,
+        session_id: String,
+        agent_name: Option<String>,
+        args: Value,
+        event_tx: mpsc::Sender<Event>,
+    ) -> Result<Option<crate::tools::ToolResult>> {
+        if !self.workflows_enabled {
+            return Err(Error::Tool(
+                "workflow tool is disabled by configuration".to_owned(),
+            ));
+        }
+
+        let workflow_name = args
+            .get("workflow")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::Tool("missing 'workflow' argument".to_owned()))?;
+        let entrypoint = args
+            .get("entrypoint")
+            .and_then(Value::as_str)
+            .unwrap_or("start");
+        let input = args
+            .get("input")
+            .cloned()
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+
+        let agents = {
+            let guard = self
+                .agents
+                .read()
+                .expect("tool manager agents lock poisoned");
+            guard.clone()
+        }
+        .ok_or_else(|| {
+            Error::Tool("workflow executor is not ready: agents not attached".to_owned())
+        })?;
+
+        let executor = WorkflowExecutor::new(
+            self.workflows.clone(),
+            self.skills.clone(),
+            agents,
+            self.session_manager.clone(),
+            WorkflowExecutorConfig {
+                max_recursion_depth: self.workflows_config.max_recursion_depth,
+                max_steps_per_run: self.workflows_config.max_steps_per_run,
+                working_directory: self.execution_context.working_directory.clone(),
+            },
+        );
+
+        let result = executor
+            .run(
+                WorkflowRunRequest {
+                    workflow_name: workflow_name.to_owned(),
+                    entrypoint: entrypoint.to_owned(),
+                    session_id,
+                    agent_name,
+                    input,
+                    recursion_depth: 0,
+                },
+                self,
+                event_tx,
+            )
+            .await?;
+
+        Ok(Some(crate::tools::ToolResult {
+            success: result.success,
+            exit_code: Some(if result.success { 0 } else { 1 }),
+            output: serde_json::to_string(&json!({
+                "success": result.success,
+                "steps_executed": result.steps_executed,
+                "outputs": result.outputs,
+            }))
+            .unwrap_or_else(|_| "{}".to_owned()),
+        }))
     }
 
     pub async fn register_tool(&self, name: String, tool: Arc<dyn Tool>, config: ToolConfig) {
@@ -217,13 +327,13 @@ impl ToolManager {
         args: serde_json::Value,
         event_tx: mpsc::Sender<Event>,
     ) -> Result<Option<crate::tools::ToolResult>> {
-        // Check if tool exists
-        let tool = {
-            let tools = self.tools.read().await;
-            tools.get(tool_name).cloned()
+        let has_tool_config = {
+            let configs = self.tool_configs.read().await;
+            configs.contains_key(tool_name)
         };
-
-        let tool = tool.ok_or_else(|| Error::Tool(format!("tool '{tool_name}' not found")))?;
+        if !has_tool_config {
+            return Err(Error::Tool(format!("tool '{tool_name}' not found")));
+        }
 
         let permission_context = PermissionContext {
             session_id: session_id.clone(),
@@ -239,6 +349,24 @@ impl ToolManager {
 
         match permission {
             PermissionDecision::Allow => {
+                if tool_name == "workflow" {
+                    return self
+                        .execute_workflow_call(
+                            session_id,
+                            permission_context.agent_name,
+                            args,
+                            event_tx,
+                        )
+                        .await;
+                }
+
+                let tool = {
+                    let tools = self.tools.read().await;
+                    tools.get(tool_name).cloned()
+                };
+                let tool =
+                    tool.ok_or_else(|| Error::Tool(format!("tool '{tool_name}' not found")))?;
+
                 if tool_name == "shell" {
                     let shell_config = {
                         let configs = self.tool_configs.read().await;
@@ -332,6 +460,12 @@ impl ToolManager {
         // If denied, return None
         if matches!(decision, AskResolution::Deny) {
             return Ok(None);
+        }
+
+        if tool_name == "workflow" {
+            return self
+                .execute_workflow_call(session_id, permission_context.agent_name, args, event_tx)
+                .await;
         }
 
         // Execute tool

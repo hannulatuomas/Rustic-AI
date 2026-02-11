@@ -28,18 +28,19 @@ pub struct WorkflowExecutionResult {
 }
 
 #[derive(Debug, Clone)]
-struct WorkflowRunRequest {
-    workflow_name: String,
-    entrypoint: String,
-    input: Value,
-    recursion_depth: usize,
+pub struct WorkflowRunRequest {
+    pub workflow_name: String,
+    pub entrypoint: String,
+    pub session_id: String,
+    pub agent_name: Option<String>,
+    pub input: Value,
+    pub recursion_depth: usize,
 }
 
 #[derive(Clone)]
 pub struct WorkflowExecutor {
     workflows: Arc<WorkflowRegistry>,
     skills: Arc<SkillRegistry>,
-    tools: Arc<ToolManager>,
     agents: Arc<AgentCoordinator>,
     session_manager: Arc<SessionManager>,
     config: WorkflowExecutorConfig,
@@ -49,7 +50,6 @@ impl WorkflowExecutor {
     pub fn new(
         workflows: Arc<WorkflowRegistry>,
         skills: Arc<SkillRegistry>,
-        tools: Arc<ToolManager>,
         agents: Arc<AgentCoordinator>,
         session_manager: Arc<SessionManager>,
         config: WorkflowExecutorConfig,
@@ -57,7 +57,6 @@ impl WorkflowExecutor {
         Self {
             workflows,
             skills,
-            tools,
             agents,
             session_manager,
             config,
@@ -118,6 +117,16 @@ impl WorkflowExecutor {
 
     fn parse_step_result(raw: &str) -> Value {
         serde_json::from_str::<Value>(raw).unwrap_or_else(|_| Value::String(raw.to_owned()))
+    }
+
+    fn step_kind_name(kind: WorkflowStepKind) -> &'static str {
+        match kind {
+            WorkflowStepKind::Tool => "tool",
+            WorkflowStepKind::Skill => "skill",
+            WorkflowStepKind::Agent => "agent",
+            WorkflowStepKind::Workflow => "workflow",
+            WorkflowStepKind::Condition => "condition",
+        }
     }
 
     fn evaluate_condition(step: &WorkflowStep, outputs: &BTreeMap<String, Value>) -> Result<bool> {
@@ -198,32 +207,17 @@ impl WorkflowExecutor {
 
     pub async fn run(
         &self,
-        workflow_name: &str,
-        entrypoint: &str,
-        session_id: String,
-        agent_name: Option<String>,
-        input: Value,
+        request: WorkflowRunRequest,
+        tools: &ToolManager,
         event_tx: mpsc::Sender<Event>,
     ) -> Result<WorkflowExecutionResult> {
-        self.run_internal(
-            WorkflowRunRequest {
-                workflow_name: workflow_name.to_owned(),
-                entrypoint: entrypoint.to_owned(),
-                input,
-                recursion_depth: 0,
-            },
-            session_id,
-            agent_name,
-            event_tx,
-        )
-        .await
+        self.run_internal(request, tools, event_tx).await
     }
 
     fn run_internal<'a>(
         &'a self,
         request: WorkflowRunRequest,
-        session_id: String,
-        agent_name: Option<String>,
+        tools: &'a ToolManager,
         event_tx: mpsc::Sender<Event>,
     ) -> BoxFuture<'a, Result<WorkflowExecutionResult>> {
         Box::pin(async move {
@@ -264,6 +258,12 @@ impl WorkflowExecutor {
             let mut current = entry.step.clone();
             let mut step_count = 0usize;
 
+            let _ = event_tx.try_send(Event::WorkflowStarted {
+                workflow: request.workflow_name.clone(),
+                entrypoint: request.entrypoint.clone(),
+                recursion_depth: request.recursion_depth,
+            });
+
             loop {
                 if let Some(max_steps) = self.config.max_steps_per_run {
                     if step_count >= max_steps {
@@ -281,6 +281,13 @@ impl WorkflowExecutor {
                         request.workflow_name, current
                     ))
                 })?;
+
+                let _ = event_tx.try_send(Event::WorkflowStepStarted {
+                    workflow: request.workflow_name.clone(),
+                    step_id: step.id.clone(),
+                    step_name: step.name.clone(),
+                    kind: Self::step_kind_name(step.kind).to_owned(),
+                });
 
                 let step_result = match step.kind {
                     WorkflowStepKind::Tool => {
@@ -301,11 +308,10 @@ impl WorkflowExecutor {
                             .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
                         let args = Self::render_value_with_outputs(&args_template, &outputs);
 
-                        let tool_result = self
-                            .tools
+                        let tool_result = tools
                             .execute_tool(
-                                session_id.clone(),
-                                agent_name.clone(),
+                                request.session_id.clone(),
+                                request.agent_name.clone(),
                                 tool_name,
                                 args,
                                 event_tx.clone(),
@@ -382,11 +388,12 @@ impl WorkflowExecutor {
                                 WorkflowRunRequest {
                                     workflow_name: nested_workflow.to_owned(),
                                     entrypoint: nested_entrypoint.to_owned(),
+                                    session_id: request.session_id.clone(),
+                                    agent_name: request.agent_name.clone(),
                                     input: nested_input,
                                     recursion_depth: request.recursion_depth + 1,
                                 },
-                                session_id.clone(),
-                                agent_name.clone(),
+                                tools,
                                 event_tx.clone(),
                             )
                             .await?;
@@ -397,6 +404,12 @@ impl WorkflowExecutor {
                     }
                     WorkflowStepKind::Condition => {
                         let matched = Self::evaluate_condition(&step, &outputs)?;
+                        let _ = event_tx.try_send(Event::WorkflowStepCompleted {
+                            workflow: request.workflow_name.clone(),
+                            step_id: step.id.clone(),
+                            success: matched,
+                            output_count: 0,
+                        });
                         let target = if matched {
                             step.on_success.clone().or(step.next.clone())
                         } else {
@@ -406,6 +419,11 @@ impl WorkflowExecutor {
                             current = next;
                             continue;
                         }
+                        let _ = event_tx.try_send(Event::WorkflowCompleted {
+                            workflow: request.workflow_name.clone(),
+                            success: matched,
+                            steps_executed: step_count,
+                        });
                         return Ok(WorkflowExecutionResult {
                             success: matched,
                             outputs,
@@ -417,7 +435,7 @@ impl WorkflowExecutor {
                             .config
                             .get("agent")
                             .and_then(Value::as_str)
-                            .or(agent_name.as_deref())
+                            .or(request.agent_name.as_deref())
                             .ok_or_else(|| {
                                 Error::Tool(format!(
                                     "workflow '{}' step '{}' missing config.agent and no default agent provided",
@@ -437,12 +455,13 @@ impl WorkflowExecutor {
                             other => serde_json::to_string(&other).unwrap_or_default(),
                         };
 
-                        let session_uuid = uuid::Uuid::parse_str(&session_id).map_err(|err| {
-                            Error::Tool(format!(
-                                "workflow '{}' step '{}' requires UUID session id for agent calls: {err}",
-                                request.workflow_name, step.id
-                            ))
-                        })?;
+                        let session_uuid =
+                            uuid::Uuid::parse_str(&request.session_id).map_err(|err| {
+                                Error::Tool(format!(
+                                    "workflow '{}' step '{}' requires UUID session id for agent calls: {err}",
+                                    request.workflow_name, step.id
+                                ))
+                            })?;
 
                         let agent = self.agents.get_agent(Some(target_agent))?;
                         agent
@@ -467,6 +486,13 @@ impl WorkflowExecutor {
                 Self::map_named_outputs(&step, &payload, &mut outputs);
                 outputs.insert(format!("step.{}.result", step.id), payload);
 
+                let _ = event_tx.try_send(Event::WorkflowStepCompleted {
+                    workflow: request.workflow_name.clone(),
+                    step_id: step.id.clone(),
+                    success,
+                    output_count: step.outputs.len(),
+                });
+
                 let next = if success {
                     step.on_success.or(step.next)
                 } else if step.continue_on_error {
@@ -479,6 +505,12 @@ impl WorkflowExecutor {
                     current = next;
                     continue;
                 }
+
+                let _ = event_tx.try_send(Event::WorkflowCompleted {
+                    workflow: request.workflow_name.clone(),
+                    success,
+                    steps_executed: step_count,
+                });
 
                 return Ok(WorkflowExecutionResult {
                     success,

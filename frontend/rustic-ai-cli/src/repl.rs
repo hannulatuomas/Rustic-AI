@@ -3,7 +3,7 @@ use crate::renderer::Renderer;
 use rustic_ai_core::error::Result;
 use rustic_ai_core::events::Event;
 use rustic_ai_core::permissions::{AskResolution, CommandPatternBucket};
-use rustic_ai_core::workflows::{WorkflowExecutor, WorkflowExecutorConfig};
+use rustic_ai_core::workflows::{WorkflowExecutor, WorkflowExecutorConfig, WorkflowRunRequest};
 use rustic_ai_core::RusticAI;
 use serde_json::Value;
 use std::io::{self, Write};
@@ -685,7 +685,6 @@ impl Repl {
                 let executor = WorkflowExecutor::new(
                     self.app.runtime().workflows.clone(),
                     self.app.runtime().skills.clone(),
-                    self.app.runtime().tools.clone(),
                     std::sync::Arc::new(self.app.runtime().agents.clone()),
                     self.app.session_manager().clone(),
                     WorkflowExecutorConfig {
@@ -697,11 +696,15 @@ impl Repl {
 
                 match executor
                     .run(
-                        workflow_name,
-                        entrypoint,
-                        session_id.to_string(),
-                        Some(agent_name.clone()),
-                        Value::Object(serde_json::Map::new()),
+                        WorkflowRunRequest {
+                            workflow_name: workflow_name.to_owned(),
+                            entrypoint: entrypoint.to_owned(),
+                            session_id: session_id.to_string(),
+                            agent_name: Some(agent_name.clone()),
+                            input: Value::Object(serde_json::Map::new()),
+                            recursion_depth: 0,
+                        },
+                        self.app.runtime().tools.as_ref(),
                         event_tx.clone(),
                     )
                     .await
