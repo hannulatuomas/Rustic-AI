@@ -330,6 +330,34 @@ pub fn validate_config(config: &Config) -> Result<()> {
         }
     }
 
+    let mut taxonomy_baskets = std::collections::HashMap::<String, HashSet<String>>::new();
+    for basket in &config.taxonomy.baskets {
+        let basket_name = basket.name.trim();
+        if basket_name.is_empty() {
+            return Err(Error::Validation(
+                "taxonomy basket name cannot be empty".to_owned(),
+            ));
+        }
+        if taxonomy_baskets.contains_key(basket_name) {
+            return Err(Error::Validation(format!(
+                "duplicate taxonomy basket '{}'",
+                basket_name
+            )));
+        }
+        let mut sub = HashSet::new();
+        for sub_basket in &basket.sub_baskets {
+            let name = sub_basket.trim();
+            if name.is_empty() {
+                return Err(Error::Validation(format!(
+                    "taxonomy basket '{}' has empty sub_basket name",
+                    basket_name
+                )));
+            }
+            sub.insert(name.to_owned());
+        }
+        taxonomy_baskets.insert(basket_name.to_owned(), sub);
+    }
+
     let mut tool_names = HashSet::new();
     for tool in &config.tools {
         let name = tool.name.trim();
@@ -459,6 +487,12 @@ pub fn validate_config(config: &Config) -> Result<()> {
             )));
         }
 
+        if agent.context_window_size == 0 {
+            return Err(Error::Validation(format!(
+                "agent '{name}' context_window_size must be greater than zero"
+            )));
+        }
+
         if agent.allow_sub_agent_calls && !agent.tools.iter().any(|tool| tool == "sub_agent") {
             return Err(Error::Validation(format!(
                 "agent '{name}' has allow_sub_agent_calls=true but does not include 'sub_agent' in tools"
@@ -486,6 +520,84 @@ pub fn validate_config(config: &Config) -> Result<()> {
                 return Err(Error::Validation(format!(
                     "agent '{name}' sub_agent_max_context_tokens must be greater than zero when set"
                 )));
+            }
+        }
+
+        if let Some(tokens) = agent.context_summary_max_tokens {
+            if tokens == 0 {
+                return Err(Error::Validation(format!(
+                    "agent '{name}' context_summary_max_tokens must be greater than zero when set"
+                )));
+            }
+        }
+
+        if let Some(entries) = agent.context_summary_cache_entries {
+            if entries == 0 {
+                return Err(Error::Validation(format!(
+                    "agent '{name}' context_summary_cache_entries must be greater than zero when set"
+                )));
+            }
+        }
+
+        for membership in &agent.taxonomy_membership {
+            let basket = membership.basket.trim();
+            if basket.is_empty() {
+                return Err(Error::Validation(format!(
+                    "agent '{name}' has empty taxonomy basket membership"
+                )));
+            }
+            let Some(sub_baskets) = taxonomy_baskets.get(basket) else {
+                return Err(Error::Validation(format!(
+                    "agent '{name}' references unknown taxonomy basket '{}'",
+                    basket
+                )));
+            };
+            if let Some(sub_basket) = membership.sub_basket.as_deref() {
+                let sub_basket = sub_basket.trim();
+                if sub_basket.is_empty() {
+                    return Err(Error::Validation(format!(
+                        "agent '{name}' has empty taxonomy sub_basket membership"
+                    )));
+                }
+                if !sub_baskets.contains(sub_basket) {
+                    return Err(Error::Validation(format!(
+                        "agent '{name}' references unknown taxonomy sub_basket '{}::{}'",
+                        basket, sub_basket
+                    )));
+                }
+            }
+        }
+    }
+
+    for tool in &config.tools {
+        for membership in &tool.taxonomy_membership {
+            let basket = membership.basket.trim();
+            if basket.is_empty() {
+                return Err(Error::Validation(format!(
+                    "tool '{}' has empty taxonomy basket membership",
+                    tool.name
+                )));
+            }
+            let Some(sub_baskets) = taxonomy_baskets.get(basket) else {
+                return Err(Error::Validation(format!(
+                    "tool '{}' references unknown taxonomy basket '{}'",
+                    tool.name, basket
+                )));
+            };
+            if let Some(sub_basket) = membership.sub_basket.as_deref() {
+                let sub_basket = sub_basket.trim();
+                if sub_basket.is_empty() {
+                    return Err(Error::Validation(format!(
+                        "tool '{}' has empty taxonomy sub_basket membership",
+                        tool.name
+                    )));
+                }
+                if !sub_baskets.contains(sub_basket) {
+                    return Err(Error::Validation(format!(
+                        "tool '{}' references unknown taxonomy sub_basket '{}::{}'",
+                        tool.name, basket, sub_basket
+                    )));
+                }
             }
         }
     }

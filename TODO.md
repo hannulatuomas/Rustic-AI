@@ -57,53 +57,53 @@ Last updated: 2026-02-11
 **Priority: HIGH - Better organization and context usage**
 
 4. **Gap 2: Taxonomy Implementation** (5-6 days)
-    - [ ] Extend AgentConfig with taxonomy_membership field
-    - [ ] Extend ToolConfig and skill structures with taxonomy
-    - [ ] Create TaxonomyRegistry module
-    - [ ] Implement Basket and SubBasket structures
-    - [ ] Implement filtering APIs (by_basket, by_sub_basket, search)
-    - [ ] Validate depth limit (max 2 levels)
-    - [ ] Wire taxonomy into initialization
-    - [ ] Update AgentRegistry to use taxonomy for filtering
-    - [ ] Update ToolRegistry to use taxonomy for filtering
-    - [ ] Add CLI commands: `/taxonomy list|show <basket> [sub_basket]|search <query>`
+    - [x] Extend AgentConfig with taxonomy_membership field
+    - [x] Extend ToolConfig and skill structures with taxonomy
+    - [x] Create TaxonomyRegistry module
+    - [x] Implement Basket and SubBasket structures
+    - [x] Implement filtering APIs (by_basket, by_sub_basket, search)
+    - [x] Validate depth limit (max 2 levels)
+    - [x] Wire taxonomy into initialization
+    - [x] Update AgentRegistry to use taxonomy for filtering
+    - [x] Update ToolRegistry to use taxonomy for filtering
+    - [x] Add CLI commands: `/taxonomy list|show <basket> [sub_basket]|search <query>`
 
 5. **Gap 7: Advanced Context Management** (8-10 days)
-    - [ ] Create MessageScorer module (importance levels)
-    - [ ] Implement importance scoring logic (critical/high/medium/low)
-    - [ ] Add context pruning with importance-based selection
-    - [ ] Create ContextDeduplicator module
-    - [ ] Implement duplicate detection and removal
-    - [ ] Implement provider-assisted summarization
-    - [ ] Add ConversationSummary storage structure
-    - [ ] Implement summary caching and expansion
-    - [ ] Implement dynamic context optimization per task
-    - [ ] Add keyword extraction from current task
-    - [ ] Implement task-relevance scoring
-    - [ ] Update AgentMemory to use new context building
+    - [x] Create MessageScorer module (importance levels)
+    - [x] Implement importance scoring logic (critical/high/medium/low)
+    - [x] Add context pruning with importance-based selection
+    - [x] Create ContextDeduplicator module
+    - [x] Implement duplicate detection and removal
+    - [x] Implement provider-assisted summarization
+    - [x] Add ConversationSummary storage structure
+    - [x] Implement summary caching and expansion
+    - [x] Implement dynamic context optimization per task
+    - [x] Add keyword extraction from current task
+    - [x] Implement task-relevance scoring
+    - [x] Update AgentMemory to use new context building
 
 6. **Gap 5: Dynamic Tool Loading** (3 days)
-    - [ ] Refactor ToolManager to support lazy loading
-    - [ ] Add lazy_loaders HashMap for heavy tools
-    - [ ] Implement lazy tool loading on demand
-    - [ ] Add active_tools tracking
-    - [ ] Implement unload_unused method
-    - [ ] Add get_tool_descriptions for agent tool lists
-    - [ ] Implement context-aware tool description selection
-    - [ ] Add tool priority ordering for truncation
+    - [x] Refactor ToolManager to support lazy loading
+    - [x] Add lazy_loaders HashMap for heavy tools
+    - [x] Implement lazy tool loading on demand
+    - [x] Add active_tools tracking
+    - [x] Implement unload_unused method
+    - [x] Add get_tool_descriptions for agent tool lists
+    - [x] Implement context-aware tool description selection
+    - [x] Add tool priority ordering for truncation
 
 ### Phase 3: Code Quality & Refactoring (Weeks 7-8)
 **Priority: HIGH - Technical debt and improvements**
 
 7. **Address Code Duplication** (3-4 days)
-    - [ ] Extract common streaming logic from providers
-    - [ ] Create shared SSE streaming utility
-    - [ ] Extract provider option building logic
-    - [ ] Create provider option builder trait
-    - [ ] Simplify ToolManager::execute_tool()
-    - [ ] Extract helpers from ToolManager
-    - [ ] Reduce `Agent::resume_from_pending_tool()` complexity
-    - [ ] Extract pending tool state machine
+    - [x] Extract common streaming logic from providers
+    - [x] Create shared SSE streaming utility
+    - [x] Extract provider option building logic
+    - [x] Create provider option builder trait
+    - [x] Simplify ToolManager::execute_tool()
+    - [x] Extract helpers from ToolManager
+    - [x] Reduce `Agent::resume_from_pending_tool()` complexity
+    - [x] Extract pending tool state machine
 
 8. **Complete Loose Integrations** (3-4 days)
     - [ ] Wire workflow trigger execution

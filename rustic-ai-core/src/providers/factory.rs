@@ -13,6 +13,29 @@ use crate::providers::retry::RetryPolicy;
 use crate::providers::types::ModelProvider;
 use crate::providers::z_ai::{ZAiEndpointProfile, ZAiProvider};
 
+#[derive(Debug, Clone)]
+struct CommonProviderOptions {
+    timeout_ms: u64,
+    extra_headers: Vec<(String, String)>,
+    retry_policy: RetryPolicy,
+}
+
+trait ProviderOptionBuilder {
+    fn common(provider: &ProviderConfig) -> Result<CommonProviderOptions>;
+}
+
+struct SharedProviderOptionBuilder;
+
+impl ProviderOptionBuilder for SharedProviderOptionBuilder {
+    fn common(provider: &ProviderConfig) -> Result<CommonProviderOptions> {
+        Ok(CommonProviderOptions {
+            timeout_ms: extract_timeout_ms(provider),
+            extra_headers: extract_extra_headers(provider)?,
+            retry_policy: build_retry_policy(provider),
+        })
+    }
+}
+
 pub fn create_provider_registry(
     config: &Config,
     work_dir: &std::path::Path,
@@ -477,51 +500,17 @@ fn build_openai_provider(
 }
 
 fn build_openai_options(provider: &ProviderConfig) -> Result<OpenAiProviderOptions> {
-    let timeout_ms = provider
-        .settings
-        .as_ref()
-        .and_then(|settings| settings.get("request_timeout_ms"))
-        .and_then(|value| value.as_u64())
-        .unwrap_or(30_000);
-
-    let mut extra_headers = Vec::new();
-    if let Some(raw_headers) = provider
-        .settings
-        .as_ref()
-        .and_then(|settings| settings.get("headers"))
-    {
-        let headers_object = raw_headers.as_object().ok_or_else(|| {
-            Error::Config(format!(
-                "provider '{}' setting 'headers' must be an object of string values",
-                provider.name
-            ))
-        })?;
-
-        for (name, value) in headers_object {
-            let header_value = value.as_str().ok_or_else(|| {
-                Error::Config(format!(
-                    "provider '{}' setting headers['{name}'] must be a string",
-                    provider.name
-                ))
-            })?;
-            extra_headers.push((name.clone(), header_value.to_owned()));
-        }
-    }
+    let common = SharedProviderOptionBuilder::common(provider)?;
 
     Ok(OpenAiProviderOptions {
-        timeout_ms,
-        extra_headers,
-        retry_policy: build_retry_policy(provider),
+        timeout_ms: common.timeout_ms,
+        extra_headers: common.extra_headers,
+        retry_policy: common.retry_policy,
     })
 }
 
 fn build_anthropic_options(provider: &ProviderConfig) -> Result<AnthropicProviderOptions> {
-    let timeout_ms = provider
-        .settings
-        .as_ref()
-        .and_then(|settings| settings.get("request_timeout_ms"))
-        .and_then(|value| value.as_u64())
-        .unwrap_or(30_000);
+    let common = SharedProviderOptionBuilder::common(provider)?;
 
     let api_version = provider
         .settings
@@ -562,125 +551,55 @@ fn build_anthropic_options(provider: &ProviderConfig) -> Result<AnthropicProvide
         Vec::new()
     };
 
-    let mut extra_headers = Vec::new();
-    if let Some(raw_headers) = provider
-        .settings
-        .as_ref()
-        .and_then(|settings| settings.get("headers"))
-    {
-        let headers_object = raw_headers.as_object().ok_or_else(|| {
-            Error::Config(format!(
-                "provider '{}' setting 'headers' must be an object of string values",
-                provider.name
-            ))
-        })?;
-
-        for (name, value) in headers_object {
-            let header_value = value.as_str().ok_or_else(|| {
-                Error::Config(format!(
-                    "provider '{}' setting headers['{name}'] must be a string",
-                    provider.name
-                ))
-            })?;
-            extra_headers.push((name.clone(), header_value.to_owned()));
-        }
-    }
-
     Ok(AnthropicProviderOptions {
-        timeout_ms,
+        timeout_ms: common.timeout_ms,
         api_version,
         betas,
-        extra_headers,
-        retry_policy: build_retry_policy(provider),
+        extra_headers: common.extra_headers,
+        retry_policy: common.retry_policy,
     })
 }
 
 fn build_google_options(provider: &ProviderConfig) -> Result<GoogleProviderOptions> {
-    let timeout_ms = provider
-        .settings
-        .as_ref()
-        .and_then(|settings| settings.get("request_timeout_ms"))
-        .and_then(|value| value.as_u64())
-        .unwrap_or(30_000);
-
-    let mut extra_headers = Vec::new();
-    if let Some(raw_headers) = provider
-        .settings
-        .as_ref()
-        .and_then(|settings| settings.get("headers"))
-    {
-        let headers_object = raw_headers.as_object().ok_or_else(|| {
-            Error::Config(format!(
-                "provider '{}' setting 'headers' must be an object of string values",
-                provider.name
-            ))
-        })?;
-
-        for (name, value) in headers_object {
-            let header_value = value.as_str().ok_or_else(|| {
-                Error::Config(format!(
-                    "provider '{}' setting headers['{name}'] must be a string",
-                    provider.name
-                ))
-            })?;
-            extra_headers.push((name.clone(), header_value.to_owned()));
-        }
-    }
+    let common = SharedProviderOptionBuilder::common(provider)?;
 
     Ok(GoogleProviderOptions {
-        timeout_ms,
-        extra_headers,
-        retry_policy: build_retry_policy(provider),
+        timeout_ms: common.timeout_ms,
+        extra_headers: common.extra_headers,
+        retry_policy: common.retry_policy,
     })
 }
 
 fn build_grok_options(provider: &ProviderConfig) -> Result<GrokProviderOptions> {
-    let timeout_ms = provider
-        .settings
-        .as_ref()
-        .and_then(|settings| settings.get("request_timeout_ms"))
-        .and_then(|value| value.as_u64())
-        .unwrap_or(30_000);
-
-    let mut extra_headers = Vec::new();
-    if let Some(raw_headers) = provider
-        .settings
-        .as_ref()
-        .and_then(|settings| settings.get("headers"))
-    {
-        let headers_object = raw_headers.as_object().ok_or_else(|| {
-            Error::Config(format!(
-                "provider '{}' setting 'headers' must be an object of string values",
-                provider.name
-            ))
-        })?;
-
-        for (name, value) in headers_object {
-            let header_value = value.as_str().ok_or_else(|| {
-                Error::Config(format!(
-                    "provider '{}' setting headers['{name}'] must be a string",
-                    provider.name
-                ))
-            })?;
-            extra_headers.push((name.clone(), header_value.to_owned()));
-        }
-    }
+    let common = SharedProviderOptionBuilder::common(provider)?;
 
     Ok(GrokProviderOptions {
-        timeout_ms,
-        extra_headers,
-        retry_policy: build_retry_policy(provider),
+        timeout_ms: common.timeout_ms,
+        extra_headers: common.extra_headers,
+        retry_policy: common.retry_policy,
     })
 }
 
 fn build_ollama_options(provider: &ProviderConfig) -> Result<OllamaProviderOptions> {
-    let timeout_ms = provider
+    let common = SharedProviderOptionBuilder::common(provider)?;
+
+    Ok(OllamaProviderOptions {
+        timeout_ms: common.timeout_ms,
+        extra_headers: common.extra_headers,
+        retry_policy: common.retry_policy,
+    })
+}
+
+fn extract_timeout_ms(provider: &ProviderConfig) -> u64 {
+    provider
         .settings
         .as_ref()
         .and_then(|settings| settings.get("request_timeout_ms"))
         .and_then(|value| value.as_u64())
-        .unwrap_or(30_000);
+        .unwrap_or(30_000)
+}
 
+fn extract_extra_headers(provider: &ProviderConfig) -> Result<Vec<(String, String)>> {
     let mut extra_headers = Vec::new();
     if let Some(raw_headers) = provider
         .settings
@@ -705,11 +624,7 @@ fn build_ollama_options(provider: &ProviderConfig) -> Result<OllamaProviderOptio
         }
     }
 
-    Ok(OllamaProviderOptions {
-        timeout_ms,
-        extra_headers,
-        retry_policy: build_retry_policy(provider),
-    })
+    Ok(extra_headers)
 }
 
 fn build_retry_policy(provider: &ProviderConfig) -> RetryPolicy {

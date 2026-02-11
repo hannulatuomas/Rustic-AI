@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -10,7 +9,7 @@ use tokio::time::Duration;
 use crate::auth::SubscriptionAuthManager;
 use crate::error::{Error, Result};
 use crate::providers::retry::{send_with_retry, RetryPolicy};
-use crate::providers::streaming::{parse_sse_line, StreamEvent};
+use crate::providers::streaming::spawn_sse_stream;
 use crate::providers::types::{ChatMessage, GenerateOptions, ModelProvider};
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
@@ -377,71 +376,7 @@ impl ModelProvider for AnthropicProvider {
             )));
         }
 
-        let (tx, rx) = mpsc::channel(256);
-        let mut stream = response.bytes_stream();
-
-        tokio::spawn(async move {
-            let mut line_buffer = String::new();
-
-            while let Some(chunk_result) = stream.next().await {
-                let chunk = match chunk_result {
-                    Ok(bytes) => bytes,
-                    Err(err) => {
-                        let _ = tx
-                            .send(format!("[stream error] failed to read stream chunk: {err}"))
-                            .await;
-                        break;
-                    }
-                };
-
-                let decoded = match std::str::from_utf8(&chunk) {
-                    Ok(text) => text,
-                    Err(err) => {
-                        let _ = tx
-                            .send(format!(
-                                "[stream error] invalid UTF-8 in stream chunk: {err}"
-                            ))
-                            .await;
-                        break;
-                    }
-                };
-
-                line_buffer.push_str(decoded);
-
-                while let Some(idx) = line_buffer.find('\n') {
-                    let line = line_buffer[..idx].trim_end_matches('\r').to_owned();
-                    line_buffer.drain(..=idx);
-
-                    match parse_sse_line(&line) {
-                        Some(StreamEvent::Text(text)) => {
-                            if tx.send(text).await.is_err() {
-                                return;
-                            }
-                        }
-                        Some(StreamEvent::Error(err)) => {
-                            let _ = tx.send(format!("[stream error] {err}")).await;
-                            return;
-                        }
-                        Some(StreamEvent::Done) => return,
-                        None => {}
-                    }
-                }
-            }
-
-            if !line_buffer.is_empty() {
-                match parse_sse_line(line_buffer.trim_end_matches('\r')) {
-                    Some(StreamEvent::Text(text)) => {
-                        let _ = tx.send(text).await;
-                    }
-                    Some(StreamEvent::Error(err)) => {
-                        let _ = tx.send(format!("[stream error] {err}")).await;
-                    }
-                    Some(StreamEvent::Done) | None => {}
-                }
-            }
-        });
-
-        Ok(rx)
+        Ok(spawn_sse_stream(response))
     }
 
     async fn count_tokens(&self, messages: &[ChatMessage]) -> Result<usize> {

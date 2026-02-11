@@ -293,6 +293,7 @@ impl SkillLoader {
             schema: json!({"type": "object", "additionalProperties": true}),
             timeout_seconds,
             kind: SkillKind::Instruction { content },
+            taxonomy_membership: Vec::new(),
         }))
     }
 
@@ -336,6 +337,7 @@ impl SkillLoader {
                 path: canonical_path,
                 language,
             },
+            taxonomy_membership: Vec::new(),
         }))
     }
 

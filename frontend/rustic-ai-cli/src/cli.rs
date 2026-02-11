@@ -18,6 +18,10 @@ pub enum Command {
     Discover,
     Topics,
     Agents,
+    Taxonomy {
+        #[command(subcommand)]
+        command: TaxonomyCommand,
+    },
     ValidateConfig {
         #[arg(long, default_value = "docs/config.schema.json")]
         schema: String,
@@ -140,6 +144,19 @@ pub enum SessionCommand {
     },
     Delete {
         id: String,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum TaxonomyCommand {
+    List,
+    Show {
+        basket: String,
+        #[arg(long)]
+        sub_basket: Option<String>,
+    },
+    Search {
+        query: String,
     },
 }
 

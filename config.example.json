@@ -312,7 +312,11 @@
       "allow_sub_agent_calls": true,
       "max_sub_agent_depth": 4,
       "sub_agent_context_window_size": 24,
-      "sub_agent_max_context_tokens": 4000
+      "sub_agent_max_context_tokens": 4000,
+      "context_summary_enabled": true,
+      "context_summary_max_tokens": 400,
+      "context_summary_cache_entries": 64,
+      "taxonomy_membership": []
     }
   ],
   "tools": [
@@ -344,7 +348,8 @@
         " >>",
         " git commit",
         " git push"
-      ]
+      ],
+      "taxonomy_membership": []
     },
     {
       "name": "filesystem",
@@ -359,7 +364,8 @@
       "stream_output": true,
       "require_sudo": false,
       "privileged_command_patterns": [],
-      "read_only_blocked_patterns": []
+      "read_only_blocked_patterns": [],
+      "taxonomy_membership": []
     },
     {
       "name": "http",
@@ -374,7 +380,8 @@
       "stream_output": true,
       "require_sudo": false,
       "privileged_command_patterns": [],
-      "read_only_blocked_patterns": []
+      "read_only_blocked_patterns": [],
+      "taxonomy_membership": []
     },
     {
       "name": "ssh",
@@ -389,7 +396,8 @@
       "stream_output": true,
       "require_sudo": false,
       "privileged_command_patterns": [],
-      "read_only_blocked_patterns": []
+      "read_only_blocked_patterns": [],
+      "taxonomy_membership": []
     },
     {
       "name": "mcp",
@@ -404,7 +412,8 @@
       "stream_output": true,
       "require_sudo": false,
       "privileged_command_patterns": [],
-      "read_only_blocked_patterns": []
+      "read_only_blocked_patterns": [],
+      "taxonomy_membership": []
     },
     {
       "name": "skill",
@@ -419,7 +428,8 @@
       "stream_output": true,
       "require_sudo": false,
       "privileged_command_patterns": [],
-      "read_only_blocked_patterns": []
+      "read_only_blocked_patterns": [],
+      "taxonomy_membership": []
     },
     {
       "name": "workflow",
@@ -434,7 +444,8 @@
       "stream_output": true,
       "require_sudo": false,
       "privileged_command_patterns": [],
-      "read_only_blocked_patterns": []
+      "read_only_blocked_patterns": [],
+      "taxonomy_membership": []
     },
     {
       "name": "sub_agent",
@@ -449,7 +460,8 @@
       "stream_output": true,
       "require_sudo": false,
       "privileged_command_patterns": [],
-      "read_only_blocked_patterns": []
+      "read_only_blocked_patterns": [],
+      "taxonomy_membership": []
     }
   ],
   "taxonomy": {

@@ -1,4 +1,5 @@
 use crate::agents::AgentCoordinator;
+use crate::catalog::taxonomy::TaxonomyRegistry;
 use crate::config::schema::AgentPermissionMode;
 use crate::conversation::session_manager::SessionManager;
 use crate::error::Result;
@@ -19,6 +20,7 @@ pub struct Runtime {
     pub tools: Arc<ToolManager>,
     pub skills: Arc<SkillRegistry>,
     pub workflows: Arc<WorkflowRegistry>,
+    pub taxonomy: Arc<TaxonomyRegistry>,
     pub config: crate::config::Config,
 }
 
@@ -41,6 +43,18 @@ impl Runtime {
         } else {
             Arc::new(WorkflowRegistry::new())
         };
+
+        let mut taxonomy = TaxonomyRegistry::new(config.taxonomy.baskets.clone());
+        for agent in &config.agents {
+            taxonomy.register_agent(agent);
+        }
+        for tool in &config.tools {
+            taxonomy.register_tool(tool);
+        }
+        for skill_name in skills.list() {
+            taxonomy.register_skill(&skill_name, Vec::new());
+        }
+        let taxonomy = Arc::new(taxonomy);
 
         // Create permission policy
         let tool_specific_modes: Vec<(String, crate::config::schema::PermissionMode)> = config
@@ -102,6 +116,7 @@ impl Runtime {
             tools,
             skills,
             workflows,
+            taxonomy,
             config,
         })
     }

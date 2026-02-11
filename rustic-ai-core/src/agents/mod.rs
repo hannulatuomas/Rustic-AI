@@ -1,4 +1,5 @@
 pub mod behavior;
+pub mod context;
 pub mod coordinator;
 pub mod memory;
 pub mod registry;

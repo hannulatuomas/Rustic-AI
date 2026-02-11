@@ -537,6 +537,10 @@ pub struct AgentConfig {
     pub max_sub_agent_depth: Option<usize>,
     pub sub_agent_context_window_size: Option<usize>,
     pub sub_agent_max_context_tokens: Option<usize>,
+    pub context_summary_enabled: Option<bool>,
+    pub context_summary_max_tokens: Option<usize>,
+    pub context_summary_cache_entries: Option<usize>,
+    pub taxonomy_membership: Vec<TaxonomyMembershipConfig>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -569,6 +573,7 @@ pub struct ToolConfig {
     /// Shell-only: command patterns blocked in read-only agent mode.
     /// Empty uses defaults from code; set explicitly to tune behavior.
     pub read_only_blocked_patterns: Vec<String>,
+    pub taxonomy_membership: Vec<TaxonomyMembershipConfig>,
 }
 
 impl Default for ToolConfig {
@@ -602,8 +607,16 @@ impl Default for ToolConfig {
                 " git commit".to_owned(),
                 " git push".to_owned(),
             ],
+            taxonomy_membership: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct TaxonomyMembershipConfig {
+    pub basket: String,
+    pub sub_basket: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]

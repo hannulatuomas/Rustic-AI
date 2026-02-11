@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -10,6 +9,7 @@ use tokio::time::Duration;
 use crate::auth::SubscriptionAuthManager;
 use crate::error::{Error, Result};
 use crate::providers::retry::{send_with_retry, RetryPolicy};
+use crate::providers::streaming::spawn_sse_stream_with_data_parser;
 use crate::providers::types::{ChatMessage, GenerateOptions, ModelProvider};
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
@@ -377,77 +377,10 @@ impl ModelProvider for GoogleProvider {
             )));
         }
 
-        let (tx, rx) = mpsc::channel(256);
-        let mut stream = response.bytes_stream();
-
-        tokio::spawn(async move {
-            let mut line_buffer = String::new();
-
-            while let Some(chunk_result) = stream.next().await {
-                let chunk = match chunk_result {
-                    Ok(bytes) => bytes,
-                    Err(err) => {
-                        let _ = tx
-                            .send(format!("[stream error] failed to read stream chunk: {err}"))
-                            .await;
-                        break;
-                    }
-                };
-
-                let decoded = match std::str::from_utf8(&chunk) {
-                    Ok(text) => text,
-                    Err(err) => {
-                        let _ = tx
-                            .send(format!(
-                                "[stream error] invalid UTF-8 in stream chunk: {err}"
-                            ))
-                            .await;
-                        break;
-                    }
-                };
-
-                line_buffer.push_str(decoded);
-
-                while let Some(idx) = line_buffer.find('\n') {
-                    let line = line_buffer[..idx].trim_end_matches('\r').to_owned();
-                    line_buffer.drain(..=idx);
-
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() || trimmed.starts_with(':') {
-                        continue;
-                    }
-
-                    let Some(data) = trimmed.strip_prefix("data:") else {
-                        continue;
-                    };
-                    let data = data.trim();
-
-                    if data == "[DONE]" {
-                        return;
-                    }
-
-                    if let Some(extracted) = Self::extract_stream_text(data) {
-                        if tx.send(extracted).await.is_err() {
-                            return;
-                        }
-                    }
-                }
-            }
-
-            if !line_buffer.is_empty() {
-                let trimmed = line_buffer.trim_end_matches('\r').trim();
-                if let Some(data) = trimmed.strip_prefix("data:") {
-                    let data = data.trim();
-                    if data != "[DONE]" {
-                        if let Some(extracted) = Self::extract_stream_text(data) {
-                            let _ = tx.send(extracted).await;
-                        }
-                    }
-                }
-            }
-        });
-
-        Ok(rx)
+        Ok(spawn_sse_stream_with_data_parser(
+            response,
+            Self::extract_stream_text,
+        ))
     }
 
     async fn count_tokens(&self, messages: &[ChatMessage]) -> Result<usize> {

@@ -399,6 +399,81 @@ fn run() -> rustic_ai_core::Result<()> {
                         }
                         return Ok(());
                     }
+                    cli::Command::Taxonomy { command } => {
+                        match command {
+                            cli::TaxonomyCommand::List => {
+                                let baskets = app.runtime().taxonomy.list_baskets();
+                                if baskets.is_empty() {
+                                    println!("No taxonomy baskets configured.");
+                                    return Ok(());
+                                }
+                                println!("Taxonomy baskets:");
+                                for basket in baskets {
+                                    let sub = app
+                                        .runtime()
+                                        .taxonomy
+                                        .list_sub_baskets(&basket)
+                                        .unwrap_or_default();
+                                    if sub.is_empty() {
+                                        println!("- {}", basket);
+                                    } else {
+                                        println!("- {} [{}]", basket, sub.join(", "));
+                                    }
+                                }
+                            }
+                            cli::TaxonomyCommand::Show { basket, sub_basket } => {
+                                let items = if let Some(sub_basket) = sub_basket {
+                                    app.runtime()
+                                        .taxonomy
+                                        .find_by_sub_basket(&basket, &sub_basket)
+                                } else {
+                                    app.runtime().taxonomy.find_by_basket(&basket)
+                                };
+                                if items.is_empty() {
+                                    println!("No taxonomy items matched.");
+                                    return Ok(());
+                                }
+                                println!("Taxonomy items:");
+                                for item in items {
+                                    let kind = match item.kind {
+                                        rustic_ai_core::catalog::taxonomy::TaxonomyItemKind::Agent => {
+                                            "agent"
+                                        }
+                                        rustic_ai_core::catalog::taxonomy::TaxonomyItemKind::Tool => {
+                                            "tool"
+                                        }
+                                        rustic_ai_core::catalog::taxonomy::TaxonomyItemKind::Skill => {
+                                            "skill"
+                                        }
+                                    };
+                                    println!("- {} ({})", item.display_name, kind);
+                                }
+                            }
+                            cli::TaxonomyCommand::Search { query } => {
+                                let items = app.runtime().taxonomy.search(&query);
+                                if items.is_empty() {
+                                    println!("No taxonomy items matched search query.");
+                                    return Ok(());
+                                }
+                                println!("Search matches:");
+                                for item in items {
+                                    let kind = match item.kind {
+                                        rustic_ai_core::catalog::taxonomy::TaxonomyItemKind::Agent => {
+                                            "agent"
+                                        }
+                                        rustic_ai_core::catalog::taxonomy::TaxonomyItemKind::Tool => {
+                                            "tool"
+                                        }
+                                        rustic_ai_core::catalog::taxonomy::TaxonomyItemKind::Skill => {
+                                            "skill"
+                                        }
+                                    };
+                                    println!("- {} ({})", item.display_name, kind);
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
                     cli::Command::Session { command } => {
                         handle_session_command(&app, command)?;
                         return Ok(());

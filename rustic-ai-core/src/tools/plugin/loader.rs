@@ -372,6 +372,7 @@ impl PluginLoader {
             require_sudo: false,
             privileged_command_patterns: Vec::new(),
             read_only_blocked_patterns: Vec::new(),
+            taxonomy_membership: Vec::new(),
         }
     }
 

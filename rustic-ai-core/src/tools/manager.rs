@@ -17,10 +17,15 @@ use crate::workflows::{
 };
 use crate::{agents::coordinator::AgentCoordinator, conversation::session_manager::SessionManager};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock as StdRwLock};
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
+
+#[derive(Debug, Clone)]
+struct LazyToolSpec {
+    priority: usize,
+}
 
 #[derive(Clone)]
 pub struct ToolManager {
@@ -34,6 +39,12 @@ pub struct ToolManager {
     skills: Arc<SkillRegistry>,
     agents: Arc<StdRwLock<Option<Arc<AgentCoordinator>>>>,
     session_manager: Arc<SessionManager>,
+    permission_config: Arc<PermissionConfig>,
+    mcp_enabled: bool,
+    mcp_config: Arc<McpConfig>,
+    skills_enabled: bool,
+    lazy_loaders: Arc<RwLock<HashMap<String, LazyToolSpec>>>,
+    active_tools: Arc<RwLock<HashSet<String>>>,
 }
 
 pub struct ToolManagerInit {
@@ -54,6 +65,117 @@ pub struct ToolManagerInit {
 }
 
 impl ToolManager {
+    fn is_lazy_tool(tool_name: &str) -> bool {
+        matches!(tool_name, "mcp" | "ssh" | "skill" | "sub_agent")
+    }
+
+    fn tool_priority(tool_name: &str) -> usize {
+        match tool_name {
+            "filesystem" => 100,
+            "shell" => 95,
+            "http" => 90,
+            "workflow" => 85,
+            "sub_agent" => 80,
+            "skill" => 70,
+            "ssh" => 65,
+            "mcp" => 60,
+            _ => 40,
+        }
+    }
+
+    fn tool_static_description(tool_name: &str) -> &'static str {
+        match tool_name {
+            "shell" => "Execute shell commands with streaming output",
+            "filesystem" => "Read and modify files and directories",
+            "http" => "Perform HTTP requests",
+            "ssh" => "Execute and transfer files over SSH",
+            "skill" => "Invoke loaded instruction/script skills",
+            "workflow" => "Run workflow entrypoints",
+            "sub_agent" => "Delegate task to another configured agent",
+            "mcp" => "Invoke MCP server tools",
+            _ => "Configured tool",
+        }
+    }
+
+    fn create_tool_instance(&self, config: &ToolConfig) -> Option<Arc<dyn Tool>> {
+        match config.name.as_str() {
+            "shell" => Some(Arc::new(ShellTool::new(
+                config.clone(),
+                self.permission_config.sudo_cache_ttl_secs,
+            ))),
+            "filesystem" => Some(Arc::new(FilesystemTool::new(config.clone()))),
+            "http" => Some(Arc::new(HttpTool::new(config.clone()))),
+            "ssh" => Some(Arc::new(SshTool::new(config.clone()))),
+            "skill" => {
+                if !self.skills_enabled {
+                    return None;
+                }
+                Some(Arc::new(SkillTool::new(
+                    config.clone(),
+                    self.skills.clone(),
+                )))
+            }
+            "mcp" => {
+                if !self.mcp_enabled {
+                    return None;
+                }
+                Some(Arc::new(McpToolAdapter::new(
+                    config.clone(),
+                    self.mcp_config.clone(),
+                )))
+            }
+            "sub_agent" => Some(Arc::new(SubAgentTool::new(
+                config.clone(),
+                self.agents.clone(),
+            ))),
+            _ => None,
+        }
+    }
+
+    async fn get_or_load_tool(&self, tool_name: &str) -> Result<Arc<dyn Tool>> {
+        if let Some(tool) = self.tools.read().await.get(tool_name).cloned() {
+            return Ok(tool);
+        }
+
+        let config = self
+            .tool_configs
+            .read()
+            .await
+            .get(tool_name)
+            .cloned()
+            .ok_or_else(|| Error::Tool(format!("tool '{tool_name}' not found")))?;
+
+        let tool = self.create_tool_instance(&config).ok_or_else(|| {
+            Error::Tool(format!(
+                "tool '{}' is configured but cannot be instantiated in current runtime",
+                tool_name
+            ))
+        })?;
+
+        let mut tools = self.tools.write().await;
+        if let Some(existing) = tools.get(tool_name).cloned() {
+            return Ok(existing);
+        }
+        tools.insert(tool_name.to_owned(), tool.clone());
+        Ok(tool)
+    }
+
+    async fn run_tool_stream(
+        &self,
+        tool_name: &str,
+        tool: Arc<dyn Tool>,
+        tool_args: Value,
+        event_tx: mpsc::Sender<Event>,
+        execution_context: &ToolExecutionContext,
+    ) -> Result<crate::tools::ToolResult> {
+        self.active_tools.write().await.insert(tool_name.to_owned());
+        let result = tool
+            .stream_execute(tool_args, event_tx, execution_context)
+            .await;
+        self.active_tools.write().await.remove(tool_name);
+        result
+    }
+
     fn shell_command_program(command: &str) -> Option<String> {
         command
             .split_whitespace()
@@ -128,6 +250,49 @@ impl ToolManager {
         enriched
     }
 
+    async fn check_and_emit_sudo_prompt_if_needed(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        args: &Value,
+        event_tx: &mpsc::Sender<Event>,
+    ) -> Result<bool> {
+        if tool_name != "shell" {
+            return Ok(false);
+        }
+
+        let shell_config = {
+            let configs = self.tool_configs.read().await;
+            configs.get(tool_name).cloned()
+        };
+
+        let Some(config) = shell_config else {
+            return Ok(false);
+        };
+
+        let has_secret = args
+            .get("_sudo_password")
+            .and_then(|value| value.as_str())
+            .is_some();
+        if has_secret || !Self::shell_requires_sudo(&config, args) {
+            return Ok(false);
+        }
+
+        let command = args
+            .get("command")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_owned();
+        let _ = event_tx.try_send(Event::SudoSecretPrompt {
+            session_id: session_id.to_owned(),
+            tool: tool_name.to_owned(),
+            args: args.clone(),
+            command,
+            reason: "sudo privileges required".to_owned(),
+        });
+        Ok(true)
+    }
+
     pub fn new(init: ToolManagerInit) -> Self {
         let ToolManagerInit {
             permission_policy,
@@ -148,10 +313,23 @@ impl ToolManager {
 
         let mut tools = HashMap::new();
         let mut configs = HashMap::new();
+        let mut lazy_loaders = HashMap::new();
         let agents = Arc::new(StdRwLock::new(None));
 
         for config in tool_configs {
             if !config.enabled {
+                continue;
+            }
+
+            configs.insert(config.name.clone(), config.clone());
+
+            if Self::is_lazy_tool(&config.name) {
+                lazy_loaders.insert(
+                    config.name.clone(),
+                    LazyToolSpec {
+                        priority: Self::tool_priority(&config.name),
+                    },
+                );
                 continue;
             }
 
@@ -175,7 +353,6 @@ impl ToolManager {
                     }
                     Arc::new(McpToolAdapter::new(config.clone(), mcp_config.clone()))
                 }
-                "sub_agent" => Arc::new(SubAgentTool::new(config.clone(), agents.clone())),
                 _ => {
                     // For now, skip unknown tools
                     continue;
@@ -183,7 +360,6 @@ impl ToolManager {
             };
 
             tools.insert(config.name.clone(), tool);
-            configs.insert(config.name.clone(), config);
         }
 
         if plugins_enabled {
@@ -215,6 +391,12 @@ impl ToolManager {
             skills,
             agents,
             session_manager,
+            permission_config,
+            mcp_enabled,
+            mcp_config,
+            skills_enabled,
+            lazy_loaders: Arc::new(RwLock::new(lazy_loaders)),
+            active_tools: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -370,11 +552,113 @@ impl ToolManager {
     }
 
     pub async fn has_tool(&self, name: &str) -> bool {
-        self.tools.read().await.contains_key(name)
+        self.tool_configs.read().await.contains_key(name)
     }
 
     pub async fn get_tool_config(&self, name: &str) -> Option<ToolConfig> {
         self.tool_configs.read().await.get(name).cloned()
+    }
+
+    pub async fn unload_unused(&self, keep_tools: &[String]) -> usize {
+        let keep = keep_tools.iter().cloned().collect::<HashSet<_>>();
+        let lazy = self.lazy_loaders.read().await;
+        let mut tools = self.tools.write().await;
+        let active = self.active_tools.read().await;
+
+        let unloadable = tools
+            .keys()
+            .filter(|name| {
+                lazy.contains_key(*name) && !keep.contains(*name) && !active.contains(*name)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        for name in &unloadable {
+            tools.remove(name);
+        }
+
+        unloadable.len()
+    }
+
+    pub async fn get_tool_descriptions(
+        &self,
+        focus: Option<&str>,
+        max_items: Option<usize>,
+    ) -> Vec<(String, String)> {
+        let focus = focus.map(|value| value.to_ascii_lowercase());
+        let tools = self.tools.read().await;
+        let lazy = self.lazy_loaders.read().await;
+        let configs = self.tool_configs.read().await;
+
+        let mut rows = configs
+            .keys()
+            .map(|name| {
+                let description = tools
+                    .get(name)
+                    .map(|tool| tool.description().to_owned())
+                    .unwrap_or_else(|| Self::tool_static_description(name).to_owned());
+                let mut priority = Self::tool_priority(name);
+                if let Some(spec) = lazy.get(name) {
+                    priority = std::cmp::max(priority, spec.priority);
+                }
+                if let Some(focus) = &focus {
+                    if name.to_ascii_lowercase().contains(focus)
+                        || description.to_ascii_lowercase().contains(focus)
+                    {
+                        priority += 1000;
+                    }
+                }
+                (name.clone(), description, priority)
+            })
+            .collect::<Vec<_>>();
+
+        rows.sort_by(|left, right| right.2.cmp(&left.2).then_with(|| left.0.cmp(&right.0)));
+
+        let mut listed = rows
+            .into_iter()
+            .map(|(name, desc, _)| (name, desc))
+            .collect::<Vec<_>>();
+        if let Some(max_items) = max_items {
+            listed.truncate(max_items);
+        }
+        listed
+    }
+
+    pub async fn find_tools_by_basket(&self, basket: &str) -> Vec<String> {
+        self.tool_configs
+            .read()
+            .await
+            .iter()
+            .filter_map(|(name, config)| {
+                config
+                    .taxonomy_membership
+                    .iter()
+                    .any(|entry| entry.basket == basket)
+                    .then_some(name.clone())
+            })
+            .collect()
+    }
+
+    pub async fn find_tools_by_sub_basket(&self, basket: &str, sub_basket: &str) -> Vec<String> {
+        self.tool_configs
+            .read()
+            .await
+            .iter()
+            .filter_map(|(name, config)| {
+                config
+                    .taxonomy_membership
+                    .iter()
+                    .any(|entry| {
+                        entry.basket == basket
+                            && entry
+                                .sub_basket
+                                .as_deref()
+                                .map(|value| value == sub_basket)
+                                .unwrap_or(false)
+                    })
+                    .then_some(name.clone())
+            })
+            .collect()
     }
 
     /// Execute a tool with permission checking and streaming
@@ -420,40 +704,13 @@ impl ToolManager {
                         .await;
                 }
 
-                let tool = {
-                    let tools = self.tools.read().await;
-                    tools.get(tool_name).cloned()
-                };
-                let tool =
-                    tool.ok_or_else(|| Error::Tool(format!("tool '{tool_name}' not found")))?;
+                let tool = self.get_or_load_tool(tool_name).await?;
 
-                if tool_name == "shell" {
-                    let shell_config = {
-                        let configs = self.tool_configs.read().await;
-                        configs.get(tool_name).cloned()
-                    };
-
-                    if let Some(config) = shell_config {
-                        let has_secret = args
-                            .get("_sudo_password")
-                            .and_then(|value| value.as_str())
-                            .is_some();
-                        if !has_secret && Self::shell_requires_sudo(&config, &args) {
-                            let command = args
-                                .get("command")
-                                .and_then(|value| value.as_str())
-                                .unwrap_or_default()
-                                .to_owned();
-                            let _ = event_tx.try_send(Event::SudoSecretPrompt {
-                                session_id,
-                                tool: tool_name.to_owned(),
-                                args: args.clone(),
-                                command,
-                                reason: "sudo privileges required".to_owned(),
-                            });
-                            return Ok(None);
-                        }
-                    }
+                if self
+                    .check_and_emit_sudo_prompt_if_needed(&session_id, tool_name, &args, &event_tx)
+                    .await?
+                {
+                    return Ok(None);
                 }
 
                 // Execute directly
@@ -464,8 +721,8 @@ impl ToolManager {
                 };
                 let execution_context = self
                     .build_execution_context(&session_id, permission_context.agent_name.as_deref());
-                let result = tool
-                    .stream_execute(tool_args, event_tx, &execution_context)
+                let result = self
+                    .run_tool_stream(tool_name, tool, tool_args, event_tx, &execution_context)
                     .await?;
                 Ok(Some(result))
             }
@@ -527,40 +784,13 @@ impl ToolManager {
         }
 
         // Execute tool
-        let tool = {
-            let tools = self.tools.read().await;
-            tools.get(tool_name).cloned()
-        };
+        let tool = self.get_or_load_tool(tool_name).await?;
 
-        let tool = tool.ok_or_else(|| Error::Tool(format!("tool '{tool_name}' not found")))?;
-
-        if tool_name == "shell" {
-            let shell_config = {
-                let configs = self.tool_configs.read().await;
-                configs.get(tool_name).cloned()
-            };
-
-            if let Some(config) = shell_config {
-                let has_secret = args
-                    .get("_sudo_password")
-                    .and_then(|value| value.as_str())
-                    .is_some();
-                if !has_secret && Self::shell_requires_sudo(&config, &args) {
-                    let command = args
-                        .get("command")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or_default()
-                        .to_owned();
-                    let _ = event_tx.try_send(Event::SudoSecretPrompt {
-                        session_id,
-                        tool: tool_name.to_owned(),
-                        args: args.clone(),
-                        command,
-                        reason: "sudo privileges required".to_owned(),
-                    });
-                    return Ok(None);
-                }
-            }
+        if self
+            .check_and_emit_sudo_prompt_if_needed(&session_id, tool_name, &args, &event_tx)
+            .await?
+        {
+            return Ok(None);
         }
 
         let tool_args = if tool_name == "shell" {
@@ -571,8 +801,8 @@ impl ToolManager {
 
         let execution_context =
             self.build_execution_context(&session_id, permission_context.agent_name.as_deref());
-        let result = tool
-            .stream_execute(tool_args, event_tx, &execution_context)
+        let result = self
+            .run_tool_stream(tool_name, tool, tool_args, event_tx, &execution_context)
             .await?;
         Ok(Some(result))
     }
@@ -591,16 +821,12 @@ impl ToolManager {
             ));
         }
 
-        let tool = {
-            let tools = self.tools.read().await;
-            tools.get(tool_name).cloned()
-        };
-        let tool = tool.ok_or_else(|| Error::Tool(format!("tool '{tool_name}' not found")))?;
+        let tool = self.get_or_load_tool(tool_name).await?;
 
         let tool_args = Self::shell_args_with_secret(&args, &session_id, &password);
         let execution_context = self.build_execution_context(&session_id, None);
-        let result = tool
-            .stream_execute(tool_args, event_tx, &execution_context)
+        let result = self
+            .run_tool_stream(tool_name, tool, tool_args, event_tx, &execution_context)
             .await?;
         Ok(Some(result))
     }

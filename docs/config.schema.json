@@ -455,7 +455,22 @@
           "allow_sub_agent_calls": { "type": "boolean" },
           "max_sub_agent_depth": { "type": ["integer", "null"], "minimum": 1 },
           "sub_agent_context_window_size": { "type": ["integer", "null"], "minimum": 1 },
-          "sub_agent_max_context_tokens": { "type": ["integer", "null"], "minimum": 1 }
+          "sub_agent_max_context_tokens": { "type": ["integer", "null"], "minimum": 1 },
+          "context_summary_enabled": { "type": ["boolean", "null"] },
+          "context_summary_max_tokens": { "type": ["integer", "null"], "minimum": 1 },
+          "context_summary_cache_entries": { "type": ["integer", "null"], "minimum": 1 },
+          "taxonomy_membership": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["basket", "sub_basket"],
+              "properties": {
+                "basket": { "type": "string" },
+                "sub_basket": { "type": ["string", "null"] }
+              },
+              "additionalProperties": false
+            }
+          }
         },
         "additionalProperties": false
       }
@@ -507,6 +522,18 @@
           "read_only_blocked_patterns": {
             "type": "array",
             "items": { "type": "string" }
+          },
+          "taxonomy_membership": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["basket", "sub_basket"],
+              "properties": {
+                "basket": { "type": "string" },
+                "sub_basket": { "type": ["string", "null"] }
+              },
+              "additionalProperties": false
+            }
           }
         },
         "additionalProperties": false

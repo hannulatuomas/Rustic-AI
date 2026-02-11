@@ -35,6 +35,12 @@ struct ParsedToolCall {
     args: serde_json::Value,
 }
 
+#[derive(Debug, Clone)]
+struct ToolExecutionResult {
+    message: ChatMessage,
+    pending: bool,
+}
+
 impl Agent {
     pub fn new(
         config: AgentConfig,
@@ -42,7 +48,12 @@ impl Agent {
         tool_manager: Arc<ToolManager>,
         session_manager: Arc<SessionManager>,
     ) -> Self {
-        let memory = AgentMemory::new(config.context_window_size);
+        let memory = AgentMemory::new(
+            config.context_window_size,
+            config.context_summary_enabled.unwrap_or(true),
+            config.context_summary_max_tokens,
+            config.context_summary_cache_entries,
+        );
 
         Self {
             config,
@@ -107,6 +118,99 @@ impl Agent {
         }
     }
 
+    fn render_tool_output_message(
+        tool_name: &str,
+        result: Option<&crate::tools::ToolResult>,
+    ) -> String {
+        match result {
+            Some(result) => format!(
+                "{{\"tool\":\"{}\",\"success\":{},\"exit_code\":{},\"output\":{}}}",
+                tool_name,
+                result.success,
+                result.exit_code.unwrap_or_default(),
+                serde_json::to_string(&result.output).unwrap_or_else(|_| "\"\"".to_string())
+            ),
+            None => format!(
+                "tool '{}' requires user input before execution and is pending",
+                tool_name
+            ),
+        }
+    }
+
+    async fn execute_tool_call_and_record(
+        &self,
+        session_id: uuid::Uuid,
+        session_id_str: &str,
+        agent_name: &str,
+        call: &ParsedToolCall,
+        event_tx: mpsc::Sender<Event>,
+    ) -> Result<ToolExecutionResult> {
+        if !self.config.tools.iter().any(|name| name == &call.tool) {
+            let message = format!(
+                "tool '{}' is not allowed for agent '{}'",
+                call.tool, self.config.name
+            );
+            self.session_manager
+                .append_message(session_id, "tool", &message)
+                .await?;
+            return Ok(ToolExecutionResult {
+                message: ChatMessage {
+                    role: "tool".to_string(),
+                    content: message,
+                    name: Some(call.tool.clone()),
+                    tool_calls: None,
+                },
+                pending: false,
+            });
+        }
+
+        let tool_result = self
+            .tool_manager
+            .execute_tool(
+                session_id_str.to_owned(),
+                Some(agent_name.to_owned()),
+                &call.tool,
+                call.args.clone(),
+                event_tx,
+            )
+            .await?;
+
+        let tool_message = Self::render_tool_output_message(&call.tool, tool_result.as_ref());
+        self.session_manager
+            .append_message(session_id, "tool", &tool_message)
+            .await?;
+
+        Ok(ToolExecutionResult {
+            message: ChatMessage {
+                role: "tool".to_string(),
+                content: tool_message,
+                name: Some(call.tool.clone()),
+                tool_calls: None,
+            },
+            pending: tool_result.is_none(),
+        })
+    }
+
+    async fn persist_pending_state(
+        &self,
+        session_id: uuid::Uuid,
+        call: &ParsedToolCall,
+        round_index: usize,
+        tool_messages: Vec<ChatMessage>,
+        context_snapshot: Vec<ChatMessage>,
+    ) -> Result<()> {
+        let pending_state = PendingToolState {
+            session_id,
+            tool_name: call.tool.clone(),
+            args: call.args.clone(),
+            round_index,
+            tool_messages,
+            context_snapshot,
+            created_at: Utc::now(),
+        };
+        self.session_manager.set_pending_tool(pending_state).await
+    }
+
     fn effective_max_tool_rounds(&self) -> usize {
         match self.config.max_tool_rounds {
             None => DEFAULT_MAX_TOOL_ROUNDS,
@@ -159,7 +263,7 @@ impl Agent {
 
         let system_prompt = self.system_prompt();
         self.memory
-            .build_context_window(chat_messages, &system_prompt)
+            .build_context_window(chat_messages, &system_prompt, Some(self.provider.as_ref()))
             .await
     }
 
@@ -476,56 +580,31 @@ impl Agent {
         let round_index = pending.round_index;
 
         // Execute the previously pending tool directly
-        let tool_result = self
-            .tool_manager
-            .execute_tool(
-                session_id_str.to_owned(),
-                Some(agent_name.to_owned()),
-                &pending.tool_name,
-                pending.args.clone(),
+        let resumed_call = ParsedToolCall {
+            tool: pending.tool_name.clone(),
+            args: pending.args.clone(),
+        };
+        let resumed_result = self
+            .execute_tool_call_and_record(
+                session_id,
+                session_id_str,
+                agent_name,
+                &resumed_call,
                 event_tx.clone(),
             )
             .await?;
-
-        let tool_message = match &tool_result {
-            Some(result) => {
-                format!(
-                    "{{\"tool\":\"{}\",\"success\":{},\"exit_code\":{},\"output\":{}}}",
-                    pending.tool_name,
-                    result.success,
-                    result.exit_code.unwrap_or_default(),
-                    serde_json::to_string(&result.output).unwrap_or_else(|_| "\"\"".to_string())
-                )
-            }
-            None => format!(
-                "tool '{}' requires user input before execution and is pending",
-                pending.tool_name
-            ),
-        };
-
-        self.session_manager
-            .append_message(session_id, "tool", &tool_message)
-            .await?;
-
-        tool_messages.push(ChatMessage {
-            role: "tool".to_string(),
-            content: tool_message,
-            name: Some(pending.tool_name.clone()),
-            tool_calls: None,
-        });
+        tool_messages.push(resumed_result.message);
 
         // If permission was denied again, store new pending state and exit
-        if tool_result.is_none() {
-            let new_pending = PendingToolState {
+        if resumed_result.pending {
+            self.persist_pending_state(
                 session_id,
-                tool_name: pending.tool_name,
-                args: pending.args,
+                &resumed_call,
                 round_index,
                 tool_messages,
-                context_snapshot: context,
-                created_at: Utc::now(),
-            };
-            self.session_manager.set_pending_tool(new_pending).await?;
+                context,
+            )
+            .await?;
             return Ok(());
         }
 
@@ -550,7 +629,7 @@ impl Agent {
         // Find where our pending tool was in the list and continue from there
         let pending_tool_index = parsed_tool_calls
             .iter()
-            .position(|call| call.tool == pending.tool_name)
+            .position(|call| call.tool == resumed_call.tool)
             .unwrap_or(0);
 
         let remaining_tools = parsed_tool_calls
@@ -566,77 +645,28 @@ impl Agent {
                 break;
             }
 
-            if !self.config.tools.iter().any(|name| name == &call.tool) {
-                let message = format!(
-                    "tool '{}' is not allowed for agent '{}'",
-                    call.tool, self.config.name
-                );
-                self.session_manager
-                    .append_message(session_id, "tool", &message)
-                    .await?;
-                tool_messages.push(ChatMessage {
-                    role: "tool".to_string(),
-                    content: message,
-                    name: Some(call.tool.clone()),
-                    tool_calls: None,
-                });
-                total_tool_calls_executed += 1;
-                continue;
-            }
-
-            let tool_result = self
-                .tool_manager
-                .execute_tool(
-                    session_id_str.to_owned(),
-                    Some(agent_name.to_owned()),
-                    &call.tool,
-                    call.args.clone(),
+            let exec = self
+                .execute_tool_call_and_record(
+                    session_id,
+                    session_id_str,
+                    agent_name,
+                    &call,
                     event_tx.clone(),
                 )
                 .await?;
-
-            let tool_message = match &tool_result {
-                Some(result) => {
-                    format!(
-                        "{{\"tool\":\"{}\",\"success\":{},\"exit_code\":{},\"output\":{}}}",
-                        call.tool,
-                        result.success,
-                        result.exit_code.unwrap_or_default(),
-                        serde_json::to_string(&result.output)
-                            .unwrap_or_else(|_| "\"\"".to_string())
-                    )
-                }
-                None => format!(
-                    "tool '{}' requires user input before execution and is pending",
-                    call.tool
-                ),
-            };
-
-            self.session_manager
-                .append_message(session_id, "tool", &tool_message)
-                .await?;
-
-            tool_messages.push(ChatMessage {
-                role: "tool".to_string(),
-                content: tool_message,
-                name: Some(call.tool.clone()),
-                tool_calls: None,
-            });
+            tool_messages.push(exec.message);
 
             total_tool_calls_executed += 1;
 
-            if tool_result.is_none() {
-                // Store pending state for the new blocked tool
-                let new_pending = PendingToolState {
+            if exec.pending {
+                self.persist_pending_state(
                     session_id,
-                    tool_name: call.tool.clone(),
-                    args: call.args,
+                    &call,
                     round_index,
                     tool_messages,
-                    context_snapshot: context.clone(),
-                    created_at: Utc::now(),
-                };
-                self.session_manager.set_pending_tool(new_pending).await?;
+                    context.clone(),
+                )
+                .await?;
                 return Ok(());
             }
         }
@@ -704,73 +734,26 @@ impl Agent {
                 }
                 total_tool_calls_executed += 1;
 
-                if !self.config.tools.iter().any(|name| name == &call.tool) {
-                    let message = format!(
-                        "tool '{}' is not allowed for agent '{}'",
-                        call.tool, self.config.name
-                    );
-                    self.session_manager
-                        .append_message(session_id, "tool", &message)
-                        .await?;
-                    tool_messages_round.push(ChatMessage {
-                        role: "tool".to_string(),
-                        content: message,
-                        name: Some(call.tool.clone()),
-                        tool_calls: None,
-                    });
-                    continue;
-                }
-
-                let tool_result = self
-                    .tool_manager
-                    .execute_tool(
-                        session_id_str.to_owned(),
-                        Some(agent_name.to_owned()),
-                        &call.tool,
-                        call.args.clone(),
+                let exec = self
+                    .execute_tool_call_and_record(
+                        session_id,
+                        session_id_str,
+                        agent_name,
+                        &call,
                         event_tx.clone(),
                     )
                     .await?;
+                tool_messages_round.push(exec.message);
 
-                let tool_message = match &tool_result {
-                    Some(result) => {
-                        format!(
-                            "{{\"tool\":\"{}\",\"success\":{},\"exit_code\":{},\"output\":{}}}",
-                            call.tool,
-                            result.success,
-                            result.exit_code.unwrap_or_default(),
-                            serde_json::to_string(&result.output)
-                                .unwrap_or_else(|_| "\"\"".to_string())
-                        )
-                    }
-                    None => format!(
-                        "tool '{}' requires user input before execution and is pending",
-                        call.tool
-                    ),
-                };
-
-                self.session_manager
-                    .append_message(session_id, "tool", &tool_message)
-                    .await?;
-
-                tool_messages_round.push(ChatMessage {
-                    role: "tool".to_string(),
-                    content: tool_message,
-                    name: Some(call.tool.clone()),
-                    tool_calls: None,
-                });
-
-                if tool_result.is_none() {
-                    let pending_state = PendingToolState {
+                if exec.pending {
+                    self.persist_pending_state(
                         session_id,
-                        tool_name: call.tool.clone(),
-                        args: call.args,
-                        round_index: r,
-                        tool_messages: tool_messages_round,
-                        context_snapshot: context.clone(),
-                        created_at: Utc::now(),
-                    };
-                    self.session_manager.set_pending_tool(pending_state).await?;
+                        &call,
+                        r,
+                        tool_messages_round,
+                        context.clone(),
+                    )
+                    .await?;
                     return Ok(());
                 }
             }

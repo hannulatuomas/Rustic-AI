@@ -75,6 +75,42 @@ impl AgentRegistry {
             .collect()
     }
 
+    pub fn find_by_basket(&self, basket: &str) -> Vec<String> {
+        let basket = basket.trim();
+        self.configs
+            .iter()
+            .filter_map(|(name, config)| {
+                config
+                    .taxonomy_membership
+                    .iter()
+                    .any(|entry| entry.basket == basket)
+                    .then_some(name.clone())
+            })
+            .collect()
+    }
+
+    pub fn find_by_sub_basket(&self, basket: &str, sub_basket: &str) -> Vec<String> {
+        let basket = basket.trim();
+        let sub_basket = sub_basket.trim();
+        self.configs
+            .iter()
+            .filter_map(|(name, config)| {
+                config
+                    .taxonomy_membership
+                    .iter()
+                    .any(|entry| {
+                        entry.basket == basket
+                            && entry
+                                .sub_basket
+                                .as_deref()
+                                .map(|value| value == sub_basket)
+                                .unwrap_or(false)
+                    })
+                    .then_some(name.clone())
+            })
+            .collect()
+    }
+
     pub fn suggest_for_task(&self, task_description: &str) -> Vec<AgentSuggestion> {
         let words = task_description
             .split_whitespace()

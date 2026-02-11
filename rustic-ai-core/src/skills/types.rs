@@ -1,3 +1,4 @@
+use crate::config::schema::TaxonomyMembershipConfig;
 use crate::error::Result;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -29,6 +30,7 @@ pub struct SkillSpec {
     pub schema: Value,
     pub timeout_seconds: u64,
     pub kind: SkillKind,
+    pub taxonomy_membership: Vec<TaxonomyMembershipConfig>,
 }
 
 #[derive(Debug, Clone)]
