@@ -15,11 +15,21 @@ pub fn extract_symbols(language: &str, file_path: &str, source: &str) -> Vec<Sym
 
 fn extract_rust_symbols(file_path: &str, source: &str) -> Vec<SymbolIndex> {
     let mut symbols = Vec::new();
-    let fn_re = Regex::new(r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap();
-    let struct_re = Regex::new(r"^\s*(?:pub\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap();
-    let enum_re = Regex::new(r"^\s*(?:pub\s+)?enum\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap();
-    let trait_re = Regex::new(r"^\s*(?:pub\s+)?trait\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap();
-    let mod_re = Regex::new(r"^\s*(?:pub\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap();
+    let Ok(fn_re) = Regex::new(r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)") else {
+        return symbols;
+    };
+    let Ok(struct_re) = Regex::new(r"^\s*(?:pub\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)") else {
+        return symbols;
+    };
+    let Ok(enum_re) = Regex::new(r"^\s*(?:pub\s+)?enum\s+([A-Za-z_][A-Za-z0-9_]*)") else {
+        return symbols;
+    };
+    let Ok(trait_re) = Regex::new(r"^\s*(?:pub\s+)?trait\s+([A-Za-z_][A-Za-z0-9_]*)") else {
+        return symbols;
+    };
+    let Ok(mod_re) = Regex::new(r"^\s*(?:pub\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)") else {
+        return symbols;
+    };
 
     for (line_index, line) in source.lines().enumerate() {
         push_if_match(
@@ -69,8 +79,12 @@ fn extract_rust_symbols(file_path: &str, source: &str) -> Vec<SymbolIndex> {
 
 fn extract_python_symbols(file_path: &str, source: &str) -> Vec<SymbolIndex> {
     let mut symbols = Vec::new();
-    let class_re = Regex::new(r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap();
-    let fn_re = Regex::new(r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap();
+    let Ok(class_re) = Regex::new(r"^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)") else {
+        return symbols;
+    };
+    let Ok(fn_re) = Regex::new(r"^\s*def\s+([A-Za-z_][A-Za-z0-9_]*)") else {
+        return symbols;
+    };
 
     for (line_index, line) in source.lines().enumerate() {
         push_if_match(
@@ -96,9 +110,15 @@ fn extract_python_symbols(file_path: &str, source: &str) -> Vec<SymbolIndex> {
 
 fn extract_js_ts_symbols(file_path: &str, source: &str) -> Vec<SymbolIndex> {
     let mut symbols = Vec::new();
-    let fn_re = Regex::new(r"^\s*(?:export\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap();
-    let class_re = Regex::new(r"^\s*(?:export\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap();
-    let const_re = Regex::new(r"^\s*(?:export\s+)?const\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap();
+    let Ok(fn_re) = Regex::new(r"^\s*(?:export\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)") else {
+        return symbols;
+    };
+    let Ok(class_re) = Regex::new(r"^\s*(?:export\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)") else {
+        return symbols;
+    };
+    let Ok(const_re) = Regex::new(r"^\s*(?:export\s+)?const\s+([A-Za-z_][A-Za-z0-9_]*)") else {
+        return symbols;
+    };
 
     for (line_index, line) in source.lines().enumerate() {
         push_if_match(
@@ -132,8 +152,12 @@ fn extract_js_ts_symbols(file_path: &str, source: &str) -> Vec<SymbolIndex> {
 
 fn extract_go_symbols(file_path: &str, source: &str) -> Vec<SymbolIndex> {
     let mut symbols = Vec::new();
-    let fn_re = Regex::new(r"^\s*func\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap();
-    let type_re = Regex::new(r"^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap();
+    let Ok(fn_re) = Regex::new(r"^\s*func\s+([A-Za-z_][A-Za-z0-9_]*)") else {
+        return symbols;
+    };
+    let Ok(type_re) = Regex::new(r"^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)") else {
+        return symbols;
+    };
 
     for (line_index, line) in source.lines().enumerate() {
         push_if_match(
@@ -159,11 +183,17 @@ fn extract_go_symbols(file_path: &str, source: &str) -> Vec<SymbolIndex> {
 
 fn extract_c_family_symbols(file_path: &str, source: &str) -> Vec<SymbolIndex> {
     let mut symbols = Vec::new();
-    let func_re =
+    let Ok(func_re) =
         Regex::new(r"^\s*[A-Za-z_][A-Za-z0-9_\s\*]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*\)\s*\{")
-            .unwrap();
-    let struct_re = Regex::new(r"^\s*(?:typedef\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap();
-    let enum_re = Regex::new(r"^\s*(?:typedef\s+)?enum\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap();
+    else {
+        return symbols;
+    };
+    let Ok(struct_re) = Regex::new(r"^\s*(?:typedef\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)") else {
+        return symbols;
+    };
+    let Ok(enum_re) = Regex::new(r"^\s*(?:typedef\s+)?enum\s+([A-Za-z_][A-Za-z0-9_]*)") else {
+        return symbols;
+    };
 
     for (line_index, line) in source.lines().enumerate() {
         push_if_match(

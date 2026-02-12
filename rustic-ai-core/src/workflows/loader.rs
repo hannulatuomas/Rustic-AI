@@ -190,13 +190,16 @@ impl WorkflowLoader {
                 };
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.is_dir() {
+                    let Ok(file_type) = entry.file_type() else {
+                        continue;
+                    };
+                    if file_type.is_dir() {
                         if depth < config.max_discovery_depth {
                             queue.push_back((path, depth + 1));
                         }
                         continue;
                     }
-                    if !path.is_file() {
+                    if !file_type.is_file() {
                         continue;
                     }
 
@@ -210,6 +213,7 @@ impl WorkflowLoader {
                 }
             }
         }
+        files.sort();
         files
     }
 

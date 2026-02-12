@@ -199,14 +199,14 @@ fn scan_rules_dir(
         let entry =
             entry.map_err(|err| Error::Config(format!("failed to read directory entry: {err}")))?;
         let path = entry.path();
-        let metadata = entry.metadata().map_err(|err| {
+        let file_type = entry.file_type().map_err(|err| {
             Error::Config(format!(
-                "failed to read metadata for '{}': {err}",
+                "failed to read file type for '{}': {err}",
                 path.display()
             ))
         })?;
 
-        if metadata.is_dir() {
+        if file_type.is_dir() {
             if rule_config.use_gitignore && gitignore.is_ignored(&path, true) {
                 continue;
             }
@@ -286,14 +286,14 @@ fn scan_context_dir(
         let entry =
             entry.map_err(|err| Error::Config(format!("failed to read directory entry: {err}")))?;
         let path = entry.path();
-        let metadata = entry.metadata().map_err(|err| {
+        let file_type = entry.file_type().map_err(|err| {
             Error::Config(format!(
-                "failed to read metadata for '{}': {err}",
+                "failed to read file type for '{}': {err}",
                 path.display()
             ))
         })?;
 
-        if metadata.is_dir() {
+        if file_type.is_dir() {
             if rule_config.use_gitignore && gitignore.is_ignored(&path, true) {
                 continue;
             }

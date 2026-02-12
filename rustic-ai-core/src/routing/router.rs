@@ -84,7 +84,7 @@ impl Router {
             .collect();
 
         // 3. Sort by score (descending)
-        scored_agents.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        scored_agents.sort_by(|a, b| b.1.total_cmp(&a.1));
 
         // 4. Select best agent or fallback
         let (best_agent, confidence) = scored_agents
@@ -240,8 +240,8 @@ impl Router {
         }
 
         // 4. Context pressure adjustment (-0.2 to 0.0)
-        let context_pressure = 0.5; // Would be calculated from actual context
-        if context_pressure > self.config.context_pressure_threshold {
+        let context_pressure = self.config.default_context_pressure as f32;
+        if context_pressure > self.config.context_pressure_threshold as f32 {
             score -= 0.1;
         }
 

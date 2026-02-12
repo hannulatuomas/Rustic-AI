@@ -28,29 +28,29 @@ pub fn extract_symbols_and_calls(
 
 fn parse(language: Language, source: &str) -> Option<Tree> {
     let mut parser = Parser::new();
-    parser.set_language(language).ok()?;
+    parser.set_language(&language).ok()?;
     parser.parse(source, None)
 }
 
 fn language_for(language_name: &str, file_path: &str) -> Option<Language> {
     match language_name {
-        "rust" => Some(tree_sitter_rust::language()),
-        "python" => Some(tree_sitter_python::language()),
-        "javascript" => Some(tree_sitter_javascript::language()),
+        "rust" => Some(tree_sitter_rust::LANGUAGE.into()),
+        "python" => Some(tree_sitter_python::LANGUAGE.into()),
+        "javascript" => Some(tree_sitter_javascript::LANGUAGE.into()),
         "typescript" => {
             if Path::new(file_path)
                 .extension()
                 .map(|ext| ext.eq_ignore_ascii_case("tsx"))
                 .unwrap_or(false)
             {
-                Some(tree_sitter_typescript::language_tsx())
+                Some(tree_sitter_typescript::LANGUAGE_TSX.into())
             } else {
-                Some(tree_sitter_typescript::language_typescript())
+                Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
             }
         }
-        "go" => Some(tree_sitter_go::language()),
-        "c" => Some(tree_sitter_c::language()),
-        "cpp" => Some(tree_sitter_cpp::language()),
+        "go" => Some(tree_sitter_go::LANGUAGE.into()),
+        "c" => Some(tree_sitter_c::LANGUAGE.into()),
+        "cpp" => Some(tree_sitter_cpp::LANGUAGE.into()),
         _ => None,
     }
 }

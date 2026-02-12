@@ -341,11 +341,11 @@ fn empty_object() -> Value {
 }
 
 fn read_json_file_or_empty_object(path: &Path) -> Result<Value> {
-    if !path.exists() {
-        return Ok(empty_object());
-    }
-
-    let content = std::fs::read_to_string(path)?;
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(empty_object()),
+        Err(err) => return Err(err.into()),
+    };
     let parsed: Value = serde_json::from_str(&content)?;
     if parsed.is_object() {
         Ok(parsed)
@@ -787,8 +787,9 @@ fn set_path_value_in_object(object: &mut Map<String, Value>, keys: &[&str], valu
     if !entry.is_object() {
         *entry = Value::Object(Map::new());
     }
-    let child = entry.as_object_mut().expect("entry must be object");
-    set_path_value_in_object(child, &keys[1..], value);
+    if let Some(child) = entry.as_object_mut() {
+        set_path_value_in_object(child, &keys[1..], value);
+    }
 }
 
 fn remove_path_value(raw: &mut Value, keys: &[&str]) -> bool {

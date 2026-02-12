@@ -107,17 +107,17 @@ impl ImageTool {
             .filter(|v| !v.is_empty())
     }
 
-    fn canonicalize(path: &Path) -> Result<PathBuf> {
-        std::fs::canonicalize(path).map_err(|err| {
-            Error::Tool(format!(
-                "failed to resolve path '{}': {err}",
-                path.display()
-            ))
-        })
+    fn canonicalize(path: &Path) -> std::io::Result<PathBuf> {
+        std::fs::canonicalize(path)
     }
 
     fn resolve_input_path(&self, context: &ToolExecutionContext, raw: &str) -> Result<PathBuf> {
-        let base = Self::canonicalize(&context.working_directory)?;
+        let base = Self::canonicalize(&context.working_directory).map_err(|err| {
+            Error::Tool(format!(
+                "failed to resolve path '{}': {err}",
+                context.working_directory.display()
+            ))
+        })?;
         let candidate = {
             let p = PathBuf::from(raw);
             if p.is_absolute() {
@@ -126,7 +126,12 @@ impl ImageTool {
                 base.join(p)
             }
         };
-        let resolved = Self::canonicalize(&candidate)?;
+        let resolved = Self::canonicalize(&candidate).map_err(|err| {
+            Error::Tool(format!(
+                "failed to resolve path '{}': {err}",
+                candidate.display()
+            ))
+        })?;
         if !resolved.starts_with(&base) {
             return Err(Error::Tool(format!(
                 "input '{}' is outside tool working directory '{}'; use a path within the workspace",
@@ -138,7 +143,12 @@ impl ImageTool {
     }
 
     fn resolve_output_path(&self, context: &ToolExecutionContext, raw: &str) -> Result<PathBuf> {
-        let base = Self::canonicalize(&context.working_directory)?;
+        let base = Self::canonicalize(&context.working_directory).map_err(|err| {
+            Error::Tool(format!(
+                "failed to resolve path '{}': {err}",
+                context.working_directory.display()
+            ))
+        })?;
         let candidate = {
             let p = PathBuf::from(raw);
             if p.is_absolute() {
@@ -153,13 +163,19 @@ impl ImageTool {
                 candidate.display()
             ))
         })?;
-        if !parent.exists() {
-            return Err(Error::Tool(format!(
-                "output parent '{}' does not exist",
-                parent.display()
-            )));
-        }
-        let parent_resolved = Self::canonicalize(parent)?;
+        let parent_resolved = Self::canonicalize(parent).map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                Error::Tool(format!(
+                    "output parent '{}' does not exist",
+                    parent.display()
+                ))
+            } else {
+                Error::Tool(format!(
+                    "failed to resolve path '{}': {err}",
+                    parent.display()
+                ))
+            }
+        })?;
         if !parent_resolved.starts_with(&base) {
             return Err(Error::Tool(format!(
                 "output '{}' is outside tool working directory '{}'; use a path within the workspace",
@@ -364,7 +380,11 @@ impl ImageTool {
         context: &ToolExecutionContext,
         tx: Option<mpsc::Sender<Event>>,
     ) -> Result<ToolResult> {
-        let payload = self.run_operation(&args, context, tx)?;
+        let tool = self.clone();
+        let context = context.clone();
+        let payload = tokio::task::spawn_blocking(move || tool.run_operation(&args, &context, tx))
+            .await
+            .map_err(|err| Error::Tool(format!("image operation task failed: {err}")))??;
         Ok(ToolResult {
             success: true,
             exit_code: Some(0),

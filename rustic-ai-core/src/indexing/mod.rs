@@ -94,7 +94,7 @@ impl CodeIndexer {
                 continue;
             };
 
-            let content = match std::fs::read_to_string(path) {
+            let content = match tokio::fs::read_to_string(path).await {
                 Ok(content) => content,
                 Err(_) => continue,
             };
@@ -171,7 +171,8 @@ impl CodeIndexer {
         let Some(language) = detect_language(file_path) else {
             return Ok(());
         };
-        let content = std::fs::read_to_string(file_path)
+        let content = tokio::fs::read_to_string(file_path)
+            .await
             .map_err(|err| Error::Io(std::io::Error::other(err.to_string())))?;
         let workspace_string = self.workspace.to_string_lossy().to_string();
         let relative_path = relative_path(&self.workspace, file_path);

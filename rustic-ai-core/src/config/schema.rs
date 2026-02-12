@@ -114,6 +114,7 @@ pub struct DynamicRoutingConfig {
     pub task_keywords: std::collections::HashMap<String, Vec<String>>,
     pub fallback_agent: String,
     pub context_pressure_threshold: f64,
+    pub default_context_pressure: f64,
     pub routing_trace_enabled: bool,
 }
 
@@ -155,6 +156,7 @@ impl Default for DynamicRoutingConfig {
             task_keywords,
             fallback_agent: "general".to_string(),
             context_pressure_threshold: 0.7,
+            default_context_pressure: 0.5,
             routing_trace_enabled: true,
         }
     }
@@ -783,6 +785,8 @@ pub struct AgentConfig {
     pub context_summary_enabled: Option<bool>,
     pub context_summary_max_tokens: Option<usize>,
     pub context_summary_cache_entries: Option<usize>,
+    pub tool_shortlist_max_items: Option<usize>,
+    pub tool_shortlist_char_budget: Option<usize>,
     pub auto_create_todos: bool,
     pub todo_project_scope: bool,
     pub parallel_sub_agent_enabled: bool,
@@ -818,6 +822,8 @@ impl Default for AgentConfig {
             context_summary_enabled: None,
             context_summary_max_tokens: None,
             context_summary_cache_entries: None,
+            tool_shortlist_max_items: None,
+            tool_shortlist_char_budget: None,
             auto_create_todos: true,
             todo_project_scope: true,
             parallel_sub_agent_enabled: false,

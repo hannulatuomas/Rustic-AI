@@ -224,7 +224,8 @@ impl SessionManager {
             return Ok(content);
         }
 
-        let content = std::fs::read_to_string(path)
+        let content = tokio::fs::read_to_string(path)
+            .await
             .map_err(|err| Error::Storage(format!("failed to read rule file '{path}': {err}")))?;
         self.storage.cache_context_file(path, &content, "").await?;
         Ok(content)

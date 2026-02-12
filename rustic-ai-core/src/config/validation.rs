@@ -641,6 +641,32 @@ pub fn validate_config(config: &Config) -> Result<()> {
             }
         }
 
+        if let Some(max_items) = agent.tool_shortlist_max_items {
+            if max_items == 0 {
+                return Err(Error::Validation(format!(
+                    "agent '{name}' tool_shortlist_max_items must be greater than zero when set"
+                )));
+            }
+            if max_items > 256 {
+                return Err(Error::Validation(format!(
+                    "agent '{name}' tool_shortlist_max_items must be <= 256 when set"
+                )));
+            }
+        }
+
+        if let Some(char_budget) = agent.tool_shortlist_char_budget {
+            if char_budget == 0 {
+                return Err(Error::Validation(format!(
+                    "agent '{name}' tool_shortlist_char_budget must be greater than zero when set"
+                )));
+            }
+            if char_budget > 32_000 {
+                return Err(Error::Validation(format!(
+                    "agent '{name}' tool_shortlist_char_budget must be <= 32000 when set"
+                )));
+            }
+        }
+
         if let Some(max_parallel) = agent.sub_agent_max_parallel_tasks {
             if max_parallel > 10_000 {
                 return Err(Error::Validation(format!(
@@ -866,6 +892,12 @@ pub fn validate_config(config: &Config) -> Result<()> {
     if !(0.0..=1.0).contains(&config.dynamic_routing.context_pressure_threshold) {
         return Err(Error::Validation(
             "dynamic_routing.context_pressure_threshold must be between 0.0 and 1.0".to_owned(),
+        ));
+    }
+
+    if !(0.0..=1.0).contains(&config.dynamic_routing.default_context_pressure) {
+        return Err(Error::Validation(
+            "dynamic_routing.default_context_pressure must be between 0.0 and 1.0".to_owned(),
         ));
     }
 

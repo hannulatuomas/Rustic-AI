@@ -270,11 +270,18 @@ fn load_fragments_from_dir(dir: &Path) -> Result<Vec<Value>> {
         })?;
 
         let path = entry.path();
-        if path.is_file() {
-            if let Some(ext) = path.extension() {
-                if ext == "json" {
-                    fragment_files.push(path);
-                }
+        let file_type = entry.file_type().map_err(|err| {
+            Error::Config(format!(
+                "failed to read file type in '{}': {err}",
+                dir.display()
+            ))
+        })?;
+        if !file_type.is_file() {
+            continue;
+        }
+        if let Some(ext) = path.extension() {
+            if ext == "json" {
+                fragment_files.push(path);
             }
         }
     }
@@ -587,6 +594,11 @@ fn merge_dynamic_routing(
             override_values.context_pressure_threshold
         } else {
             base.context_pressure_threshold
+        },
+        default_context_pressure: if override_values.default_context_pressure > 0.0 {
+            override_values.default_context_pressure
+        } else {
+            base.default_context_pressure
         },
         routing_trace_enabled: merge_bool(
             base.routing_trace_enabled,

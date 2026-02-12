@@ -1,11 +1,18 @@
 use std::path::Path;
+use std::sync::OnceLock;
 
 use regex::Regex;
 
 use crate::config::schema::DiscoveredRuleConfig;
 
 pub fn extract_manual_invocations(text: &str) -> Vec<String> {
-    let matcher = Regex::new(r"@([A-Za-z0-9_./\\-]+)").expect("regex is valid");
+    static MATCHER: OnceLock<Option<Regex>> = OnceLock::new();
+    let Some(matcher) = MATCHER
+        .get_or_init(|| Regex::new(r"@([A-Za-z0-9_./\\-]+)").ok())
+        .as_ref()
+    else {
+        return Vec::new();
+    };
     matcher
         .captures_iter(text)
         .filter_map(|captures| captures.get(1).map(|value| value.as_str().to_owned()))

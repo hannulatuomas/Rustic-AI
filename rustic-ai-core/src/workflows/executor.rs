@@ -5,7 +5,7 @@ use super::expressions::{
 use super::registry::WorkflowRegistry;
 use super::types::{
     ConditionClause, ConditionGroup, ConditionOperator, LogicalOperator, NullHandlingMode,
-    WorkflowExecutionConfig, WorkflowStep, WorkflowStepKind,
+    WorkflowDefinition, WorkflowExecutionConfig, WorkflowStep, WorkflowStepKind,
 };
 use crate::agents::AgentCoordinator;
 use crate::config::schema::WorkflowCompatibilityPreset;
@@ -91,6 +91,49 @@ struct TimeoutCheckContext<'a> {
     step_timeout_seconds: Option<u64>,
     workflow_name: &'a str,
     step_id: &'a str,
+}
+
+#[derive(Debug, Clone)]
+struct RetryBackoffContext<'a> {
+    workflow_name: &'a str,
+    step_id: &'a str,
+    attempt: u32,
+    retry_count: u32,
+    backoff_ms: u64,
+    reason: &'a str,
+    timeout_error_policy: &'a str,
+    retry_multiplier: f64,
+    retry_backoff_max_ms: u64,
+    timeout_ctx: &'a TimeoutCheckContext<'a>,
+}
+
+#[derive(Debug)]
+struct RetryCounters<'a> {
+    retry_events: &'a mut usize,
+    timeout_events: &'a mut usize,
+}
+
+#[derive(Debug, Clone)]
+struct StepExecutionContext<'a> {
+    workflow_name: &'a str,
+    step: &'a WorkflowStep,
+    workflow_config: &'a EffectiveWorkflowConfig,
+    timeout_ctx: &'a TimeoutCheckContext<'a>,
+    event_tx: &'a mpsc::Sender<Event>,
+}
+
+#[derive(Debug, Clone)]
+struct SwitchExecutionResult {
+    rendered_key: String,
+    target: Option<String>,
+    match_type: String,
+    attempts: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ConditionExecutionResult {
+    matched: bool,
+    attempts: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -1453,6 +1496,1191 @@ impl WorkflowExecutor {
         }
     }
 
+    fn route_as_failure_payload(error: impl Into<String>) -> Value {
+        json!({
+            "error": error.into(),
+            "policy": "route_as_failure",
+        })
+    }
+
+    fn should_route_as_failure(policy: &str) -> bool {
+        policy == "route_as_failure"
+    }
+
+    fn finalize_workflow_result(
+        event_tx: &mpsc::Sender<Event>,
+        workflow_name: &str,
+        success: bool,
+        step_count: usize,
+        retry_events: usize,
+        timeout_events: usize,
+        mut outputs: BTreeMap<String, Value>,
+    ) -> WorkflowExecutionResult {
+        let _ = event_tx.try_send(Event::WorkflowCompleted {
+            workflow: workflow_name.to_owned(),
+            success,
+            steps_executed: step_count,
+            retries: retry_events,
+            timeouts: timeout_events,
+        });
+        outputs.insert("workflow.metrics.retries".to_owned(), json!(retry_events));
+        outputs.insert(
+            "workflow.metrics.timeouts".to_owned(),
+            json!(timeout_events),
+        );
+
+        WorkflowExecutionResult {
+            success,
+            outputs,
+            steps_executed: step_count,
+        }
+    }
+
+    fn emit_step_completed_event(
+        event_tx: &mpsc::Sender<Event>,
+        workflow_name: &str,
+        step_id: &str,
+        success: bool,
+        output_count: usize,
+    ) {
+        let _ = event_tx.try_send(Event::WorkflowStepCompleted {
+            workflow: workflow_name.to_owned(),
+            step_id: step_id.to_owned(),
+            success,
+            output_count,
+        });
+    }
+
+    fn next_step_for_result(
+        step: &WorkflowStep,
+        workflow_config: &EffectiveWorkflowConfig,
+        success: bool,
+    ) -> Option<String> {
+        let continue_on_error = Self::effective_continue_on_error(step, workflow_config);
+        let failure_routing = Self::continue_on_error_routing(step, workflow_config);
+        if success {
+            step.on_success.clone().or(step.next.clone())
+        } else if continue_on_error {
+            if failure_routing == "on_failure_first" {
+                step.on_failure.clone().or(step.next.clone())
+            } else {
+                step.next.clone().or(step.on_failure.clone())
+            }
+        } else {
+            step.on_failure.clone()
+        }
+    }
+
+    fn process_condition_branch(
+        event_tx: &mpsc::Sender<Event>,
+        workflow_name: &str,
+        step: &WorkflowStep,
+        matched: bool,
+        attempts: u32,
+        outputs: &mut BTreeMap<String, Value>,
+    ) -> Option<String> {
+        outputs.insert(
+            format!("step.{}.condition_attempts", step.id),
+            Value::Number(serde_json::Number::from((attempts + 1) as u64)),
+        );
+        Self::emit_step_completed_event(event_tx, workflow_name, &step.id, matched, 0);
+        if matched {
+            step.on_success.clone().or(step.next.clone())
+        } else {
+            step.on_failure.clone().or(step.next.clone())
+        }
+    }
+
+    fn process_switch_branch(
+        event_tx: &mpsc::Sender<Event>,
+        workflow_name: &str,
+        step: &WorkflowStep,
+        switch_result: &SwitchExecutionResult,
+        outputs: &mut BTreeMap<String, Value>,
+    ) -> Option<String> {
+        Self::emit_step_completed_event(
+            event_tx,
+            workflow_name,
+            &step.id,
+            switch_result.target.is_some(),
+            1,
+        );
+
+        outputs.insert(
+            format!("step.{}.switch_key", step.id),
+            Value::String(switch_result.rendered_key.clone()),
+        );
+        outputs.insert(
+            format!("step.{}.switch_match_type", step.id),
+            Value::String(switch_result.match_type.clone()),
+        );
+        outputs.insert(
+            format!("step.{}.switch_attempts", step.id),
+            Value::Number(serde_json::Number::from(
+                (switch_result.attempts + 1) as u64,
+            )),
+        );
+
+        switch_result.target.clone()
+    }
+
+    fn process_standard_step_result(
+        event_tx: &mpsc::Sender<Event>,
+        workflow_name: &str,
+        step: &WorkflowStep,
+        workflow_config: &EffectiveWorkflowConfig,
+        success: bool,
+        payload: Value,
+        outputs: &mut BTreeMap<String, Value>,
+    ) -> Option<String> {
+        Self::map_named_outputs(step, &payload, outputs);
+        outputs.insert(format!("step.{}.result", step.id), payload);
+        Self::emit_step_completed_event(
+            event_tx,
+            workflow_name,
+            &step.id,
+            success,
+            step.outputs.len(),
+        );
+        Self::next_step_for_result(step, workflow_config, success)
+    }
+
+    fn step_execution_context<'a>(
+        workflow_name: &'a str,
+        step: &'a WorkflowStep,
+        workflow_config: &'a EffectiveWorkflowConfig,
+        timeout_ctx: &'a TimeoutCheckContext<'a>,
+        event_tx: &'a mpsc::Sender<Event>,
+    ) -> StepExecutionContext<'a> {
+        StepExecutionContext {
+            workflow_name,
+            step,
+            workflow_config,
+            timeout_ctx,
+            event_tx,
+        }
+    }
+
+    fn retry_counters<'a>(
+        retry_events: &'a mut usize,
+        timeout_events: &'a mut usize,
+    ) -> RetryCounters<'a> {
+        RetryCounters {
+            retry_events,
+            timeout_events,
+        }
+    }
+
+    fn step_runtime<'a>(
+        workflow_name: &'a str,
+        step: &'a WorkflowStep,
+        workflow_config: &'a EffectiveWorkflowConfig,
+        timeout_ctx: &'a TimeoutCheckContext<'a>,
+        event_tx: &'a mpsc::Sender<Event>,
+        retry_events: &'a mut usize,
+        timeout_events: &'a mut usize,
+    ) -> (StepExecutionContext<'a>, RetryCounters<'a>) {
+        (
+            Self::step_execution_context(
+                workflow_name,
+                step,
+                workflow_config,
+                timeout_ctx,
+                event_tx,
+            ),
+            Self::retry_counters(retry_events, timeout_events),
+        )
+    }
+
+    fn finalize_current_run(
+        event_tx: &mpsc::Sender<Event>,
+        request: &WorkflowRunRequest,
+        success: bool,
+        step_count: usize,
+        retry_events: usize,
+        timeout_events: usize,
+        outputs: BTreeMap<String, Value>,
+    ) -> WorkflowExecutionResult {
+        Self::finalize_workflow_result(
+            event_tx,
+            &request.workflow_name,
+            success,
+            step_count,
+            retry_events,
+            timeout_events,
+            outputs,
+        )
+    }
+
+    fn resolve_step_or_error(
+        by_id: &HashMap<String, WorkflowStep>,
+        workflow_name: &str,
+        step_id: &str,
+    ) -> Result<WorkflowStep> {
+        by_id.get(step_id).cloned().ok_or_else(|| {
+            Error::Tool(format!(
+                "workflow '{}' references missing step '{}'",
+                workflow_name, step_id
+            ))
+        })
+    }
+
+    fn build_timeout_context<'a>(
+        started_at: Instant,
+        workflow_timeout_seconds: u64,
+        workflow_name: &'a str,
+        step: &'a WorkflowStep,
+    ) -> TimeoutCheckContext<'a> {
+        TimeoutCheckContext {
+            workflow_started_at: started_at,
+            workflow_timeout_seconds,
+            step_started_at: Instant::now(),
+            step_timeout_seconds: step
+                .config
+                .get("step_timeout_seconds")
+                .and_then(Value::as_u64),
+            workflow_name,
+            step_id: &step.id,
+        }
+    }
+
+    fn emit_step_started_event(
+        event_tx: &mpsc::Sender<Event>,
+        workflow_name: &str,
+        step: &WorkflowStep,
+    ) {
+        let _ = event_tx.try_send(Event::WorkflowStepStarted {
+            workflow: workflow_name.to_owned(),
+            step_id: step.id.clone(),
+            step_name: step.name.clone(),
+            kind: Self::step_kind_name(step.kind).to_owned(),
+        });
+    }
+
+    fn advance_to_target(current: &mut String, target: Option<String>) -> bool {
+        if let Some(next) = target {
+            *current = next;
+            true
+        } else {
+            false
+        }
+    }
+
+    async fn apply_retry_backoff(
+        event_tx: &mpsc::Sender<Event>,
+        timeout_events: &mut usize,
+        retry_ctx: RetryBackoffContext<'_>,
+    ) -> Result<Option<u64>> {
+        Self::emit_retry_event(
+            event_tx,
+            retry_ctx.workflow_name,
+            retry_ctx.step_id,
+            retry_ctx.attempt,
+            retry_ctx.retry_count,
+            retry_ctx.backoff_ms,
+            retry_ctx.reason,
+        );
+        if Self::ensure_within_timeouts(
+            event_tx,
+            timeout_events,
+            retry_ctx.timeout_ctx,
+            retry_ctx.timeout_error_policy,
+        )? {
+            return Ok(None);
+        }
+        sleep(Duration::from_millis(retry_ctx.backoff_ms)).await;
+        Ok(Some(Self::next_backoff_ms(
+            retry_ctx.backoff_ms,
+            retry_ctx.retry_multiplier,
+            retry_ctx.retry_backoff_max_ms,
+        )))
+    }
+
+    async fn execute_tool_step(
+        &self,
+        request: &WorkflowRunRequest,
+        step_ctx: &StepExecutionContext<'_>,
+        outputs: &BTreeMap<String, Value>,
+        tools: &ToolManager,
+        counters: &mut RetryCounters<'_>,
+    ) -> Result<(bool, Value)> {
+        let tool_name = step_ctx
+            .step
+            .config
+            .get("tool")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                Error::Tool(format!(
+                    "workflow '{}' step '{}' missing config.tool",
+                    step_ctx.workflow_name, step_ctx.step.id
+                ))
+            })?;
+        let args_template = step_ctx
+            .step
+            .config
+            .get("args")
+            .cloned()
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+        let args = Self::render_value_with_outputs(
+            &args_template,
+            outputs,
+            step_ctx.step,
+            self.expression_options_for_step(step_ctx.step, step_ctx.workflow_config),
+        )?;
+
+        let (retry_count, retry_backoff_ms, retry_multiplier, retry_backoff_max_ms) =
+            Self::retry_settings(step_ctx.step, step_ctx.workflow_config);
+        let execution_error_policy =
+            Self::execution_error_policy(step_ctx.step, step_ctx.workflow_config).to_owned();
+        let timeout_error_policy =
+            Self::timeout_error_policy(step_ctx.step, step_ctx.workflow_config).to_owned();
+
+        let mut attempt = 0u32;
+        let mut backoff_ms = retry_backoff_ms;
+        let outcome = loop {
+            let step_cancellation = CancellationToken::new();
+            let call_future = tools.execute_tool_with_cancel(
+                request.session_id.clone(),
+                request.agent_name.clone(),
+                tool_name,
+                args.clone(),
+                step_ctx.event_tx.clone(),
+                Some(step_cancellation.clone()),
+            );
+            let call_result =
+                if let Some(step_timeout_seconds) = step_ctx.timeout_ctx.step_timeout_seconds {
+                    tokio::select! {
+                        result = call_future => result,
+                        _ = sleep(Duration::from_secs(step_timeout_seconds)) => {
+                            step_cancellation.cancel();
+                            let _ = step_ctx.event_tx.try_send(Event::WorkflowTimeout {
+                                workflow: step_ctx.workflow_name.to_owned(),
+                                step_id: Some(step_ctx.step.id.clone()),
+                                timeout_seconds: step_timeout_seconds,
+                                scope: "step".to_owned(),
+                            });
+                            *counters.timeout_events += 1;
+                            if Self::should_route_as_failure(&timeout_error_policy) {
+                                break (false, Self::route_as_failure_payload("step timeout"));
+                            }
+                            return Err(Error::Timeout(format!(
+                                "workflow '{}' step '{}' exceeded step timeout of {} seconds",
+                                step_ctx.workflow_name, step_ctx.step.id, step_timeout_seconds
+                            )));
+                        }
+                    }
+                } else {
+                    call_future.await
+                };
+
+            match call_result {
+                Ok(Some(tool_result)) => {
+                    let parsed = Self::parse_step_result(&tool_result.output);
+                    if tool_result.success || attempt >= retry_count {
+                        break (tool_result.success, parsed);
+                    }
+                }
+                Ok(None) => {
+                    if attempt >= retry_count {
+                        if Self::should_route_as_failure(&execution_error_policy) {
+                            break (
+                                false,
+                                Self::route_as_failure_payload(
+                                    "paused pending permission/user input",
+                                ),
+                            );
+                        }
+                        return Err(Error::Tool(format!(
+                            "workflow '{}' step '{}' paused pending permission/user input; this flow is not resumable yet",
+                            step_ctx.workflow_name, step_ctx.step.id
+                        )));
+                    }
+                }
+                Err(err) => {
+                    if attempt >= retry_count {
+                        if Self::should_route_as_failure(&execution_error_policy) {
+                            break (false, Self::route_as_failure_payload(err.to_string()));
+                        }
+                        return Err(err);
+                    }
+                }
+            }
+
+            attempt += 1;
+            *counters.retry_events += 1;
+            let Some(next_backoff) = Self::apply_retry_backoff(
+                step_ctx.event_tx,
+                counters.timeout_events,
+                RetryBackoffContext {
+                    workflow_name: step_ctx.workflow_name,
+                    step_id: &step_ctx.step.id,
+                    attempt,
+                    retry_count,
+                    backoff_ms,
+                    reason: "tool_step",
+                    timeout_error_policy: &timeout_error_policy,
+                    retry_multiplier,
+                    retry_backoff_max_ms,
+                    timeout_ctx: step_ctx.timeout_ctx,
+                },
+            )
+            .await?
+            else {
+                break (false, Self::route_as_failure_payload("step timeout"));
+            };
+            backoff_ms = next_backoff;
+        };
+        Ok(outcome)
+    }
+
+    async fn execute_skill_step(
+        &self,
+        step_ctx: &StepExecutionContext<'_>,
+        outputs: &BTreeMap<String, Value>,
+        counters: &mut RetryCounters<'_>,
+    ) -> Result<(bool, Value)> {
+        let skill_name = step_ctx
+            .step
+            .config
+            .get("skill")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                Error::Tool(format!(
+                    "workflow '{}' step '{}' missing config.skill",
+                    step_ctx.workflow_name, step_ctx.step.id
+                ))
+            })?;
+        let input_template = step_ctx
+            .step
+            .config
+            .get("input")
+            .cloned()
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+        let skill_input = Self::render_value_with_outputs(
+            &input_template,
+            outputs,
+            step_ctx.step,
+            self.expression_options_for_step(step_ctx.step, step_ctx.workflow_config),
+        )?;
+        let skill = self.skills.get(skill_name).ok_or_else(|| {
+            Error::NotFound(format!(
+                "workflow '{}' step '{}' references unknown skill '{}'",
+                step_ctx.workflow_name, step_ctx.step.id, skill_name
+            ))
+        })?;
+
+        let (retry_count, retry_backoff_ms, retry_multiplier, retry_backoff_max_ms) =
+            Self::retry_settings(step_ctx.step, step_ctx.workflow_config);
+        let execution_error_policy =
+            Self::execution_error_policy(step_ctx.step, step_ctx.workflow_config).to_owned();
+        let timeout_error_policy =
+            Self::timeout_error_policy(step_ctx.step, step_ctx.workflow_config).to_owned();
+
+        let mut attempt = 0u32;
+        let mut backoff_ms = retry_backoff_ms;
+        let outcome = loop {
+            let result = skill
+                .execute(
+                    skill_input.clone(),
+                    &SkillExecutionContext {
+                        working_directory: self.config.working_directory.clone(),
+                        environment: Default::default(),
+                    },
+                )
+                .await;
+
+            match result {
+                Ok(result) => {
+                    let parsed = Self::parse_step_result(&result.output);
+                    if result.success || attempt >= retry_count {
+                        break (result.success, parsed);
+                    }
+                }
+                Err(err) => {
+                    if attempt >= retry_count {
+                        if Self::should_route_as_failure(&execution_error_policy) {
+                            break (false, Self::route_as_failure_payload(err.to_string()));
+                        }
+                        return Err(err);
+                    }
+                }
+            }
+
+            attempt += 1;
+            *counters.retry_events += 1;
+            let Some(next_backoff) = Self::apply_retry_backoff(
+                step_ctx.event_tx,
+                counters.timeout_events,
+                RetryBackoffContext {
+                    workflow_name: step_ctx.workflow_name,
+                    step_id: &step_ctx.step.id,
+                    attempt,
+                    retry_count,
+                    backoff_ms,
+                    reason: "skill_step",
+                    timeout_error_policy: &timeout_error_policy,
+                    retry_multiplier,
+                    retry_backoff_max_ms,
+                    timeout_ctx: step_ctx.timeout_ctx,
+                },
+            )
+            .await?
+            else {
+                break (false, Self::route_as_failure_payload("step timeout"));
+            };
+            backoff_ms = next_backoff;
+        };
+        Ok(outcome)
+    }
+
+    async fn execute_switch_step(
+        &self,
+        step_ctx: &StepExecutionContext<'_>,
+        outputs: &BTreeMap<String, Value>,
+        counters: &mut RetryCounters<'_>,
+    ) -> Result<SwitchExecutionResult> {
+        let (retry_count, retry_backoff_ms, retry_multiplier, retry_backoff_max_ms) =
+            Self::retry_settings(step_ctx.step, step_ctx.workflow_config);
+        let execution_error_policy =
+            Self::execution_error_policy(step_ctx.step, step_ctx.workflow_config).to_owned();
+        let timeout_error_policy =
+            Self::timeout_error_policy(step_ctx.step, step_ctx.workflow_config).to_owned();
+        let retry_on_no_match = step_ctx
+            .step
+            .config
+            .get("retry_on_no_match")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let value_template = step_ctx
+            .step
+            .config
+            .get("value")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let mut attempts = 0u32;
+        let mut backoff_ms = retry_backoff_ms;
+
+        let (rendered_key, target, match_type) = loop {
+            let rendered = Self::render_value_with_outputs(
+                &value_template,
+                outputs,
+                step_ctx.step,
+                self.expression_options_for_step(step_ctx.step, step_ctx.workflow_config),
+            );
+            match rendered {
+                Ok(rendered) => {
+                    let rendered_key = Self::switch_key_from_value(&rendered);
+                    let resolved = Self::resolve_switch_target(
+                        step_ctx.step,
+                        &rendered_key,
+                        step_ctx.workflow_config,
+                    );
+                    match resolved {
+                        Ok((target, match_type)) => {
+                            if target.is_none() && retry_on_no_match && attempts < retry_count {
+                                attempts += 1;
+                                *counters.retry_events += 1;
+                                let Some(next_backoff) = Self::apply_retry_backoff(
+                                    step_ctx.event_tx,
+                                    counters.timeout_events,
+                                    RetryBackoffContext {
+                                        workflow_name: step_ctx.workflow_name,
+                                        step_id: &step_ctx.step.id,
+                                        attempt: attempts,
+                                        retry_count,
+                                        backoff_ms,
+                                        reason: "switch_no_match",
+                                        timeout_error_policy: &timeout_error_policy,
+                                        retry_multiplier,
+                                        retry_backoff_max_ms,
+                                        timeout_ctx: step_ctx.timeout_ctx,
+                                    },
+                                )
+                                .await?
+                                else {
+                                    break (rendered_key, None, "timeout".to_owned());
+                                };
+                                backoff_ms = next_backoff;
+                                continue;
+                            }
+                            break (rendered_key, target, match_type);
+                        }
+                        Err(err) => {
+                            if attempts >= retry_count {
+                                if Self::should_route_as_failure(&execution_error_policy) {
+                                    break (rendered_key, None, "error".to_owned());
+                                }
+                                return Err(err);
+                            }
+                            attempts += 1;
+                            *counters.retry_events += 1;
+                            let Some(next_backoff) = Self::apply_retry_backoff(
+                                step_ctx.event_tx,
+                                counters.timeout_events,
+                                RetryBackoffContext {
+                                    workflow_name: step_ctx.workflow_name,
+                                    step_id: &step_ctx.step.id,
+                                    attempt: attempts,
+                                    retry_count,
+                                    backoff_ms,
+                                    reason: "switch_resolve_error",
+                                    timeout_error_policy: &timeout_error_policy,
+                                    retry_multiplier,
+                                    retry_backoff_max_ms,
+                                    timeout_ctx: step_ctx.timeout_ctx,
+                                },
+                            )
+                            .await?
+                            else {
+                                break (rendered_key, None, "timeout".to_owned());
+                            };
+                            backoff_ms = next_backoff;
+                        }
+                    }
+                }
+                Err(err) => {
+                    if attempts >= retry_count {
+                        if Self::should_route_as_failure(&execution_error_policy) {
+                            break (String::new(), None, "error".to_owned());
+                        }
+                        return Err(err);
+                    }
+                    attempts += 1;
+                    *counters.retry_events += 1;
+                    let Some(next_backoff) = Self::apply_retry_backoff(
+                        step_ctx.event_tx,
+                        counters.timeout_events,
+                        RetryBackoffContext {
+                            workflow_name: step_ctx.workflow_name,
+                            step_id: &step_ctx.step.id,
+                            attempt: attempts,
+                            retry_count,
+                            backoff_ms,
+                            reason: "switch_render_error",
+                            timeout_error_policy: &timeout_error_policy,
+                            retry_multiplier,
+                            retry_backoff_max_ms,
+                            timeout_ctx: step_ctx.timeout_ctx,
+                        },
+                    )
+                    .await?
+                    else {
+                        break (String::new(), None, "timeout".to_owned());
+                    };
+                    backoff_ms = next_backoff;
+                }
+            }
+        };
+
+        Ok(SwitchExecutionResult {
+            rendered_key,
+            target,
+            match_type,
+            attempts,
+        })
+    }
+
+    async fn execute_agent_step(
+        &self,
+        request: &WorkflowRunRequest,
+        step_ctx: &StepExecutionContext<'_>,
+        outputs: &BTreeMap<String, Value>,
+        counters: &mut RetryCounters<'_>,
+    ) -> Result<(bool, Value)> {
+        let target_agent = step_ctx
+            .step
+            .config
+            .get("agent")
+            .and_then(Value::as_str)
+            .or(request.agent_name.as_deref())
+            .ok_or_else(|| {
+                Error::Tool(format!(
+                    "workflow '{}' step '{}' missing config.agent and no default agent provided",
+                    step_ctx.workflow_name, step_ctx.step.id
+                ))
+            })?;
+
+        let prompt_template = step_ctx
+            .step
+            .config
+            .get("input")
+            .cloned()
+            .unwrap_or_else(|| Value::String(String::new()));
+        let rendered_prompt = Self::render_value_with_outputs(
+            &prompt_template,
+            outputs,
+            step_ctx.step,
+            self.expression_options_for_step(step_ctx.step, step_ctx.workflow_config),
+        )?;
+        let prompt = match rendered_prompt {
+            Value::String(text) => text,
+            other => serde_json::to_string(&other).unwrap_or_default(),
+        };
+
+        let session_uuid = uuid::Uuid::parse_str(&request.session_id).map_err(|err| {
+            Error::Tool(format!(
+                "workflow '{}' step '{}' requires UUID session id for agent calls: {err}",
+                step_ctx.workflow_name, step_ctx.step.id
+            ))
+        })?;
+
+        let agent = self.agents.get_agent(Some(target_agent)).map_err(|err| {
+            Error::Tool(format!(
+                "workflow '{}' step '{}' failed to resolve agent '{}': {err}",
+                step_ctx.workflow_name, step_ctx.step.id, target_agent
+            ))
+        })?;
+        let (retry_count, retry_backoff_ms, retry_multiplier, retry_backoff_max_ms) =
+            Self::retry_settings(step_ctx.step, step_ctx.workflow_config);
+        let execution_error_policy =
+            Self::execution_error_policy(step_ctx.step, step_ctx.workflow_config).to_owned();
+        let timeout_error_policy =
+            Self::timeout_error_policy(step_ctx.step, step_ctx.workflow_config).to_owned();
+
+        let mut attempt = 0u32;
+        let mut backoff_ms = retry_backoff_ms;
+        let outcome = loop {
+            let result = agent
+                .start_turn(
+                    session_uuid,
+                    prompt.clone(),
+                    step_ctx.event_tx.clone(),
+                    None,
+                )
+                .await;
+            match result {
+                Ok(()) => {
+                    let messages = self
+                        .session_manager
+                        .get_session_messages(session_uuid)
+                        .await?;
+                    let latest_assistant = messages
+                        .iter()
+                        .rev()
+                        .find(|msg| msg.role == "assistant")
+                        .map(|msg| msg.content.clone())
+                        .unwrap_or_default();
+                    break (true, Value::String(latest_assistant));
+                }
+                Err(err) => {
+                    if attempt >= retry_count {
+                        if Self::should_route_as_failure(&execution_error_policy) {
+                            break (false, Self::route_as_failure_payload(err.to_string()));
+                        }
+                        return Err(err);
+                    }
+                }
+            }
+
+            attempt += 1;
+            *counters.retry_events += 1;
+            let Some(next_backoff) = Self::apply_retry_backoff(
+                step_ctx.event_tx,
+                counters.timeout_events,
+                RetryBackoffContext {
+                    workflow_name: step_ctx.workflow_name,
+                    step_id: &step_ctx.step.id,
+                    attempt,
+                    retry_count,
+                    backoff_ms,
+                    reason: "agent_step",
+                    timeout_error_policy: &timeout_error_policy,
+                    retry_multiplier,
+                    retry_backoff_max_ms,
+                    timeout_ctx: step_ctx.timeout_ctx,
+                },
+            )
+            .await?
+            else {
+                break (false, Self::route_as_failure_payload("step timeout"));
+            };
+            backoff_ms = next_backoff;
+        };
+        Ok(outcome)
+    }
+
+    async fn execute_condition_step(
+        &self,
+        step_ctx: &StepExecutionContext<'_>,
+        outputs: &BTreeMap<String, Value>,
+        counters: &mut RetryCounters<'_>,
+    ) -> Result<ConditionExecutionResult> {
+        let (retry_count, retry_backoff_ms, retry_multiplier, retry_backoff_max_ms) =
+            Self::retry_settings(step_ctx.step, step_ctx.workflow_config);
+        let execution_error_policy =
+            Self::execution_error_policy(step_ctx.step, step_ctx.workflow_config).to_owned();
+        let timeout_error_policy =
+            Self::timeout_error_policy(step_ctx.step, step_ctx.workflow_config).to_owned();
+        let retry_on_false = step_ctx
+            .step
+            .config
+            .get("retry_on_false")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+        let mut attempts = 0u32;
+        let mut backoff_ms = retry_backoff_ms;
+        let matched = loop {
+            match self.evaluate_condition(step_ctx.step, outputs, step_ctx.workflow_config) {
+                Ok(matched) => {
+                    if !matched && retry_on_false && attempts < retry_count {
+                        attempts += 1;
+                        *counters.retry_events += 1;
+                        let Some(next_backoff) = Self::apply_retry_backoff(
+                            step_ctx.event_tx,
+                            counters.timeout_events,
+                            RetryBackoffContext {
+                                workflow_name: step_ctx.workflow_name,
+                                step_id: &step_ctx.step.id,
+                                attempt: attempts,
+                                retry_count,
+                                backoff_ms,
+                                reason: "condition_false",
+                                timeout_error_policy: &timeout_error_policy,
+                                retry_multiplier,
+                                retry_backoff_max_ms,
+                                timeout_ctx: step_ctx.timeout_ctx,
+                            },
+                        )
+                        .await?
+                        else {
+                            break false;
+                        };
+                        backoff_ms = next_backoff;
+                        continue;
+                    }
+                    break matched;
+                }
+                Err(err) => {
+                    if attempts >= retry_count {
+                        if Self::should_route_as_failure(&execution_error_policy) {
+                            break false;
+                        }
+                        return Err(err);
+                    }
+                    attempts += 1;
+                    *counters.retry_events += 1;
+                    let Some(next_backoff) = Self::apply_retry_backoff(
+                        step_ctx.event_tx,
+                        counters.timeout_events,
+                        RetryBackoffContext {
+                            workflow_name: step_ctx.workflow_name,
+                            step_id: &step_ctx.step.id,
+                            attempt: attempts,
+                            retry_count,
+                            backoff_ms,
+                            reason: "condition_error",
+                            timeout_error_policy: &timeout_error_policy,
+                            retry_multiplier,
+                            retry_backoff_max_ms,
+                            timeout_ctx: step_ctx.timeout_ctx,
+                        },
+                    )
+                    .await?
+                    else {
+                        break false;
+                    };
+                    backoff_ms = next_backoff;
+                }
+            }
+        };
+
+        Ok(ConditionExecutionResult { matched, attempts })
+    }
+
+    async fn execute_nested_workflow_step(
+        &self,
+        request: &WorkflowRunRequest,
+        step_ctx: &StepExecutionContext<'_>,
+        outputs: &BTreeMap<String, Value>,
+        tools: &ToolManager,
+        workflow_stack: &[String],
+        counters: &mut RetryCounters<'_>,
+    ) -> Result<(bool, Value)> {
+        let nested_workflow = step_ctx
+            .step
+            .config
+            .get("workflow")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                Error::Tool(format!(
+                    "workflow '{}' step '{}' missing config.workflow",
+                    step_ctx.workflow_name, step_ctx.step.id
+                ))
+            })?;
+        let nested_entrypoint = step_ctx
+            .step
+            .config
+            .get("entrypoint")
+            .and_then(Value::as_str)
+            .unwrap_or("start");
+        let nested_input_template = step_ctx
+            .step
+            .config
+            .get("input")
+            .cloned()
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+        let nested_input = Self::render_value_with_outputs(
+            &nested_input_template,
+            outputs,
+            step_ctx.step,
+            self.expression_options_for_step(step_ctx.step, step_ctx.workflow_config),
+        )?;
+
+        let (retry_count, retry_backoff_ms, retry_multiplier, retry_backoff_max_ms) =
+            Self::retry_settings(step_ctx.step, step_ctx.workflow_config);
+        let execution_error_policy =
+            Self::execution_error_policy(step_ctx.step, step_ctx.workflow_config).to_owned();
+        let timeout_error_policy =
+            Self::timeout_error_policy(step_ctx.step, step_ctx.workflow_config).to_owned();
+        let mut attempt = 0u32;
+        let mut backoff_ms = retry_backoff_ms;
+        let outcome = loop {
+            let nested = self
+                .run_internal(
+                    WorkflowRunRequest {
+                        workflow_name: nested_workflow.to_owned(),
+                        entrypoint: nested_entrypoint.to_owned(),
+                        session_id: request.session_id.clone(),
+                        agent_name: request.agent_name.clone(),
+                        input: nested_input.clone(),
+                        recursion_depth: request.recursion_depth + 1,
+                        workflow_stack: workflow_stack.to_vec(),
+                    },
+                    tools,
+                    step_ctx.event_tx.clone(),
+                )
+                .await;
+
+            match nested {
+                Ok(nested) => {
+                    let payload =
+                        json!({"outputs": nested.outputs, "steps_executed": nested.steps_executed});
+                    if nested.success || attempt >= retry_count {
+                        break (nested.success, payload);
+                    }
+                }
+                Err(err) => {
+                    if attempt >= retry_count {
+                        if Self::should_route_as_failure(&execution_error_policy) {
+                            break (false, Self::route_as_failure_payload(err.to_string()));
+                        }
+                        return Err(err);
+                    }
+                }
+            }
+
+            attempt += 1;
+            *counters.retry_events += 1;
+            let Some(next_backoff) = Self::apply_retry_backoff(
+                step_ctx.event_tx,
+                counters.timeout_events,
+                RetryBackoffContext {
+                    workflow_name: step_ctx.workflow_name,
+                    step_id: &step_ctx.step.id,
+                    attempt,
+                    retry_count,
+                    backoff_ms,
+                    reason: "workflow_step",
+                    timeout_error_policy: &timeout_error_policy,
+                    retry_multiplier,
+                    retry_backoff_max_ms,
+                    timeout_ctx: step_ctx.timeout_ctx,
+                },
+            )
+            .await?
+            else {
+                break (false, Self::route_as_failure_payload("step timeout"));
+            };
+            backoff_ms = next_backoff;
+        };
+        Ok(outcome)
+    }
+
+    async fn execute_wait_step(
+        &self,
+        step_ctx: &StepExecutionContext<'_>,
+        outputs: &BTreeMap<String, Value>,
+        counters: &mut RetryCounters<'_>,
+    ) -> Result<(bool, Value)> {
+        let timeout_error_policy =
+            Self::timeout_error_policy(step_ctx.step, step_ctx.workflow_config).to_owned();
+        let mut waited_ms = 0u64;
+        let mut step_timed_out = false;
+
+        if let Some(seconds) = step_ctx
+            .step
+            .config
+            .get("duration_seconds")
+            .and_then(Value::as_u64)
+        {
+            let duration = Duration::from_secs(seconds);
+            if Self::ensure_within_timeouts(
+                step_ctx.event_tx,
+                counters.timeout_events,
+                step_ctx.timeout_ctx,
+                &timeout_error_policy,
+            )? {
+                step_timed_out = true;
+            }
+            if !step_timed_out {
+                sleep(duration).await;
+                waited_ms = waited_ms.saturating_add(duration.as_millis() as u64);
+            }
+        }
+
+        if step_timed_out {
+            return Ok((
+                false,
+                json!({
+                    "waited_ms": waited_ms,
+                    "timed_out": true,
+                    "timeout_scope": "step",
+                    "timeout_succeeds": false,
+                }),
+            ));
+        }
+
+        let Some(expression) = step_ctx
+            .step
+            .config
+            .get("until_expression")
+            .and_then(Value::as_str)
+        else {
+            return Ok((
+                true,
+                json!({
+                    "waited_ms": waited_ms,
+                }),
+            ));
+        };
+
+        let poll_interval_ms = step_ctx
+            .step
+            .config
+            .get("poll_interval_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(step_ctx.workflow_config.wait_default_poll_interval_ms);
+        let timeout_seconds = step_ctx
+            .step
+            .config
+            .get("timeout_seconds")
+            .and_then(Value::as_u64)
+            .unwrap_or(step_ctx.workflow_config.wait_default_timeout_seconds);
+        let timeout_succeeds = step_ctx
+            .step
+            .config
+            .get("timeout_succeeds")
+            .and_then(Value::as_bool)
+            .unwrap_or(step_ctx.workflow_config.wait_timeout_succeeds);
+        let started = Instant::now();
+        let mut condition_met = false;
+        let mut timed_out = false;
+
+        loop {
+            if self.evaluate_expression(
+                expression,
+                outputs,
+                step_ctx.step,
+                step_ctx.workflow_config,
+            )? {
+                condition_met = true;
+                break;
+            }
+
+            if started.elapsed() >= Duration::from_secs(timeout_seconds) {
+                timed_out = true;
+                break;
+            }
+
+            if Self::ensure_within_timeouts(
+                step_ctx.event_tx,
+                counters.timeout_events,
+                step_ctx.timeout_ctx,
+                &timeout_error_policy,
+            )? {
+                step_timed_out = true;
+                break;
+            }
+            sleep(Duration::from_millis(poll_interval_ms)).await;
+            waited_ms = waited_ms.saturating_add(poll_interval_ms);
+        }
+
+        Ok((
+            !step_timed_out && (condition_met || (timed_out && timeout_succeeds)),
+            json!({
+                "waited_ms": waited_ms,
+                "condition_met": condition_met,
+                "timed_out": timed_out,
+                "step_timed_out": step_timed_out,
+                "timeout_succeeds": timeout_succeeds,
+            }),
+        ))
+    }
+
+    fn resolve_workflow_definition(
+        &self,
+        request: &WorkflowRunRequest,
+    ) -> Result<WorkflowDefinition> {
+        self.workflows
+            .get(&request.workflow_name)
+            .ok_or_else(|| {
+                Error::NotFound(format!("workflow '{}' not found", request.workflow_name))
+            })
+            .cloned()
+    }
+
+    fn validate_recursion_and_cycle(
+        request: &WorkflowRunRequest,
+        workflow_config: &EffectiveWorkflowConfig,
+    ) -> Result<Vec<String>> {
+        if let Some(max_depth) = workflow_config.max_recursion_depth {
+            if request.recursion_depth > max_depth {
+                return Err(Error::Tool(format!(
+                    "workflow recursion depth {} exceeded configured max_recursion_depth {}",
+                    request.recursion_depth, max_depth
+                )));
+            }
+        }
+
+        if request.workflow_stack.contains(&request.workflow_name) {
+            let mut cycle_chain = request.workflow_stack.clone();
+            cycle_chain.push(request.workflow_name.clone());
+            return Err(Error::Tool(format!(
+                "workflow recursion cycle detected: {}",
+                cycle_chain.join(" -> ")
+            )));
+        }
+
+        let mut workflow_stack = request.workflow_stack.clone();
+        workflow_stack.push(request.workflow_name.clone());
+        Ok(workflow_stack)
+    }
+
+    fn resolve_entry_step(
+        workflow: &WorkflowDefinition,
+        request: &WorkflowRunRequest,
+    ) -> Result<String> {
+        workflow
+            .entrypoints
+            .get(&request.entrypoint)
+            .ok_or_else(|| {
+                Error::NotFound(format!(
+                    "workflow '{}' has no entrypoint '{}'",
+                    request.workflow_name, request.entrypoint
+                ))
+            })
+            .map(|entry| entry.step.clone())
+    }
+
+    fn build_step_index(workflow: &WorkflowDefinition) -> HashMap<String, WorkflowStep> {
+        let mut by_id = HashMap::<String, WorkflowStep>::new();
+        for step in &workflow.steps {
+            by_id.insert(step.id.clone(), step.clone());
+        }
+        by_id
+    }
+
     pub async fn run(
         &self,
         request: WorkflowRunRequest,
@@ -1469,58 +2697,18 @@ impl WorkflowExecutor {
         event_tx: mpsc::Sender<Event>,
     ) -> BoxFuture<'a, Result<WorkflowExecutionResult>> {
         Box::pin(async move {
-            let workflow = self
-                .workflows
-                .get(&request.workflow_name)
-                .ok_or_else(|| {
-                    Error::NotFound(format!("workflow '{}' not found", request.workflow_name))
-                })?
-                .clone();
+            let workflow = self.resolve_workflow_definition(&request)?;
             let workflow_config = self.effective_config_for_workflow(&workflow.execution);
             let workflow_timeout_seconds = workflow
                 .timeout_seconds
                 .unwrap_or(self.config.default_timeout_seconds);
             let started_at = Instant::now();
-
-            if let Some(max_depth) = workflow_config.max_recursion_depth {
-                if request.recursion_depth > max_depth {
-                    return Err(Error::Tool(format!(
-                        "workflow recursion depth {} exceeded configured max_recursion_depth {}",
-                        request.recursion_depth, max_depth
-                    )));
-                }
-            }
-
-            if request.workflow_stack.contains(&request.workflow_name) {
-                let mut cycle_chain = request.workflow_stack.clone();
-                cycle_chain.push(request.workflow_name.clone());
-                return Err(Error::Tool(format!(
-                    "workflow recursion cycle detected: {}",
-                    cycle_chain.join(" -> ")
-                )));
-            }
-
-            let mut workflow_stack = request.workflow_stack.clone();
-            workflow_stack.push(request.workflow_name.clone());
-
-            let entry = workflow
-                .entrypoints
-                .get(&request.entrypoint)
-                .ok_or_else(|| {
-                    Error::NotFound(format!(
-                        "workflow '{}' has no entrypoint '{}'",
-                        request.workflow_name, request.entrypoint
-                    ))
-                })?;
-
-            let mut by_id = HashMap::<String, WorkflowStep>::new();
-            for step in &workflow.steps {
-                by_id.insert(step.id.clone(), step.clone());
-            }
+            let workflow_stack = Self::validate_recursion_and_cycle(&request, &workflow_config)?;
+            let mut current = Self::resolve_entry_step(&workflow, &request)?;
+            let by_id = Self::build_step_index(&workflow);
 
             let mut outputs = BTreeMap::<String, Value>::new();
-            outputs.insert("input".to_owned(), request.input);
-            let mut current = entry.step.clone();
+            outputs.insert("input".to_owned(), request.input.clone());
             let mut step_count = 0usize;
             let mut retry_events = 0usize;
             let mut timeout_events = 0usize;
@@ -1564,612 +2752,73 @@ impl WorkflowExecutor {
                 }
                 step_count += 1;
 
-                let step = by_id.get(&current).cloned().ok_or_else(|| {
-                    Error::Tool(format!(
-                        "workflow '{}' references missing step '{}'",
-                        request.workflow_name, current
-                    ))
-                })?;
-                let step_started_at = Instant::now();
-                let step_timeout_seconds = step
-                    .config
-                    .get("step_timeout_seconds")
-                    .and_then(Value::as_u64);
-                let timeout_ctx = TimeoutCheckContext {
-                    workflow_started_at: started_at,
+                let step = Self::resolve_step_or_error(&by_id, &request.workflow_name, &current)?;
+                let timeout_ctx = Self::build_timeout_context(
+                    started_at,
                     workflow_timeout_seconds,
-                    step_started_at,
-                    step_timeout_seconds,
-                    workflow_name: &request.workflow_name,
-                    step_id: &step.id,
-                };
-
-                let _ = event_tx.try_send(Event::WorkflowStepStarted {
-                    workflow: request.workflow_name.clone(),
-                    step_id: step.id.clone(),
-                    step_name: step.name.clone(),
-                    kind: Self::step_kind_name(step.kind).to_owned(),
-                });
+                    &request.workflow_name,
+                    &step,
+                );
+                Self::emit_step_started_event(&event_tx, &request.workflow_name, &step);
+                let (step_ctx, mut counters) = Self::step_runtime(
+                    &request.workflow_name,
+                    &step,
+                    &workflow_config,
+                    &timeout_ctx,
+                    &event_tx,
+                    &mut retry_events,
+                    &mut timeout_events,
+                );
 
                 let step_result = match step.kind {
                     WorkflowStepKind::Tool => {
-                        let tool_name = step
-                            .config
-                            .get("tool")
-                            .and_then(Value::as_str)
-                            .ok_or_else(|| {
-                                Error::Tool(format!(
-                                    "workflow '{}' step '{}' missing config.tool",
-                                    request.workflow_name, step.id
-                                ))
-                            })?;
-                        let args_template = step
-                            .config
-                            .get("args")
-                            .cloned()
-                            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-                        let args = Self::render_value_with_outputs(
-                            &args_template,
-                            &outputs,
-                            &step,
-                            self.expression_options_for_step(&step, &workflow_config),
-                        )?;
-
-                        let (retry_count, retry_backoff_ms, retry_multiplier, retry_backoff_max_ms) =
-                            Self::retry_settings(&step, &workflow_config);
-                        let execution_error_policy =
-                            Self::execution_error_policy(&step, &workflow_config).to_owned();
-                        let timeout_error_policy =
-                            Self::timeout_error_policy(&step, &workflow_config).to_owned();
-                        let mut attempt = 0u32;
-                        let mut backoff_ms = retry_backoff_ms;
-                        loop {
-                            let step_cancellation = CancellationToken::new();
-                            let call_future = tools.execute_tool_with_cancel(
-                                request.session_id.clone(),
-                                request.agent_name.clone(),
-                                tool_name,
-                                args.clone(),
-                                event_tx.clone(),
-                                Some(step_cancellation.clone()),
-                            );
-                            let call_result = if let Some(step_timeout_seconds) =
-                                step_timeout_seconds
-                            {
-                                tokio::select! {
-                                    result = call_future => result,
-                                    _ = sleep(Duration::from_secs(step_timeout_seconds)) => {
-                                        step_cancellation.cancel();
-                                        let _ = event_tx.try_send(Event::WorkflowTimeout {
-                                            workflow: request.workflow_name.clone(),
-                                            step_id: Some(step.id.clone()),
-                                            timeout_seconds: step_timeout_seconds,
-                                            scope: "step".to_owned(),
-                                        });
-                                        timeout_events += 1;
-                                        if timeout_error_policy == "route_as_failure" {
-                                            break (
-                                                false,
-                                                json!({
-                                                    "error": "step timeout",
-                                                    "policy": "route_as_failure"
-                                                }),
-                                            );
-                                        }
-                                        return Err(Error::Timeout(format!(
-                                            "workflow '{}' step '{}' exceeded step timeout of {} seconds",
-                                            request.workflow_name, step.id, step_timeout_seconds
-                                        )));
-                                    }
-                                }
-                            } else {
-                                call_future.await
-                            };
-
-                            match call_result {
-                                Ok(Some(tool_result)) => {
-                                    let parsed = Self::parse_step_result(&tool_result.output);
-                                    if tool_result.success || attempt >= retry_count {
-                                        break (tool_result.success, parsed);
-                                    }
-                                }
-                                Ok(None) => {
-                                    if attempt >= retry_count {
-                                        if execution_error_policy == "route_as_failure" {
-                                            break (
-                                                false,
-                                                json!({
-                                                    "error": "paused pending permission/user input",
-                                                    "policy": "route_as_failure"
-                                                }),
-                                            );
-                                        }
-                                        return Err(Error::Tool(format!(
-                                            "workflow '{}' step '{}' paused pending permission/user input; this flow is not resumable yet",
-                                            request.workflow_name, step.id
-                                        )));
-                                    }
-                                }
-                                Err(err) => {
-                                    if attempt >= retry_count {
-                                        if execution_error_policy == "route_as_failure" {
-                                            break (
-                                                false,
-                                                json!({
-                                                    "error": err.to_string(),
-                                                    "policy": "route_as_failure"
-                                                }),
-                                            );
-                                        }
-                                        return Err(err);
-                                    }
-                                }
-                            }
-
-                            attempt += 1;
-                            retry_events += 1;
-                            Self::emit_retry_event(
-                                &event_tx,
-                                &request.workflow_name,
-                                &step.id,
-                                attempt,
-                                retry_count,
-                                backoff_ms,
-                                "tool_step",
-                            );
-                            if Self::ensure_within_timeouts(
-                                &event_tx,
-                                &mut timeout_events,
-                                &timeout_ctx,
-                                &timeout_error_policy,
-                            )? {
-                                break (
-                                    false,
-                                    json!({
-                                        "error": "step timeout",
-                                        "policy": "route_as_failure"
-                                    }),
-                                );
-                            }
-                            sleep(Duration::from_millis(backoff_ms)).await;
-                            backoff_ms = Self::next_backoff_ms(
-                                backoff_ms,
-                                retry_multiplier,
-                                retry_backoff_max_ms,
-                            );
-                        }
+                        self.execute_tool_step(&request, &step_ctx, &outputs, tools, &mut counters)
+                            .await?
                     }
                     WorkflowStepKind::Skill => {
-                        let skill_name = step
-                            .config
-                            .get("skill")
-                            .and_then(Value::as_str)
-                            .ok_or_else(|| {
-                                Error::Tool(format!(
-                                    "workflow '{}' step '{}' missing config.skill",
-                                    request.workflow_name, step.id
-                                ))
-                            })?;
-                        let input_template = step
-                            .config
-                            .get("input")
-                            .cloned()
-                            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-                        let skill_input = Self::render_value_with_outputs(
-                            &input_template,
-                            &outputs,
-                            &step,
-                            self.expression_options_for_step(&step, &workflow_config),
-                        )?;
-                        let skill = self.skills.get(skill_name).ok_or_else(|| {
-                            Error::NotFound(format!("skill '{}' not found", skill_name))
-                        })?;
-                        let (retry_count, retry_backoff_ms, retry_multiplier, retry_backoff_max_ms) =
-                            Self::retry_settings(&step, &workflow_config);
-                        let execution_error_policy =
-                            Self::execution_error_policy(&step, &workflow_config).to_owned();
-                        let timeout_error_policy =
-                            Self::timeout_error_policy(&step, &workflow_config).to_owned();
-                        let mut attempt = 0u32;
-                        let mut backoff_ms = retry_backoff_ms;
-                        loop {
-                            let result = skill
-                                .execute(
-                                    skill_input.clone(),
-                                    &SkillExecutionContext {
-                                        working_directory: self.config.working_directory.clone(),
-                                        environment: Default::default(),
-                                    },
-                                )
-                                .await;
-
-                            match result {
-                                Ok(result) => {
-                                    let parsed = Self::parse_step_result(&result.output);
-                                    if result.success || attempt >= retry_count {
-                                        break (result.success, parsed);
-                                    }
-                                }
-                                Err(err) => {
-                                    if attempt >= retry_count {
-                                        if execution_error_policy == "route_as_failure" {
-                                            break (
-                                                false,
-                                                json!({
-                                                    "error": err.to_string(),
-                                                    "policy": "route_as_failure"
-                                                }),
-                                            );
-                                        }
-                                        return Err(err);
-                                    }
-                                }
-                            }
-
-                            attempt += 1;
-                            retry_events += 1;
-                            Self::emit_retry_event(
-                                &event_tx,
-                                &request.workflow_name,
-                                &step.id,
-                                attempt,
-                                retry_count,
-                                backoff_ms,
-                                "skill_step",
-                            );
-                            if Self::ensure_within_timeouts(
-                                &event_tx,
-                                &mut timeout_events,
-                                &timeout_ctx,
-                                &timeout_error_policy,
-                            )? {
-                                break (
-                                    false,
-                                    json!({
-                                        "error": "step timeout",
-                                        "policy": "route_as_failure"
-                                    }),
-                                );
-                            }
-                            sleep(Duration::from_millis(backoff_ms)).await;
-                            backoff_ms = Self::next_backoff_ms(
-                                backoff_ms,
-                                retry_multiplier,
-                                retry_backoff_max_ms,
-                            );
-                        }
+                        self.execute_skill_step(&step_ctx, &outputs, &mut counters)
+                            .await?
                     }
                     WorkflowStepKind::Workflow => {
-                        let nested_workflow = step
-                            .config
-                            .get("workflow")
-                            .and_then(Value::as_str)
-                            .ok_or_else(|| {
-                            Error::Tool(format!(
-                                "workflow '{}' step '{}' missing config.workflow",
-                                request.workflow_name, step.id
-                            ))
-                        })?;
-                        let nested_entrypoint = step
-                            .config
-                            .get("entrypoint")
-                            .and_then(Value::as_str)
-                            .unwrap_or("start");
-                        let nested_input_template = step
-                            .config
-                            .get("input")
-                            .cloned()
-                            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-                        let nested_input = Self::render_value_with_outputs(
-                            &nested_input_template,
+                        self.execute_nested_workflow_step(
+                            &request,
+                            &step_ctx,
                             &outputs,
-                            &step,
-                            self.expression_options_for_step(&step, &workflow_config),
-                        )?;
-
-                        let (retry_count, retry_backoff_ms, retry_multiplier, retry_backoff_max_ms) =
-                            Self::retry_settings(&step, &workflow_config);
-                        let execution_error_policy =
-                            Self::execution_error_policy(&step, &workflow_config).to_owned();
-                        let timeout_error_policy =
-                            Self::timeout_error_policy(&step, &workflow_config).to_owned();
-                        let mut attempt = 0u32;
-                        let mut backoff_ms = retry_backoff_ms;
-                        loop {
-                            let nested = self
-                                .run_internal(
-                                    WorkflowRunRequest {
-                                        workflow_name: nested_workflow.to_owned(),
-                                        entrypoint: nested_entrypoint.to_owned(),
-                                        session_id: request.session_id.clone(),
-                                        agent_name: request.agent_name.clone(),
-                                        input: nested_input.clone(),
-                                        recursion_depth: request.recursion_depth + 1,
-                                        workflow_stack: workflow_stack.clone(),
-                                    },
-                                    tools,
-                                    event_tx.clone(),
-                                )
-                                .await;
-
-                            match nested {
-                                Ok(nested) => {
-                                    let payload = json!({"outputs": nested.outputs, "steps_executed": nested.steps_executed});
-                                    if nested.success || attempt >= retry_count {
-                                        break (nested.success, payload);
-                                    }
-                                }
-                                Err(err) => {
-                                    if attempt >= retry_count {
-                                        if execution_error_policy == "route_as_failure" {
-                                            break (
-                                                false,
-                                                json!({
-                                                    "error": err.to_string(),
-                                                    "policy": "route_as_failure"
-                                                }),
-                                            );
-                                        }
-                                        return Err(err);
-                                    }
-                                }
-                            }
-
-                            attempt += 1;
-                            retry_events += 1;
-                            Self::emit_retry_event(
-                                &event_tx,
-                                &request.workflow_name,
-                                &step.id,
-                                attempt,
-                                retry_count,
-                                backoff_ms,
-                                "workflow_step",
-                            );
-                            if Self::ensure_within_timeouts(
-                                &event_tx,
-                                &mut timeout_events,
-                                &timeout_ctx,
-                                &timeout_error_policy,
-                            )? {
-                                break (
-                                    false,
-                                    json!({
-                                        "error": "step timeout",
-                                        "policy": "route_as_failure"
-                                    }),
-                                );
-                            }
-                            sleep(Duration::from_millis(backoff_ms)).await;
-                            backoff_ms = Self::next_backoff_ms(
-                                backoff_ms,
-                                retry_multiplier,
-                                retry_backoff_max_ms,
-                            );
-                        }
+                            tools,
+                            &workflow_stack,
+                            &mut counters,
+                        )
+                        .await?
                     }
                     WorkflowStepKind::Condition => {
-                        let (retry_count, retry_backoff_ms, retry_multiplier, retry_backoff_max_ms) =
-                            Self::retry_settings(&step, &workflow_config);
-                        let execution_error_policy =
-                            Self::execution_error_policy(&step, &workflow_config).to_owned();
-                        let timeout_error_policy =
-                            Self::timeout_error_policy(&step, &workflow_config).to_owned();
-                        let retry_on_false = step
-                            .config
-                            .get("retry_on_false")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false);
-                        let mut attempts = 0u32;
-                        let mut backoff_ms = retry_backoff_ms;
-                        let matched = loop {
-                            match self.evaluate_condition(&step, &outputs, &workflow_config) {
-                                Ok(matched) => {
-                                    if !matched && retry_on_false && attempts < retry_count {
-                                        attempts += 1;
-                                        retry_events += 1;
-                                        Self::emit_retry_event(
-                                            &event_tx,
-                                            &request.workflow_name,
-                                            &step.id,
-                                            attempts,
-                                            retry_count,
-                                            backoff_ms,
-                                            "condition_false",
-                                        );
-                                        if Self::ensure_within_timeouts(
-                                            &event_tx,
-                                            &mut timeout_events,
-                                            &timeout_ctx,
-                                            &timeout_error_policy,
-                                        )? {
-                                            break false;
-                                        }
-                                        sleep(Duration::from_millis(backoff_ms)).await;
-                                        backoff_ms = Self::next_backoff_ms(
-                                            backoff_ms,
-                                            retry_multiplier,
-                                            retry_backoff_max_ms,
-                                        );
-                                        continue;
-                                    }
-                                    break matched;
-                                }
-                                Err(err) => {
-                                    if attempts >= retry_count {
-                                        if execution_error_policy == "route_as_failure" {
-                                            break false;
-                                        }
-                                        return Err(err);
-                                    }
-                                    attempts += 1;
-                                    retry_events += 1;
-                                    Self::emit_retry_event(
-                                        &event_tx,
-                                        &request.workflow_name,
-                                        &step.id,
-                                        attempts,
-                                        retry_count,
-                                        backoff_ms,
-                                        "condition_error",
-                                    );
-                                    if Self::ensure_within_timeouts(
-                                        &event_tx,
-                                        &mut timeout_events,
-                                        &timeout_ctx,
-                                        &timeout_error_policy,
-                                    )? {
-                                        break false;
-                                    }
-                                    sleep(Duration::from_millis(backoff_ms)).await;
-                                    backoff_ms = Self::next_backoff_ms(
-                                        backoff_ms,
-                                        retry_multiplier,
-                                        retry_backoff_max_ms,
-                                    );
-                                }
-                            }
-                        };
-                        outputs.insert(
-                            format!("step.{}.condition_attempts", step.id),
-                            Value::Number(serde_json::Number::from((attempts + 1) as u64)),
+                        let condition_result = self
+                            .execute_condition_step(&step_ctx, &outputs, &mut counters)
+                            .await?;
+                        let matched = condition_result.matched;
+                        let target = Self::process_condition_branch(
+                            &event_tx,
+                            &request.workflow_name,
+                            &step,
+                            matched,
+                            condition_result.attempts,
+                            &mut outputs,
                         );
-                        let _ = event_tx.try_send(Event::WorkflowStepCompleted {
-                            workflow: request.workflow_name.clone(),
-                            step_id: step.id.clone(),
-                            success: matched,
-                            output_count: 0,
-                        });
-                        let target = if matched {
-                            step.on_success.clone().or(step.next.clone())
-                        } else {
-                            step.on_failure.clone().or(step.next.clone())
-                        };
-                        if let Some(next) = target {
-                            current = next;
+                        if Self::advance_to_target(&mut current, target) {
                             continue;
                         }
-                        let _ = event_tx.try_send(Event::WorkflowCompleted {
-                            workflow: request.workflow_name.clone(),
-                            success: matched,
-                            steps_executed: step_count,
-                            retries: retry_events,
-                            timeouts: timeout_events,
-                        });
-                        outputs.insert("workflow.metrics.retries".to_owned(), json!(retry_events));
-                        outputs.insert(
-                            "workflow.metrics.timeouts".to_owned(),
-                            json!(timeout_events),
-                        );
-                        return Ok(WorkflowExecutionResult {
-                            success: matched,
+                        return Ok(Self::finalize_current_run(
+                            &event_tx,
+                            &request,
+                            matched,
+                            step_count,
+                            retry_events,
+                            timeout_events,
                             outputs,
-                            steps_executed: step_count,
-                        });
+                        ));
                     }
                     WorkflowStepKind::Wait => {
-                        let timeout_error_policy =
-                            Self::timeout_error_policy(&step, &workflow_config).to_owned();
-                        let mut waited_ms = 0u64;
-                        let mut step_timed_out = false;
-                        if let Some(seconds) =
-                            step.config.get("duration_seconds").and_then(Value::as_u64)
-                        {
-                            let duration = Duration::from_secs(seconds);
-                            if Self::ensure_within_timeouts(
-                                &event_tx,
-                                &mut timeout_events,
-                                &timeout_ctx,
-                                &timeout_error_policy,
-                            )? {
-                                step_timed_out = true;
-                            }
-                            if !step_timed_out {
-                                sleep(duration).await;
-                                waited_ms = waited_ms.saturating_add(duration.as_millis() as u64);
-                            }
-                        }
-
-                        if step_timed_out {
-                            (
-                                false,
-                                json!({
-                                    "waited_ms": waited_ms,
-                                    "timed_out": true,
-                                    "timeout_scope": "step",
-                                    "timeout_succeeds": false,
-                                }),
-                            )
-                        } else if let Some(expression) =
-                            step.config.get("until_expression").and_then(Value::as_str)
-                        {
-                            let poll_interval_ms = step
-                                .config
-                                .get("poll_interval_ms")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(workflow_config.wait_default_poll_interval_ms);
-                            let timeout_seconds = step
-                                .config
-                                .get("timeout_seconds")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(workflow_config.wait_default_timeout_seconds);
-                            let timeout_succeeds = step
-                                .config
-                                .get("timeout_succeeds")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(workflow_config.wait_timeout_succeeds);
-                            let started = Instant::now();
-                            let mut condition_met = false;
-                            let mut timed_out = false;
-
-                            loop {
-                                if self.evaluate_expression(
-                                    expression,
-                                    &outputs,
-                                    &step,
-                                    &workflow_config,
-                                )? {
-                                    condition_met = true;
-                                    break;
-                                }
-
-                                if started.elapsed() >= Duration::from_secs(timeout_seconds) {
-                                    timed_out = true;
-                                    break;
-                                }
-
-                                if Self::ensure_within_timeouts(
-                                    &event_tx,
-                                    &mut timeout_events,
-                                    &timeout_ctx,
-                                    &timeout_error_policy,
-                                )? {
-                                    step_timed_out = true;
-                                    break;
-                                }
-                                sleep(Duration::from_millis(poll_interval_ms)).await;
-                                waited_ms = waited_ms.saturating_add(poll_interval_ms);
-                            }
-
-                            (
-                                !step_timed_out
-                                    && (condition_met || (timed_out && timeout_succeeds)),
-                                json!({
-                                    "waited_ms": waited_ms,
-                                    "condition_met": condition_met,
-                                    "timed_out": timed_out,
-                                    "step_timed_out": step_timed_out,
-                                    "timeout_succeeds": timeout_succeeds,
-                                }),
-                            )
-                        } else {
-                            (
-                                true,
-                                json!({
-                                    "waited_ms": waited_ms,
-                                }),
-                            )
-                        }
+                        self.execute_wait_step(&step_ctx, &outputs, &mut counters)
+                            .await?
                     }
                     WorkflowStepKind::Loop => (
                         true,
@@ -2181,353 +2830,60 @@ impl WorkflowExecutor {
                         self.execute_merge_step(&step, &outputs, &workflow_config)?,
                     ),
                     WorkflowStepKind::Switch => {
-                        let (retry_count, retry_backoff_ms, retry_multiplier, retry_backoff_max_ms) =
-                            Self::retry_settings(&step, &workflow_config);
-                        let execution_error_policy =
-                            Self::execution_error_policy(&step, &workflow_config).to_owned();
-                        let timeout_error_policy =
-                            Self::timeout_error_policy(&step, &workflow_config).to_owned();
-                        let retry_on_no_match = step
-                            .config
-                            .get("retry_on_no_match")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false);
-                        let value_template =
-                            step.config.get("value").cloned().unwrap_or(Value::Null);
-                        let mut attempts = 0u32;
-                        let mut backoff_ms = retry_backoff_ms;
-                        let (rendered_key, target, match_type) = loop {
-                            let rendered = Self::render_value_with_outputs(
-                                &value_template,
-                                &outputs,
-                                &step,
-                                self.expression_options_for_step(&step, &workflow_config),
-                            );
-                            match rendered {
-                                Ok(rendered) => {
-                                    let rendered_key = Self::switch_key_from_value(&rendered);
-                                    let resolved = Self::resolve_switch_target(
-                                        &step,
-                                        &rendered_key,
-                                        &workflow_config,
-                                    );
-                                    match resolved {
-                                        Ok((target, match_type)) => {
-                                            if target.is_none()
-                                                && retry_on_no_match
-                                                && attempts < retry_count
-                                            {
-                                                attempts += 1;
-                                                retry_events += 1;
-                                                Self::emit_retry_event(
-                                                    &event_tx,
-                                                    &request.workflow_name,
-                                                    &step.id,
-                                                    attempts,
-                                                    retry_count,
-                                                    backoff_ms,
-                                                    "switch_no_match",
-                                                );
-                                                if Self::ensure_within_timeouts(
-                                                    &event_tx,
-                                                    &mut timeout_events,
-                                                    &timeout_ctx,
-                                                    &timeout_error_policy,
-                                                )? {
-                                                    break (
-                                                        rendered_key,
-                                                        None,
-                                                        "timeout".to_owned(),
-                                                    );
-                                                }
-                                                sleep(Duration::from_millis(backoff_ms)).await;
-                                                backoff_ms = Self::next_backoff_ms(
-                                                    backoff_ms,
-                                                    retry_multiplier,
-                                                    retry_backoff_max_ms,
-                                                );
-                                                continue;
-                                            }
-                                            break (rendered_key, target, match_type);
-                                        }
-                                        Err(err) => {
-                                            if attempts >= retry_count {
-                                                if execution_error_policy == "route_as_failure" {
-                                                    break (rendered_key, None, "error".to_owned());
-                                                }
-                                                return Err(err);
-                                            }
-                                            attempts += 1;
-                                            retry_events += 1;
-                                            Self::emit_retry_event(
-                                                &event_tx,
-                                                &request.workflow_name,
-                                                &step.id,
-                                                attempts,
-                                                retry_count,
-                                                backoff_ms,
-                                                "switch_resolve_error",
-                                            );
-                                            if Self::ensure_within_timeouts(
-                                                &event_tx,
-                                                &mut timeout_events,
-                                                &timeout_ctx,
-                                                &timeout_error_policy,
-                                            )? {
-                                                break (rendered_key, None, "timeout".to_owned());
-                                            }
-                                            sleep(Duration::from_millis(backoff_ms)).await;
-                                            backoff_ms = Self::next_backoff_ms(
-                                                backoff_ms,
-                                                retry_multiplier,
-                                                retry_backoff_max_ms,
-                                            );
-                                        }
-                                    }
-                                }
-                                Err(err) => {
-                                    if attempts >= retry_count {
-                                        if execution_error_policy == "route_as_failure" {
-                                            break (String::new(), None, "error".to_owned());
-                                        }
-                                        return Err(err);
-                                    }
-                                    attempts += 1;
-                                    retry_events += 1;
-                                    Self::emit_retry_event(
-                                        &event_tx,
-                                        &request.workflow_name,
-                                        &step.id,
-                                        attempts,
-                                        retry_count,
-                                        backoff_ms,
-                                        "switch_render_error",
-                                    );
-                                    if Self::ensure_within_timeouts(
-                                        &event_tx,
-                                        &mut timeout_events,
-                                        &timeout_ctx,
-                                        &timeout_error_policy,
-                                    )? {
-                                        break (String::new(), None, "timeout".to_owned());
-                                    }
-                                    sleep(Duration::from_millis(backoff_ms)).await;
-                                    backoff_ms = Self::next_backoff_ms(
-                                        backoff_ms,
-                                        retry_multiplier,
-                                        retry_backoff_max_ms,
-                                    );
-                                }
-                            }
-                        };
-
-                        let _ = event_tx.try_send(Event::WorkflowStepCompleted {
-                            workflow: request.workflow_name.clone(),
-                            step_id: step.id.clone(),
-                            success: target.is_some(),
-                            output_count: 1,
-                        });
-
-                        outputs.insert(
-                            format!("step.{}.switch_key", step.id),
-                            Value::String(rendered_key.clone()),
-                        );
-                        outputs.insert(
-                            format!("step.{}.switch_match_type", step.id),
-                            Value::String(match_type),
-                        );
-                        outputs.insert(
-                            format!("step.{}.switch_attempts", step.id),
-                            Value::Number(serde_json::Number::from((attempts + 1) as u64)),
+                        let switch_result = self
+                            .execute_switch_step(&step_ctx, &outputs, &mut counters)
+                            .await?;
+                        let target = Self::process_switch_branch(
+                            &event_tx,
+                            &request.workflow_name,
+                            &step,
+                            &switch_result,
+                            &mut outputs,
                         );
 
-                        if let Some(next) = target {
-                            current = next;
+                        if Self::advance_to_target(&mut current, target) {
                             continue;
                         }
-
-                        let _ = event_tx.try_send(Event::WorkflowCompleted {
-                            workflow: request.workflow_name.clone(),
-                            success: true,
-                            steps_executed: step_count,
-                            retries: retry_events,
-                            timeouts: timeout_events,
-                        });
-                        outputs.insert("workflow.metrics.retries".to_owned(), json!(retry_events));
-                        outputs.insert(
-                            "workflow.metrics.timeouts".to_owned(),
-                            json!(timeout_events),
-                        );
-                        return Ok(WorkflowExecutionResult {
-                            success: true,
+                        return Ok(Self::finalize_current_run(
+                            &event_tx,
+                            &request,
+                            true,
+                            step_count,
+                            retry_events,
+                            timeout_events,
                             outputs,
-                            steps_executed: step_count,
-                        });
+                        ));
                     }
                     WorkflowStepKind::Agent => {
-                        let target_agent = step
-                            .config
-                            .get("agent")
-                            .and_then(Value::as_str)
-                            .or(request.agent_name.as_deref())
-                            .ok_or_else(|| {
-                                Error::Tool(format!(
-                                    "workflow '{}' step '{}' missing config.agent and no default agent provided",
-                                    request.workflow_name, step.id
-                                ))
-                            })?;
-
-                        let prompt_template = step
-                            .config
-                            .get("input")
-                            .cloned()
-                            .unwrap_or_else(|| Value::String(String::new()));
-                        let rendered_prompt = Self::render_value_with_outputs(
-                            &prompt_template,
-                            &outputs,
-                            &step,
-                            self.expression_options_for_step(&step, &workflow_config),
-                        )?;
-                        let prompt = match rendered_prompt {
-                            Value::String(text) => text,
-                            other => serde_json::to_string(&other).unwrap_or_default(),
-                        };
-
-                        let session_uuid =
-                            uuid::Uuid::parse_str(&request.session_id).map_err(|err| {
-                                Error::Tool(format!(
-                                    "workflow '{}' step '{}' requires UUID session id for agent calls: {err}",
-                                    request.workflow_name, step.id
-                                ))
-                            })?;
-
-                        let agent = self.agents.get_agent(Some(target_agent))?;
-                        let (retry_count, retry_backoff_ms, retry_multiplier, retry_backoff_max_ms) =
-                            Self::retry_settings(&step, &workflow_config);
-                        let execution_error_policy =
-                            Self::execution_error_policy(&step, &workflow_config).to_owned();
-                        let timeout_error_policy =
-                            Self::timeout_error_policy(&step, &workflow_config).to_owned();
-                        let mut attempt = 0u32;
-                        let mut backoff_ms = retry_backoff_ms;
-                        loop {
-                            let result = agent
-                                .start_turn(session_uuid, prompt.clone(), event_tx.clone(), None)
-                                .await;
-                            match result {
-                                Ok(()) => {
-                                    let messages = self
-                                        .session_manager
-                                        .get_session_messages(session_uuid)
-                                        .await?;
-                                    let latest_assistant = messages
-                                        .iter()
-                                        .rev()
-                                        .find(|msg| msg.role == "assistant")
-                                        .map(|msg| msg.content.clone())
-                                        .unwrap_or_default();
-                                    break (true, Value::String(latest_assistant));
-                                }
-                                Err(err) => {
-                                    if attempt >= retry_count {
-                                        if execution_error_policy == "route_as_failure" {
-                                            break (
-                                                false,
-                                                json!({
-                                                    "error": err.to_string(),
-                                                    "policy": "route_as_failure"
-                                                }),
-                                            );
-                                        }
-                                        return Err(err);
-                                    }
-                                }
-                            }
-
-                            attempt += 1;
-                            retry_events += 1;
-                            Self::emit_retry_event(
-                                &event_tx,
-                                &request.workflow_name,
-                                &step.id,
-                                attempt,
-                                retry_count,
-                                backoff_ms,
-                                "agent_step",
-                            );
-                            if Self::ensure_within_timeouts(
-                                &event_tx,
-                                &mut timeout_events,
-                                &timeout_ctx,
-                                &timeout_error_policy,
-                            )? {
-                                break (
-                                    false,
-                                    json!({
-                                        "error": "step timeout",
-                                        "policy": "route_as_failure"
-                                    }),
-                                );
-                            }
-                            sleep(Duration::from_millis(backoff_ms)).await;
-                            backoff_ms = Self::next_backoff_ms(
-                                backoff_ms,
-                                retry_multiplier,
-                                retry_backoff_max_ms,
-                            );
-                        }
+                        self.execute_agent_step(&request, &step_ctx, &outputs, &mut counters)
+                            .await?
                     }
                 };
 
                 let (success, payload) = step_result;
-                Self::map_named_outputs(&step, &payload, &mut outputs);
-                outputs.insert(format!("step.{}.result", step.id), payload);
-
-                let _ = event_tx.try_send(Event::WorkflowStepCompleted {
-                    workflow: request.workflow_name.clone(),
-                    step_id: step.id.clone(),
+                let next = Self::process_standard_step_result(
+                    &event_tx,
+                    &request.workflow_name,
+                    &step,
+                    &workflow_config,
                     success,
-                    output_count: step.outputs.len(),
-                });
+                    payload,
+                    &mut outputs,
+                );
 
-                let continue_on_error = Self::effective_continue_on_error(&step, &workflow_config);
-                let failure_routing = Self::continue_on_error_routing(&step, &workflow_config);
-                let next = if success {
-                    step.on_success.or(step.next)
-                } else if continue_on_error {
-                    if failure_routing == "on_failure_first" {
-                        step.on_failure.or(step.next)
-                    } else {
-                        step.next.or(step.on_failure)
-                    }
-                } else {
-                    step.on_failure
-                };
-
-                if let Some(next) = next {
-                    current = next;
+                if Self::advance_to_target(&mut current, next) {
                     continue;
                 }
 
-                let _ = event_tx.try_send(Event::WorkflowCompleted {
-                    workflow: request.workflow_name.clone(),
+                return Ok(Self::finalize_current_run(
+                    &event_tx,
+                    &request,
                     success,
-                    steps_executed: step_count,
-                    retries: retry_events,
-                    timeouts: timeout_events,
-                });
-
-                outputs.insert("workflow.metrics.retries".to_owned(), json!(retry_events));
-                outputs.insert(
-                    "workflow.metrics.timeouts".to_owned(),
-                    json!(timeout_events),
-                );
-
-                return Ok(WorkflowExecutionResult {
-                    success,
+                    step_count,
+                    retry_events,
+                    timeout_events,
                     outputs,
-                    steps_executed: step_count,
-                });
+                ));
             }
         })
     }

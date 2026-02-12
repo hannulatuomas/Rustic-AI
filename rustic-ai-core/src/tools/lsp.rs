@@ -128,8 +128,21 @@ impl LspTool {
             .clamp(1, 300)
     }
 
-    fn canonicalize(path: &Path) -> Result<PathBuf> {
-        std::fs::canonicalize(path).map_err(|err| {
+    fn optional_string_array(args: &Value, key: &str) -> Vec<String> {
+        args.get(key)
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    }
+
+    async fn canonicalize(path: &Path) -> Result<PathBuf> {
+        tokio::fs::canonicalize(path).await.map_err(|err| {
             Error::Tool(format!(
                 "failed to resolve path '{}': {err}",
                 path.display()
@@ -137,17 +150,17 @@ impl LspTool {
         })
     }
 
-    fn resolve_workspace_root(
+    async fn resolve_workspace_root(
         &self,
         context: &ToolExecutionContext,
         raw: Option<&str>,
     ) -> Result<PathBuf> {
-        let base = Self::canonicalize(&context.working_directory)?;
+        let base = Self::canonicalize(&context.working_directory).await?;
         let candidate = raw
             .map(PathBuf::from)
             .map(|p| if p.is_absolute() { p } else { base.join(p) })
             .unwrap_or_else(|| base.clone());
-        let resolved = Self::canonicalize(&candidate)?;
+        let resolved = Self::canonicalize(&candidate).await?;
         if !resolved.starts_with(&base) {
             return Err(Error::Tool(format!(
                 "workspace_root '{}' is outside tool working directory '{}'; use a path within the workspace",
@@ -158,8 +171,12 @@ impl LspTool {
         Ok(resolved)
     }
 
-    fn resolve_file_path(&self, context: &ToolExecutionContext, raw_file: &str) -> Result<PathBuf> {
-        let base = Self::canonicalize(&context.working_directory)?;
+    async fn resolve_file_path(
+        &self,
+        context: &ToolExecutionContext,
+        raw_file: &str,
+    ) -> Result<PathBuf> {
+        let base = Self::canonicalize(&context.working_directory).await?;
         let candidate = {
             let p = PathBuf::from(raw_file);
             if p.is_absolute() {
@@ -168,7 +185,7 @@ impl LspTool {
                 base.join(p)
             }
         };
-        let resolved = Self::canonicalize(&candidate)?;
+        let resolved = Self::canonicalize(&candidate).await?;
         if !resolved.starts_with(&base) {
             return Err(Error::Tool(format!(
                 "file_path '{}' is outside tool working directory '{}'; use a path within the workspace",
@@ -424,19 +441,10 @@ impl LspTool {
         }
 
         let command = Self::required_string(args, "server_command")?;
-        let server_args = args
-            .get("server_args")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(ToOwned::to_owned)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let workspace_root =
-            self.resolve_workspace_root(context, Self::optional_string(args, "workspace_root"))?;
+        let server_args = Self::optional_string_array(args, "server_args");
+        let workspace_root = self
+            .resolve_workspace_root(context, Self::optional_string(args, "workspace_root"))
+            .await?;
         let server_id = self
             .start_server_internal(command, &server_args, &workspace_root, timeout_seconds)
             .await?;
@@ -453,7 +461,7 @@ impl LspTool {
         file_path: &Path,
         language_id: Option<&str>,
     ) -> Result<()> {
-        let text = std::fs::read_to_string(file_path).map_err(|err| {
+        let text = tokio::fs::read_to_string(file_path).await.map_err(|err| {
             Error::Tool(format!("failed to read '{}': {err}", file_path.display()))
         })?;
         let uri = Self::path_to_lsp_uri(file_path, false)?;
@@ -544,21 +552,10 @@ impl LspTool {
         let payload = match operation {
             LspOperation::StartServer => {
                 let command = Self::required_string(&args, "server_command")?;
-                let server_args = args
-                    .get("server_args")
-                    .and_then(Value::as_array)
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .map(ToOwned::to_owned)
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                let workspace_root = self.resolve_workspace_root(
-                    context,
-                    Self::optional_string(&args, "workspace_root"),
-                )?;
+                let server_args = Self::optional_string_array(&args, "server_args");
+                let workspace_root = self
+                    .resolve_workspace_root(context, Self::optional_string(&args, "workspace_root"))
+                    .await?;
                 let server_id = self
                     .start_server_internal(command, &server_args, &workspace_root, timeout_seconds)
                     .await?;
@@ -625,8 +622,9 @@ impl LspTool {
                 }
             }
             LspOperation::Definition | LspOperation::References | LspOperation::Hover => {
-                let file_path =
-                    self.resolve_file_path(context, Self::required_string(&args, "file_path")?)?;
+                let file_path = self
+                    .resolve_file_path(context, Self::required_string(&args, "file_path")?)
+                    .await?;
                 let line = args.get("line").and_then(Value::as_u64).unwrap_or(0) as u32;
                 let character = args.get("character").and_then(Value::as_u64).unwrap_or(0) as u32;
                 let language_id = Self::optional_string(&args, "language_id");

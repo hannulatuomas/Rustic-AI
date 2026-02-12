@@ -11,6 +11,7 @@ use crate::storage::PendingToolState;
 use crate::ToolManager;
 use chrono::Utc;
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration, Instant};
@@ -20,6 +21,8 @@ const DEFAULT_MAX_TOOL_ROUNDS: usize = 4;
 const DEFAULT_MAX_TOOLS_PER_ROUND: usize = 8;
 const DEFAULT_MAX_TOTAL_TOOL_CALLS_PER_TURN: usize = 24;
 const DEFAULT_MAX_TURN_DURATION_SECONDS: u64 = 300;
+const DEFAULT_TOOL_SHORTLIST_ITEMS: usize = 12;
+const DEFAULT_TOOL_SHORTLIST_CHAR_BUDGET: usize = 1200;
 const HARD_MAX_TOOL_ROUNDS: usize = 32;
 const HARD_MAX_TOOLS_PER_ROUND: usize = 64;
 const HARD_MAX_TOTAL_TOOL_CALLS_PER_TURN: usize = 256;
@@ -53,6 +56,28 @@ struct ResponseMeta<'a> {
     agent_name: &'a str,
 }
 
+#[derive(Clone, Copy)]
+enum TurnDurationBudget {
+    Unlimited,
+    Remaining(Duration),
+    Exhausted,
+}
+
+enum ToolCallOutcome {
+    Completed(Option<crate::tools::ToolResult>),
+    Exhausted,
+}
+
+#[derive(Clone)]
+struct ToolCallExecutionContext<'a> {
+    session_id_str: &'a str,
+    agent_name: &'a str,
+    event_tx: mpsc::Sender<Event>,
+    cancellation_token: Option<CancellationToken>,
+    turn_started: Instant,
+    max_turn_duration: Option<Duration>,
+}
+
 impl Agent {
     fn is_cancelled(cancellation_token: Option<&CancellationToken>) -> bool {
         cancellation_token
@@ -62,6 +87,114 @@ impl Agent {
 
     fn interrupted_error() -> crate::Error {
         crate::Error::Timeout("agent turn interrupted by user".to_owned())
+    }
+
+    fn enforce_tool_call_budget(
+        total_tool_calls_executed: usize,
+        max_total_tool_calls: usize,
+        event_tx: &mpsc::Sender<Event>,
+    ) -> bool {
+        if total_tool_calls_executed >= max_total_tool_calls {
+            let _ = event_tx.try_send(Event::Progress(format!(
+                "agent reached max total tool calls per turn ({max_total_tool_calls}); stopping autonomous loop"
+            )));
+            true
+        } else {
+            false
+        }
+    }
+
+    fn turn_duration_budget(
+        turn_started: Instant,
+        max_turn_duration: Option<Duration>,
+        event_tx: &mpsc::Sender<Event>,
+        while_waiting_on_tool: bool,
+    ) -> TurnDurationBudget {
+        let Some(max_duration) = max_turn_duration else {
+            return TurnDurationBudget::Unlimited;
+        };
+
+        if turn_started.elapsed() >= max_duration {
+            let suffix = if while_waiting_on_tool {
+                " while waiting on tool"
+            } else {
+                ""
+            };
+            let _ = event_tx.try_send(Event::Progress(format!(
+                "agent reached max turn duration ({}s){suffix}; stopping autonomous loop",
+                max_duration.as_secs()
+            )));
+            return TurnDurationBudget::Exhausted;
+        }
+
+        match max_duration.checked_sub(turn_started.elapsed()) {
+            Some(remaining) if !remaining.is_zero() => TurnDurationBudget::Remaining(remaining),
+            _ => {
+                let suffix = if while_waiting_on_tool {
+                    " while waiting on tool"
+                } else {
+                    ""
+                };
+                let _ = event_tx.try_send(Event::Progress(format!(
+                    "agent reached max turn duration ({}s){suffix}; stopping autonomous loop",
+                    max_duration.as_secs()
+                )));
+                TurnDurationBudget::Exhausted
+            }
+        }
+    }
+
+    async fn execute_tool_with_turn_budget(
+        &self,
+        call: &ParsedToolCall,
+        exec_ctx: &ToolCallExecutionContext<'_>,
+    ) -> Result<ToolCallOutcome> {
+        match Self::turn_duration_budget(
+            exec_ctx.turn_started,
+            exec_ctx.max_turn_duration,
+            &exec_ctx.event_tx,
+            false,
+        ) {
+            TurnDurationBudget::Exhausted => Ok(ToolCallOutcome::Exhausted),
+            TurnDurationBudget::Remaining(remaining) => {
+                match timeout(
+                    remaining,
+                    self.tool_manager.execute_tool_with_cancel(
+                        exec_ctx.session_id_str.to_owned(),
+                        Some(exec_ctx.agent_name.to_owned()),
+                        &call.tool,
+                        call.args.clone(),
+                        exec_ctx.event_tx.clone(),
+                        exec_ctx.cancellation_token.clone(),
+                    ),
+                )
+                .await
+                {
+                    Ok(result) => Ok(ToolCallOutcome::Completed(result?)),
+                    Err(_) => {
+                        let _ = Self::turn_duration_budget(
+                            exec_ctx.turn_started,
+                            exec_ctx.max_turn_duration,
+                            &exec_ctx.event_tx,
+                            true,
+                        );
+                        Ok(ToolCallOutcome::Exhausted)
+                    }
+                }
+            }
+            TurnDurationBudget::Unlimited => Ok(ToolCallOutcome::Completed(
+                self.tool_manager
+                    .execute_tool_with_cancel(
+                        exec_ctx.session_id_str.to_owned(),
+                        Some(exec_ctx.agent_name.to_owned()),
+                        &call.tool,
+                        call.args.clone(),
+                        exec_ctx.event_tx.clone(),
+                        exec_ctx.cancellation_token.clone(),
+                    )
+                    .await?,
+            )),
+        }
     }
 
     pub fn new(
@@ -97,7 +230,7 @@ impl Agent {
         }
     }
 
-    fn system_prompt(&self) -> String {
+    async fn system_prompt(&self, focus_hint: Option<&str>) -> String {
         let base_prompt = if let Some(ref template) = self.config.system_prompt_template {
             template.clone()
         } else {
@@ -109,8 +242,59 @@ impl Agent {
         }
 
         let tools = self.config.tools.join(", ");
+        let configured = self
+            .config
+            .tools
+            .iter()
+            .map(|tool| tool.as_str())
+            .collect::<HashSet<_>>();
+        let shortlist_items = self
+            .config
+            .tool_shortlist_max_items
+            .unwrap_or(DEFAULT_TOOL_SHORTLIST_ITEMS);
+        let shortlist_cap = usize::min(self.config.tools.len(), shortlist_items);
+        let shortlist_char_budget = self
+            .config
+            .tool_shortlist_char_budget
+            .unwrap_or(DEFAULT_TOOL_SHORTLIST_CHAR_BUDGET);
+        let mut prioritized_tools = self
+            .tool_manager
+            .get_tool_descriptions(focus_hint, Some(shortlist_cap))
+            .await
+            .into_iter()
+            .filter(|(name, _)| configured.contains(name.as_str()))
+            .collect::<Vec<_>>();
+
+        if prioritized_tools.is_empty() {
+            prioritized_tools = self
+                .tool_manager
+                .get_tool_descriptions(None, None)
+                .await
+                .into_iter()
+                .filter(|(name, _)| configured.contains(name.as_str()))
+                .collect();
+        }
+
+        let mut prioritized_chunks = Vec::new();
+        let mut used_chars = 0usize;
+        for (name, description) in prioritized_tools {
+            let compact_description = description.split_whitespace().collect::<Vec<_>>().join(" ");
+            let chunk = format!("{name}: {compact_description}");
+            if !prioritized_chunks.is_empty() && used_chars + chunk.len() > shortlist_char_budget {
+                break;
+            }
+            used_chars += chunk.len();
+            prioritized_chunks.push(chunk);
+        }
+
+        let prioritized = if prioritized_chunks.is_empty() {
+            tools.clone()
+        } else {
+            prioritized_chunks.join("; ")
+        };
+
         format!(
-            "{base_prompt}\n\nWhen you need a tool, emit a single-line JSON object only with shape: {{\"tool\":\"<tool_name>\",\"args\":{{...}}}}. Available tools: {tools}."
+            "{base_prompt}\n\nWhen you need a tool, emit a single-line JSON object only with shape: {{\"tool\":\"<tool_name>\",\"args\":{{...}}}}. Configured tools: {tools}. Prioritize these tools for this task: {prioritized}."
         )
     }
 
@@ -386,6 +570,46 @@ impl Agent {
         })
     }
 
+    async fn handle_disallowed_tool_call(
+        &self,
+        session_id: uuid::Uuid,
+        session_id_str: &str,
+        agent_name: &str,
+        call: &ParsedToolCall,
+        event_tx: &mpsc::Sender<Event>,
+    ) -> Result<ChatMessage> {
+        let message = format!(
+            "tool '{}' is not allowed for agent '{}'",
+            call.tool, self.config.name
+        );
+        if self.learning.enabled() {
+            let pattern = self
+                .learning
+                .record_mistake(
+                    agent_name,
+                    MistakeType::WrongApproach,
+                    format!("tool={} not allowed", call.tool),
+                )
+                .await?;
+            let _ = event_tx.try_send(Event::LearningPatternWarning {
+                session_id: session_id_str.to_owned(),
+                agent: agent_name.to_owned(),
+                mistake_type: pattern.mistake_type.as_str().to_owned(),
+                frequency: pattern.frequency,
+                suggested_fix: pattern.suggested_fix,
+            });
+        }
+        self.session_manager
+            .append_message(session_id, "tool", &message)
+            .await?;
+        Ok(ChatMessage {
+            role: "tool".to_string(),
+            content: message,
+            name: Some(call.tool.clone()),
+            tool_calls: None,
+        })
+    }
+
     async fn persist_pending_state(
         &self,
         session_id: uuid::Uuid,
@@ -442,6 +666,7 @@ impl Agent {
         &self,
         session_id: uuid::Uuid,
         session_id_str: &str,
+        focus_hint: Option<&str>,
         event_tx: &mpsc::Sender<Event>,
     ) -> Result<Vec<ChatMessage>> {
         let messages = self
@@ -458,7 +683,7 @@ impl Agent {
             })
             .collect();
 
-        let system_prompt = self.system_prompt();
+        let system_prompt = self.system_prompt(focus_hint).await;
         let mut context = self
             .memory
             .build_context_window(chat_messages, &system_prompt, Some(self.provider.as_ref()))
@@ -586,18 +811,13 @@ impl Agent {
             // This will be used to resume after permission approval
             let context_snapshot = context.clone();
 
-            let remaining_duration = if let Some(max_duration) = max_turn_duration {
-                if turn_started.elapsed() >= max_duration {
-                    let _ = event_tx.try_send(Event::Progress(format!(
-                        "agent reached max turn duration ({}s); stopping autonomous loop",
-                        max_duration.as_secs()
-                    )));
-                    return Ok(());
-                }
-                max_duration.checked_sub(turn_started.elapsed())
-            } else {
-                None
-            };
+            let remaining_duration =
+                match Self::turn_duration_budget(turn_started, max_turn_duration, &event_tx, false)
+                {
+                    TurnDurationBudget::Unlimited => None,
+                    TurnDurationBudget::Remaining(duration) => Some(duration),
+                    TurnDurationBudget::Exhausted => return Ok(()),
+                };
 
             let response = self
                 .generate_response_with_events(
@@ -662,119 +882,49 @@ impl Agent {
                     return Err(Self::interrupted_error());
                 }
 
-                if total_tool_calls_executed >= max_total_tool_calls {
-                    let _ = event_tx.try_send(Event::Progress(format!(
-                        "agent reached max total tool calls per turn ({max_total_tool_calls}); stopping autonomous loop"
-                    )));
+                if Self::enforce_tool_call_budget(
+                    total_tool_calls_executed,
+                    max_total_tool_calls,
+                    &event_tx,
+                ) {
                     return Ok(());
                 }
                 total_tool_calls_executed += 1;
 
                 if !self.config.tools.iter().any(|name| name == &call.tool) {
-                    let message = format!(
-                        "tool '{}' is not allowed for agent '{}'",
-                        call.tool, self.config.name
-                    );
-                    if self.learning.enabled() {
-                        let pattern = self
-                            .learning
-                            .record_mistake(
-                                agent_name,
-                                MistakeType::WrongApproach,
-                                format!("tool={} not allowed", call.tool),
-                            )
-                            .await?;
-                        let _ = event_tx.try_send(Event::LearningPatternWarning {
-                            session_id: session_id_str.to_owned(),
-                            agent: agent_name.to_owned(),
-                            mistake_type: pattern.mistake_type.as_str().to_owned(),
-                            frequency: pattern.frequency,
-                            suggested_fix: pattern.suggested_fix,
-                        });
-                    }
-                    self.session_manager
-                        .append_message(session_id, "tool", &message)
+                    let disallowed = self
+                        .handle_disallowed_tool_call(
+                            session_id,
+                            session_id_str,
+                            agent_name,
+                            &call,
+                            &event_tx,
+                        )
                         .await?;
-                    tool_messages.push(ChatMessage {
-                        role: "tool".to_string(),
-                        content: message,
-                        name: Some(call.tool.clone()),
-                        tool_calls: None,
-                    });
+                    tool_messages.push(disallowed);
                     continue;
                 }
 
-                let tool_result = if let Some(max_duration) = max_turn_duration {
-                    if turn_started.elapsed() >= max_duration {
-                        let _ = event_tx.try_send(Event::Progress(format!(
-                            "agent reached max turn duration ({}s); stopping autonomous loop",
-                            max_duration.as_secs()
-                        )));
-                        return Ok(());
-                    }
-
-                    let remaining = max_duration
-                        .checked_sub(turn_started.elapsed())
-                        .unwrap_or(Duration::from_secs(0));
-                    if remaining.is_zero() {
-                        let _ = event_tx.try_send(Event::Progress(format!(
-                            "agent reached max turn duration ({}s); stopping autonomous loop",
-                            max_duration.as_secs()
-                        )));
-                        return Ok(());
-                    }
-
-                    match timeout(
-                        remaining,
-                        self.tool_manager.execute_tool_with_cancel(
-                            session_id_str.to_owned(),
-                            Some(agent_name.to_owned()),
-                            &call.tool,
-                            call.args.clone(),
-                            event_tx.clone(),
-                            cancellation_token.clone(),
-                        ),
+                let tool_result = match self
+                    .execute_tool_with_turn_budget(
+                        &call,
+                        &ToolCallExecutionContext {
+                            session_id_str,
+                            agent_name,
+                            event_tx: event_tx.clone(),
+                            cancellation_token: cancellation_token.clone(),
+                            turn_started,
+                            max_turn_duration,
+                        },
                     )
-                    .await
-                    {
-                        Ok(result) => result?,
-                        Err(_) => {
-                            let _ = event_tx.try_send(Event::Progress(format!(
-                                "agent reached max turn duration ({}s) while waiting on tool; stopping autonomous loop",
-                                max_duration.as_secs()
-                            )));
-                            return Ok(());
-                        }
-                    }
-                } else {
-                    self.tool_manager
-                        .execute_tool_with_cancel(
-                            session_id_str.to_owned(),
-                            Some(agent_name.to_owned()),
-                            &call.tool,
-                            call.args.clone(),
-                            event_tx.clone(),
-                            cancellation_token.clone(),
-                        )
-                        .await?
+                    .await?
+                {
+                    ToolCallOutcome::Exhausted => return Ok(()),
+                    ToolCallOutcome::Completed(result) => result,
                 };
 
-                let tool_message = match &tool_result {
-                    Some(result) => {
-                        format!(
-                            "{{\"tool\":\"{}\",\"success\":{},\"exit_code\":{},\"output\":{}}}",
-                            call.tool,
-                            result.success,
-                            result.exit_code.unwrap_or_default(),
-                            serde_json::to_string(&result.output)
-                                .unwrap_or_else(|_| "\"\"".to_string())
-                        )
-                    }
-                    None => format!(
-                        "tool '{}' requires user input before execution and is pending",
-                        call.tool
-                    ),
-                };
+                let tool_message =
+                    Self::render_tool_output_message(&call.tool, tool_result.as_ref());
 
                 self.session_manager
                     .append_message(session_id, "tool", &tool_message)
@@ -1033,7 +1183,7 @@ impl Agent {
         // We need to load the assistant response that was generated before the pending tool
         // This is the last assistant message before the tool messages
         let context_window = self
-            .load_context_window_from_session(session_id, session_id_str, &event_tx)
+            .load_context_window_from_session(session_id, session_id_str, None, &event_tx)
             .await?;
         let assistant_response = context_window
             .iter()
@@ -1065,10 +1215,11 @@ impl Agent {
             .take(max_tools_per_round.saturating_sub(tool_messages.len()));
 
         for call in remaining_tools {
-            if total_tool_calls_executed >= max_total_tool_calls {
-                let _ = event_tx.try_send(Event::Progress(format!(
-                    "agent reached max total tool calls per turn ({max_total_tool_calls}); stopping autonomous loop"
-                )));
+            if Self::enforce_tool_call_budget(
+                total_tool_calls_executed,
+                max_total_tool_calls,
+                &event_tx,
+            ) {
                 break;
             }
 
@@ -1117,18 +1268,13 @@ impl Agent {
                 return Err(Self::interrupted_error());
             }
 
-            let remaining_duration = if let Some(max_duration) = max_turn_duration {
-                if turn_started.elapsed() >= max_duration {
-                    let _ = event_tx.try_send(Event::Progress(format!(
-                        "agent reached max turn duration ({}s); stopping autonomous loop",
-                        max_duration.as_secs()
-                    )));
-                    break;
-                }
-                max_duration.checked_sub(turn_started.elapsed())
-            } else {
-                None
-            };
+            let remaining_duration =
+                match Self::turn_duration_budget(turn_started, max_turn_duration, &event_tx, false)
+                {
+                    TurnDurationBudget::Unlimited => None,
+                    TurnDurationBudget::Remaining(duration) => Some(duration),
+                    TurnDurationBudget::Exhausted => break,
+                };
 
             let response = self
                 .generate_response_with_events(
@@ -1166,10 +1312,11 @@ impl Agent {
 
             let mut tool_messages_round = Vec::new();
             for call in parsed_tool_calls {
-                if total_tool_calls_executed >= max_total_tool_calls {
-                    let _ = event_tx.try_send(Event::Progress(format!(
-                        "agent reached max total tool calls per turn ({max_total_tool_calls}); stopping autonomous loop"
-                    )));
+                if Self::enforce_tool_call_budget(
+                    total_tool_calls_executed,
+                    max_total_tool_calls,
+                    &event_tx,
+                ) {
                     return Ok(());
                 }
                 total_tool_calls_executed += 1;
@@ -1257,7 +1404,7 @@ impl Agent {
         } else {
             // No pending state - reload context and continue
             let mut context_window = self
-                .load_context_window_from_session(session_id, &session_id_str, &event_tx)
+                .load_context_window_from_session(session_id, &session_id_str, None, &event_tx)
                 .await?;
             if let Some(query) = Self::latest_user_task(&context_window) {
                 self.maybe_inject_retrieval_context(
@@ -1311,7 +1458,7 @@ impl Agent {
 
         // 2-4. Load session history and build context window
         let context_window = self
-            .load_context_window_from_session(session_id, &session_id_str, &event_tx)
+            .load_context_window_from_session(session_id, &session_id_str, Some(&input), &event_tx)
             .await?;
 
         // 5. Add user input to context
@@ -1376,7 +1523,7 @@ impl Agent {
         event_tx: mpsc::Sender<Event>,
         cancellation_token: Option<CancellationToken>,
     ) -> Result<String> {
-        let system_prompt = self.system_prompt();
+        let system_prompt = self.system_prompt(Some(task)).await;
         if !context.iter().any(|message| message.role == "system") {
             context.insert(
                 0,

@@ -54,6 +54,21 @@ impl GitCommand {
     fn is_write(self) -> bool {
         !matches!(self, Self::Status | Self::Diff | Self::Log)
     }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Clone => "clone",
+            Self::Pull => "pull",
+            Self::Push => "push",
+            Self::Commit => "commit",
+            Self::Status => "status",
+            Self::Diff => "diff",
+            Self::Branch => "branch",
+            Self::Tag => "tag",
+            Self::Log => "log",
+            Self::Checkout => "checkout",
+        }
+    }
 }
 
 impl GitTool {
@@ -137,13 +152,8 @@ impl GitTool {
         Ok(paths)
     }
 
-    fn canonicalize_for_guard(path: &Path) -> Result<PathBuf> {
-        std::fs::canonicalize(path).map_err(|err| {
-            Error::Tool(format!(
-                "failed to resolve path '{}': {err}",
-                path.display()
-            ))
-        })
+    fn canonicalize_for_guard(path: &Path) -> std::io::Result<PathBuf> {
+        std::fs::canonicalize(path)
     }
 
     fn resolve_path_within_workspace(
@@ -152,7 +162,12 @@ impl GitTool {
         raw: Option<&str>,
         allow_missing_leaf: bool,
     ) -> Result<PathBuf> {
-        let base = Self::canonicalize_for_guard(&context.working_directory)?;
+        let base = Self::canonicalize_for_guard(&context.working_directory).map_err(|err| {
+            Error::Tool(format!(
+                "failed to resolve path '{}': {err}",
+                context.working_directory.display()
+            ))
+        })?;
         let requested = match raw {
             Some(text) => {
                 let candidate = PathBuf::from(text);
@@ -165,16 +180,24 @@ impl GitTool {
             None => base.clone(),
         };
 
-        if requested.exists() {
-            let resolved = Self::canonicalize_for_guard(&requested)?;
-            if !resolved.starts_with(&base) {
+        match Self::canonicalize_for_guard(&requested) {
+            Ok(resolved) => {
+                if !resolved.starts_with(&base) {
+                    return Err(Error::Tool(format!(
+                        "path '{}' is outside tool working directory '{}'; use a path within the workspace",
+                        resolved.display(),
+                        base.display()
+                    )));
+                }
+                return Ok(resolved);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
                 return Err(Error::Tool(format!(
-                    "path '{}' is outside tool working directory '{}'; use a path within the workspace",
-                    resolved.display(),
-                    base.display()
+                    "failed to resolve path '{}': {err}",
+                    requested.display()
                 )));
             }
-            return Ok(resolved);
         }
 
         if allow_missing_leaf {
@@ -184,7 +207,12 @@ impl GitTool {
                     requested.display()
                 ))
             })?;
-            let parent_resolved = Self::canonicalize_for_guard(parent)?;
+            let parent_resolved = Self::canonicalize_for_guard(parent).map_err(|err| {
+                Error::Tool(format!(
+                    "failed to resolve path '{}': {err}",
+                    parent.display()
+                ))
+            })?;
             if !parent_resolved.starts_with(&base) {
                 return Err(Error::Tool(format!(
                     "path '{}' is outside tool working directory '{}'; use a path within the workspace",
@@ -217,18 +245,7 @@ impl GitTool {
         if command.is_write() && context.agent_permission_mode == AgentPermissionMode::ReadOnly {
             return Err(Error::Tool(format!(
                 "git command '{}' is blocked in read-only agent mode",
-                match command {
-                    GitCommand::Clone => "clone",
-                    GitCommand::Pull => "pull",
-                    GitCommand::Push => "push",
-                    GitCommand::Commit => "commit",
-                    GitCommand::Status => "status",
-                    GitCommand::Diff => "diff",
-                    GitCommand::Branch => "branch",
-                    GitCommand::Tag => "tag",
-                    GitCommand::Log => "log",
-                    GitCommand::Checkout => "checkout",
-                }
+                command.as_str()
             )));
         }
         Ok(())
@@ -330,8 +347,7 @@ impl GitTool {
 
         let mut patch = String::new();
         diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
-            let chunk = std::str::from_utf8(line.content()).unwrap_or_default();
-            patch.push_str(chunk);
+            patch.push_str(&String::from_utf8_lossy(line.content()));
             true
         })
         .map_err(|err| Error::Tool(format!("failed to format diff output: {err}")))?;
@@ -782,8 +798,9 @@ impl GitTool {
         Ok(ToolResult {
             success: true,
             exit_code: Some(0),
-            output: serde_json::to_string(&payload)
-                .unwrap_or_else(|_| "{\"success\":true}".to_owned()),
+            output: serde_json::to_string(&payload).map_err(|err| {
+                Error::Tool(format!("failed to serialize git tool output: {err}"))
+            })?,
         })
     }
 }
@@ -814,18 +831,7 @@ impl Tool for GitTool {
     ) -> Result<ToolResult> {
         let tool_name = self.name().to_owned();
         let command = Self::command_from_args(&args)
-            .map(|cmd| match cmd {
-                GitCommand::Clone => "clone",
-                GitCommand::Pull => "pull",
-                GitCommand::Push => "push",
-                GitCommand::Commit => "commit",
-                GitCommand::Status => "status",
-                GitCommand::Diff => "diff",
-                GitCommand::Branch => "branch",
-                GitCommand::Tag => "tag",
-                GitCommand::Log => "log",
-                GitCommand::Checkout => "checkout",
-            })
+            .map(GitCommand::as_str)
             .unwrap_or("unknown")
             .to_owned();
 

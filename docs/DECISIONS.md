@@ -614,7 +614,43 @@ ADR-0031: Dynamic Routing Fallback and Confidence Thresholding
   - Routing never fails; fallback ensures completion.
   - Users can see why routing chose a particular agent (traceability).
   - Fallback agent can be tuned per project or task patterns.
-  - Alternatives list enables manual override if routing is incorrect.
+- Alternatives list enables manual override if routing is incorrect.
+
+---
+
+ADR-0032: Dependency Modernization for Rust 2024 Compatibility and Async I/O Hardening
+
+- Status: Accepted
+- Date: 2026-02-12
+- Context: Core quality checks flagged future-incompat warnings from `sqlx-postgres v0.8.0` and runtime paths still had synchronous filesystem reads in async-heavy indexing/RAG flows.
+- Decision:
+  - Upgrade dependency stack to remove blocked upgrade constraints and clear future-incompat warnings:
+    - `sqlx` family upgraded to `0.8.6`
+    - `tree-sitter` and language grammar crates upgraded from `0.20.x` generation to current compatible versions
+    - migrate AST language bindings from function-based APIs to `LANGUAGE` constants (`LanguageFn -> Language`) and updated parser signature usage.
+  - Keep core panic-free policy strict by removing remaining `unwrap/expect` usage from runtime and tests.
+  - Replace synchronous filesystem reads in async hot paths with async equivalents in indexing and RAG flows.
+- Consequences:
+  - `cargo build/clippy/test` for `rustic-ai-core` runs clean without `sqlx-postgres` future-incompat warnings.
+  - Indexing and retrieval loops avoid avoidable blocking file I/O in async execution paths.
+- Dependency graph remains modernized and less likely to break on Rust edition/toolchain transitions.
+
+---
+
+ADR-0033: Keep Startup Loaders Synchronous, Add Async Runtime Paths Incrementally
+
+- Status: Accepted
+- Date: 2026-02-12
+- Context: Core still contains synchronous file loading in config/rules/skills/workflow loaders. Not all sync I/O is equal risk: startup-only paths are low impact, while request/agent/tool hot paths can block async executors.
+- Decision:
+  - Keep startup loader APIs synchronous for now (`Runtime::new` remains sync and loader call graph is startup-only).
+  - Prioritize async or `spawn_blocking` for hot/runtime paths (tool execution, retrieval, session rule loading, long-running operations).
+  - Continue reducing unnecessary filesystem syscalls and TOCTOU patterns (prefer direct operation with precise error handling over `exists()` pre-checks).
+  - Revisit fully async loader APIs only when runtime reload/hot-reload requirements are introduced.
+- Consequences:
+  - Immediate runtime responsiveness improves without broad API churn.
+  - Startup behavior remains deterministic and simpler to reason about.
+  - Future hot-reload work has a clear migration trigger and boundary.
 
 ---
 

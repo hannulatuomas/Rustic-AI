@@ -96,7 +96,7 @@ impl ShellTool {
         }
     }
 
-    fn resolve_working_dir(
+    async fn resolve_working_dir(
         &self,
         work_dir: &Path,
         per_call_override: Option<&Path>,
@@ -129,18 +129,18 @@ impl ShellTool {
             }
         };
 
-        if !resolved.exists() {
-            return Err(Error::Tool(format!(
-                "working directory '{}' does not exist",
-                resolved.display()
-            )));
-        }
-
-        let metadata = std::fs::metadata(&resolved).map_err(|err| {
-            Error::Tool(format!(
-                "failed to read metadata for working directory '{}': {err}",
-                resolved.display()
-            ))
+        let metadata = tokio::fs::metadata(&resolved).await.map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                Error::Tool(format!(
+                    "working directory '{}' does not exist",
+                    resolved.display()
+                ))
+            } else {
+                Error::Tool(format!(
+                    "failed to read metadata for working directory '{}': {err}",
+                    resolved.display()
+                ))
+            }
         })?;
         if !metadata.is_dir() {
             return Err(Error::Tool(format!(
@@ -149,7 +149,7 @@ impl ShellTool {
             )));
         }
 
-        std::fs::canonicalize(&resolved).map_err(|err| {
+        tokio::fs::canonicalize(&resolved).await.map_err(|err| {
             Error::Tool(format!(
                 "failed to canonicalize working directory '{}': {err}",
                 resolved.display()
@@ -357,7 +357,9 @@ impl ShellTool {
         let cancellation_token = input.cancellation_token;
 
         self.cleanup_expired_sudo_passwords().await;
-        let working_dir = self.resolve_working_dir(work_dir, per_call_override)?;
+        let working_dir = self
+            .resolve_working_dir(work_dir, per_call_override)
+            .await?;
         let requires_sudo = self.command_requires_sudo(command);
 
         let effective_password = if requires_sudo {

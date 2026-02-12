@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -168,16 +167,11 @@ impl HybridRetriever {
         snippets.retain(|snippet| self.matches_filters(snippet, request.filters.as_ref()));
 
         for snippet in &mut snippets {
-            self.expand_context(snippet);
-            self.apply_ranking_adjustments(snippet);
+            self.expand_context(snippet).await;
+            self.apply_ranking_adjustments(snippet).await;
         }
 
-        snippets.sort_by(|left, right| {
-            right
-                .score
-                .partial_cmp(&left.score)
-                .unwrap_or(Ordering::Equal)
-        });
+        snippets.sort_by(|left, right| right.score.total_cmp(&left.score));
         if snippets.len() > request.top_k {
             snippets.truncate(request.top_k);
         }
@@ -254,12 +248,12 @@ impl HybridRetriever {
         true
     }
 
-    fn expand_context(&self, snippet: &mut CodeSnippet) {
+    async fn expand_context(&self, snippet: &mut CodeSnippet) {
         if self.config.context_expansion_lines == 0 {
             return;
         }
         let resolved_path = self.workspace.join(&snippet.file_path);
-        let Ok(content) = std::fs::read_to_string(&resolved_path) else {
+        let Ok(content) = tokio::fs::read_to_string(&resolved_path).await else {
             return;
         };
         let lines = content.lines().collect::<Vec<_>>();
@@ -296,9 +290,9 @@ impl HybridRetriever {
         }
     }
 
-    fn apply_ranking_adjustments(&self, snippet: &mut CodeSnippet) {
+    async fn apply_ranking_adjustments(&self, snippet: &mut CodeSnippet) {
         let resolved_path = self.workspace.join(&snippet.file_path);
-        let recency_score = file_recency_score(&resolved_path);
+        let recency_score = file_recency_score(&resolved_path).await;
         let importance_score = if snippet.kind == "keyword" { 1.0 } else { 0.75 };
 
         snippet.score += recency_score * self.config.ranking_recency_weight;
@@ -306,8 +300,8 @@ impl HybridRetriever {
     }
 }
 
-fn file_recency_score(path: &PathBuf) -> f32 {
-    let Ok(metadata) = std::fs::metadata(path) else {
+async fn file_recency_score(path: &PathBuf) -> f32 {
+    let Ok(metadata) = tokio::fs::metadata(path).await else {
         return 0.35;
     };
     let Ok(modified) = metadata.modified() else {

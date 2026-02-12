@@ -68,26 +68,27 @@ pub fn build_file_and_symbols(
 fn extract_imports(language: &str, source: &str) -> Vec<String> {
     let mut imports = Vec::new();
 
-    let regexes = match language {
-        "rust" => vec![
-            Regex::new(r"^\s*use\s+([^;]+);").unwrap(),
-            Regex::new(r"^\s*mod\s+([A-Za-z_][A-Za-z0-9_]*);?").unwrap(),
+    let patterns: &[&str] = match language {
+        "rust" => &[
+            r"^\s*use\s+([^;]+);",
+            r"^\s*mod\s+([A-Za-z_][A-Za-z0-9_]*);?",
         ],
-        "python" => vec![
-            Regex::new(r"^\s*import\s+(.+)$").unwrap(),
-            Regex::new(r"^\s*from\s+([A-Za-z0-9_\.]+)\s+import\s+(.+)$").unwrap(),
+        "python" => &[
+            r"^\s*import\s+(.+)$",
+            r"^\s*from\s+([A-Za-z0-9_\.]+)\s+import\s+(.+)$",
         ],
-        "javascript" | "typescript" => vec![
-            Regex::new(r#"^\s*import\s+.+\s+from\s+['\"]([^'\"]+)['\"]"#).unwrap(),
-            Regex::new(r#"^\s*const\s+.+\s*=\s*require\(['\"]([^'\"]+)['\"]\)"#).unwrap(),
+        "javascript" | "typescript" => &[
+            r#"^\s*import\s+.+\s+from\s+['\"]([^'\"]+)['\"]"#,
+            r#"^\s*const\s+.+\s*=\s*require\(['\"]([^'\"]+)['\"]\)"#,
         ],
-        "go" => vec![
-            Regex::new(r#"^\s*import\s+\"([^\"]+)\""#).unwrap(),
-            Regex::new(r#"^\s*\"([^\"]+)\""#).unwrap(),
-        ],
-        "c" | "cpp" => vec![Regex::new(r#"^\s*#include\s+[<"]([^>"]+)[>"]"#).unwrap()],
-        _ => Vec::new(),
+        "go" => &[r#"^\s*import\s+\"([^\"]+)\""#, r#"^\s*\"([^\"]+)\""#],
+        "c" | "cpp" => &[r#"^\s*#include\s+[<"]([^>"]+)[>"]"#],
+        _ => &[],
     };
+    let regexes = patterns
+        .iter()
+        .filter_map(|pattern| Regex::new(pattern).ok())
+        .collect::<Vec<_>>();
 
     for line in source.lines() {
         for regex in &regexes {

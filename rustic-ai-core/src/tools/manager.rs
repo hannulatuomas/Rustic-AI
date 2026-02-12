@@ -521,10 +521,10 @@ impl ToolManager {
     }
 
     pub fn attach_agents(&self, agents: Arc<AgentCoordinator>) {
-        let mut guard = self
-            .agents
-            .write()
-            .expect("tool manager agents lock poisoned");
+        let Ok(mut guard) = self.agents.write() else {
+            tracing::warn!("tool manager agents lock poisoned; skipping attach_agents");
+            return;
+        };
         *guard = Some(agents);
 
         let sub_agent_config = {
@@ -579,7 +579,7 @@ impl ToolManager {
             let guard = self
                 .agents
                 .read()
-                .expect("tool manager agents lock poisoned");
+                .map_err(|_| Error::Tool("tool manager agents lock poisoned".to_owned()))?;
             guard.clone()
         }
         .ok_or_else(|| {

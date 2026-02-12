@@ -24,16 +24,16 @@ impl GitignoreMatcher {
         };
 
         let gitignore_path = root.join(".gitignore");
-        if !gitignore_path.exists() {
-            return Ok(matcher);
-        }
-
-        let content = std::fs::read_to_string(&gitignore_path).map_err(|err| {
-            Error::Config(format!(
-                "failed to read .gitignore '{}': {err}",
-                gitignore_path.display()
-            ))
-        })?;
+        let content = match std::fs::read_to_string(&gitignore_path) {
+            Ok(content) => content,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(matcher),
+            Err(err) => {
+                return Err(Error::Config(format!(
+                    "failed to read .gitignore '{}': {err}",
+                    gitignore_path.display()
+                )));
+            }
+        };
 
         for raw_line in content.lines() {
             let line = raw_line.trim();
