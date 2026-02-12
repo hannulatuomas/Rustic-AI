@@ -164,6 +164,22 @@ impl SubAgentTool {
         Ok(parsed)
     }
 
+    async fn find_latest_routing_todo_link(
+        &self,
+        session_id: Uuid,
+    ) -> Option<(Uuid, Option<Uuid>)> {
+        let filter = crate::storage::TodoFilter {
+            session_id: Some(session_id),
+            tags: Some(vec!["routing".to_string()]),
+            limit: Some(64),
+            ..Default::default()
+        };
+        let mut todos = self.storage.list_todos(&filter).await.ok()?;
+        todos.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+        let todo = todos.into_iter().next()?;
+        Some((todo.id, todo.metadata.routing_trace_id))
+    }
+
     async fn execute_parallel_requests(
         &self,
         requests: &[ParallelSubAgentRequest],
@@ -172,6 +188,10 @@ impl SubAgentTool {
         tx: mpsc::Sender<Event>,
         context: &ToolExecutionContext,
     ) -> Result<ToolResult> {
+        let routing_link = self.find_latest_routing_todo_link(session_id).await;
+        let routing_parent_id = routing_link.map(|(todo_id, _)| todo_id);
+        let routing_trace_id = routing_link.and_then(|(_, trace_id)| trace_id);
+
         let agents = {
             let guard = self
                 .agents
@@ -212,7 +232,7 @@ impl SubAgentTool {
                 id: parent_id,
                 project_id: None,
                 session_id,
-                parent_id: None,
+                parent_id: routing_parent_id,
                 title: format!("Parallel sub-agent batch ({} tasks)", requests.len()),
                 description: Some("Auto-created from parallel sub-agent request".to_string()),
                 status: crate::storage::TodoStatus::InProgress,
@@ -220,6 +240,7 @@ impl SubAgentTool {
                 tags: vec!["sub-agent".to_string(), "parallel".to_string()],
                 metadata: crate::storage::TodoMetadata {
                     tools: vec!["sub_agent".to_string()],
+                    routing_trace_id,
                     ..Default::default()
                 },
                 created_at: Utc::now(),
@@ -274,6 +295,7 @@ impl SubAgentTool {
                     tags: vec!["sub-agent".to_string()],
                     metadata: crate::storage::TodoMetadata {
                         tools: vec!["sub_agent".to_string()],
+                        routing_trace_id,
                         ..Default::default()
                     },
                     created_at: Utc::now(),
@@ -322,6 +344,7 @@ impl SubAgentTool {
                                     status: Some(crate::storage::TodoStatus::Blocked),
                                     metadata: Some(crate::storage::TodoMetadata {
                                         tools: vec!["sub_agent".to_string()],
+                                        routing_trace_id,
                                         reason: Some(err.to_string()),
                                         ..Default::default()
                                     }),
@@ -346,6 +369,7 @@ impl SubAgentTool {
                             status: Some(crate::storage::TodoStatus::Blocked),
                             metadata: Some(crate::storage::TodoMetadata {
                                 tools: vec!["sub_agent".to_string()],
+                                routing_trace_id,
                                 reason: Some(format!(
                                     "{} of {} parallel sub-agent tasks failed",
                                     failure_count, total
@@ -580,13 +604,17 @@ impl Tool for SubAgentTool {
             .map(|cfg| cfg.auto_create_todos)
             .unwrap_or(false);
 
+        let routing_link = self.find_latest_routing_todo_link(session_id).await;
+        let routing_parent_id = routing_link.map(|(todo_id, _)| todo_id);
+        let routing_trace_id = routing_link.and_then(|(_, trace_id)| trace_id);
+
         let todo_id = if auto_todos {
             let id = Uuid::new_v4();
             let todo = crate::storage::Todo {
                 id,
                 project_id: None,
                 session_id,
-                parent_id: None,
+                parent_id: routing_parent_id,
                 title: format!("Sub-agent '{}' task", parsed.target_agent),
                 description: Some(parsed.task.clone()),
                 status: crate::storage::TodoStatus::InProgress,
@@ -594,6 +622,7 @@ impl Tool for SubAgentTool {
                 tags: vec!["sub-agent".to_string()],
                 metadata: crate::storage::TodoMetadata {
                     tools: vec!["sub_agent".to_string()],
+                    routing_trace_id,
                     ..Default::default()
                 },
                 created_at: Utc::now(),
@@ -670,6 +699,7 @@ impl Tool for SubAgentTool {
                                 status: Some(crate::storage::TodoStatus::Completed),
                                 metadata: Some(crate::storage::TodoMetadata {
                                     tools: vec!["sub_agent".to_string()],
+                                    routing_trace_id,
                                     sub_agent_output_id: Some(cached.id),
                                     ..Default::default()
                                 }),
@@ -760,6 +790,7 @@ impl Tool for SubAgentTool {
                                 status: Some(crate::storage::TodoStatus::Completed),
                                 metadata: Some(crate::storage::TodoMetadata {
                                     tools: vec!["sub_agent".to_string()],
+                                    routing_trace_id,
                                     sub_agent_output_id: cached_output_id,
                                     ..Default::default()
                                 }),
@@ -791,6 +822,7 @@ impl Tool for SubAgentTool {
                                 status: Some(crate::storage::TodoStatus::Blocked),
                                 metadata: Some(crate::storage::TodoMetadata {
                                     tools: vec!["sub_agent".to_string()],
+                                    routing_trace_id,
                                     reason: Some(err.to_string()),
                                     ..Default::default()
                                 }),

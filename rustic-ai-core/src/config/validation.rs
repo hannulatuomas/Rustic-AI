@@ -667,6 +667,32 @@ pub fn validate_config(config: &Config) -> Result<()> {
             }
         }
 
+        if let Some(max_items) = agent.sub_agent_target_shortlist_max_items {
+            if max_items == 0 {
+                return Err(Error::Validation(format!(
+                    "agent '{name}' sub_agent_target_shortlist_max_items must be greater than zero when set"
+                )));
+            }
+            if max_items > 64 {
+                return Err(Error::Validation(format!(
+                    "agent '{name}' sub_agent_target_shortlist_max_items must be <= 64 when set"
+                )));
+            }
+        }
+
+        if let Some(char_budget) = agent.sub_agent_target_shortlist_char_budget {
+            if char_budget == 0 {
+                return Err(Error::Validation(format!(
+                    "agent '{name}' sub_agent_target_shortlist_char_budget must be greater than zero when set"
+                )));
+            }
+            if char_budget > 8_000 {
+                return Err(Error::Validation(format!(
+                    "agent '{name}' sub_agent_target_shortlist_char_budget must be <= 8000 when set"
+                )));
+            }
+        }
+
         if let Some(max_parallel) = agent.sub_agent_max_parallel_tasks {
             if max_parallel > 10_000 {
                 return Err(Error::Validation(format!(

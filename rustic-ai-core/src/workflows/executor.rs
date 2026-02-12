@@ -8,7 +8,7 @@ use super::types::{
     WorkflowDefinition, WorkflowExecutionConfig, WorkflowStep, WorkflowStepKind,
 };
 use crate::agents::AgentCoordinator;
-use crate::config::schema::WorkflowCompatibilityPreset;
+use crate::config::schema::{DynamicRoutingConfig, WorkflowCompatibilityPreset};
 use crate::conversation::session_manager::SessionManager;
 use crate::error::{Error, Result};
 use crate::events::Event;
@@ -53,6 +53,10 @@ pub struct WorkflowExecutorConfig {
     pub loop_hard_max_parallelism: u64,
     pub wait_default_poll_interval_ms: u64,
     pub wait_default_timeout_seconds: u64,
+    pub dynamic_routing_enabled: bool,
+    pub dynamic_routing: DynamicRoutingConfig,
+    pub todo_tracking_enabled: bool,
+    pub project_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2187,18 +2191,19 @@ impl WorkflowExecutor {
         outputs: &BTreeMap<String, Value>,
         counters: &mut RetryCounters<'_>,
     ) -> Result<(bool, Value)> {
-        let target_agent = step_ctx
+        let configured_agent = step_ctx
             .step
             .config
             .get("agent")
             .and_then(Value::as_str)
-            .or(request.agent_name.as_deref())
-            .ok_or_else(|| {
-                Error::Tool(format!(
-                    "workflow '{}' step '{}' missing config.agent and no default agent provided",
-                    step_ctx.workflow_name, step_ctx.step.id
-                ))
-            })?;
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let explicit_routing = step_ctx
+            .step
+            .config
+            .get("route_dynamic")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
         let prompt_template = step_ctx
             .step
@@ -2224,7 +2229,38 @@ impl WorkflowExecutor {
             ))
         })?;
 
-        let agent = self.agents.get_agent(Some(target_agent)).map_err(|err| {
+        let mut target_agent = configured_agent
+            .or(request.agent_name.as_deref())
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| {
+                Error::Tool(format!(
+                    "workflow '{}' step '{}' missing config.agent and no default agent provided",
+                    step_ctx.workflow_name, step_ctx.step.id
+                ))
+            })?;
+
+        let should_route = self.config.dynamic_routing_enabled
+            && self.config.dynamic_routing.enabled
+            && (explicit_routing || configured_agent.is_none() || configured_agent == Some("auto"));
+
+        if should_route {
+            if let Some(decision) = self
+                .agents
+                .route_task_and_record(
+                    session_uuid,
+                    &prompt,
+                    &self.config.dynamic_routing,
+                    self.config.todo_tracking_enabled,
+                    self.config.project_id.clone(),
+                    &["workflow", "agent_step"],
+                )
+                .await?
+            {
+                target_agent = decision.agent;
+            }
+        }
+
+        let agent = self.agents.get_agent(Some(&target_agent)).map_err(|err| {
             Error::Tool(format!(
                 "workflow '{}' step '{}' failed to resolve agent '{}': {err}",
                 step_ctx.workflow_name, step_ctx.step.id, target_agent

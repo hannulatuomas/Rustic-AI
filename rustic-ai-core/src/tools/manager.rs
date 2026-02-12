@@ -1,6 +1,6 @@
 use crate::config::schema::{
-    AgentPermissionMode, McpConfig, PermissionConfig, PluginConfig, SubAgentCacheMode, ToolConfig,
-    WorkflowsConfig,
+    AgentPermissionMode, DynamicRoutingConfig, McpConfig, PermissionConfig, PluginConfig,
+    SubAgentCacheMode, ToolConfig, WorkflowsConfig,
 };
 use crate::error::{Error, Result};
 use crate::events::Event;
@@ -10,11 +10,13 @@ use crate::permissions::{
 use crate::skills::SkillRegistry;
 use crate::tools::plugin::PluginLoader;
 use crate::tools::{
-    bracket_validator::BracketValidatorTool, convert::ConvertTool, database::DatabaseTool,
-    download::DownloadTool, encoding::EncodingTool, filesystem::FilesystemTool, format::FormatTool,
-    git::GitTool, grep::GrepTool, http::HttpTool, image::ImageTool, lsp::LspTool,
-    mcp::McpToolAdapter, regex::RegexTool, shell::ShellTool, skill::SkillTool, ssh::SshTool,
-    sub_agent::SubAgentTool, web_search::WebSearchTool, Tool, ToolExecutionContext,
+    bracket_validator::BracketValidatorTool, code_search::CodeSearchTool, convert::ConvertTool,
+    crawler::CrawlerTool, database::DatabaseTool, docker::DockerTool, download::DownloadTool,
+    encoding::EncodingTool, filesystem::FilesystemTool, format::FormatTool, git::GitTool,
+    grep::GrepTool, http::HttpTool, image::ImageTool, lsp::LspTool, mcp::McpToolAdapter,
+    process::ProcessTool, regex::RegexTool, shell::ShellTool, skill::SkillTool, ssh::SshTool,
+    sub_agent::SubAgentTool, watch::WatchTool, web_fetch::WebFetchTool, web_search::WebSearchTool,
+    Tool, ToolExecutionContext,
 };
 use crate::workflows::{
     build_workflow_executor_config, WorkflowExecutor, WorkflowRegistry, WorkflowRunRequest,
@@ -41,6 +43,10 @@ pub struct ToolManager {
     workflows_enabled: bool,
     workflows: Arc<WorkflowRegistry>,
     workflows_config: Arc<WorkflowsConfig>,
+    dynamic_routing_enabled: bool,
+    dynamic_routing: Arc<DynamicRoutingConfig>,
+    todo_tracking_enabled: bool,
+    project_id: Option<String>,
     skills: Arc<SkillRegistry>,
     agents: Arc<StdRwLock<Option<Arc<AgentCoordinator>>>>,
     session_manager: Arc<SessionManager>,
@@ -66,6 +72,10 @@ pub struct ToolManagerInit {
     pub workflows_enabled: bool,
     pub workflows: Arc<WorkflowRegistry>,
     pub workflows_config: Arc<WorkflowsConfig>,
+    pub dynamic_routing_enabled: bool,
+    pub dynamic_routing: Arc<DynamicRoutingConfig>,
+    pub todo_tracking_enabled: bool,
+    pub project_id: Option<String>,
     pub session_manager: Arc<SessionManager>,
     pub plugins_enabled: bool,
     pub plugin_config: Arc<PluginConfig>,
@@ -87,7 +97,13 @@ impl ToolManager {
             "http" => 90,
             "database" => 89,
             "web_search" => 88,
+            "code_search" => 88,
             "download" => 87,
+            "web_fetch" => 87,
+            "crawler" => 86,
+            "watch" => 85,
+            "process" => 84,
+            "docker" => 84,
             "regex" => 86,
             "format" => 84,
             "encoding" => 83,
@@ -112,7 +128,13 @@ impl ToolManager {
             "http" => "Perform HTTP requests",
             "database" => "Execute database queries and schema inspection",
             "web_search" => "Search the web via APIs and HTML fallbacks",
+            "code_search" => "Search code with relevance-ranked snippets",
             "download" => "Download files with resume and integrity checks",
+            "web_fetch" => "Fetch a single URL and return normalized content",
+            "crawler" => "Extract bounded links from a page with host filtering",
+            "watch" => "Capture filesystem snapshots and report changes",
+            "process" => "Start, list, inspect, and stop background processes",
+            "docker" => "Run bounded Docker operations with permission checks",
             "regex" => "Regex matching and replacement with captures",
             "format" => "Format and minify JSON/XML payloads",
             "encoding" => "Encode/decode base64, URL, HTML, and UTF-8",
@@ -155,7 +177,13 @@ impl ToolManager {
             "git" => Some(Arc::new(GitTool::new(config.clone()))),
             "database" => Some(Arc::new(DatabaseTool::new(config.clone()))),
             "web_search" => Some(Arc::new(WebSearchTool::new(config.clone()))),
+            "code_search" => Some(Arc::new(CodeSearchTool::new(config.clone()))),
+            "web_fetch" => Some(Arc::new(WebFetchTool::new(config.clone()))),
+            "crawler" => Some(Arc::new(CrawlerTool::new(config.clone()))),
+            "watch" => Some(Arc::new(WatchTool::new(config.clone()))),
             "download" => Some(Arc::new(DownloadTool::new(config.clone()))),
+            "process" => Some(Arc::new(ProcessTool::new(config.clone()))),
+            "docker" => Some(Arc::new(DockerTool::new(config.clone()))),
             "regex" => Some(Arc::new(RegexTool::new(config.clone()))),
             "format" => Some(Arc::new(FormatTool::new(config.clone()))),
             "encoding" => Some(Arc::new(EncodingTool::new(config.clone()))),
@@ -383,6 +411,10 @@ impl ToolManager {
             workflows_enabled,
             workflows,
             workflows_config,
+            dynamic_routing_enabled,
+            dynamic_routing,
+            todo_tracking_enabled,
+            project_id,
             session_manager,
             plugins_enabled,
             plugin_config,
@@ -456,6 +488,10 @@ impl ToolManager {
             workflows_enabled,
             workflows,
             workflows_config,
+            dynamic_routing_enabled,
+            dynamic_routing,
+            todo_tracking_enabled,
+            project_id,
             skills,
             agents,
             session_manager,
@@ -594,6 +630,10 @@ impl ToolManager {
             build_workflow_executor_config(
                 self.workflows_config.as_ref(),
                 self.execution_context.working_directory.clone(),
+                self.dynamic_routing_enabled,
+                self.dynamic_routing.as_ref().clone(),
+                self.todo_tracking_enabled,
+                self.project_id.clone(),
             ),
         );
 
@@ -703,6 +743,91 @@ impl ToolManager {
             listed.truncate(max_items);
         }
         listed
+    }
+
+    pub async fn get_sub_agent_target_shortlist(
+        &self,
+        caller_agent: &str,
+        focus: Option<&str>,
+        max_items: Option<usize>,
+        char_budget: Option<usize>,
+    ) -> Vec<String> {
+        let Some(coordinator) = self
+            .agents
+            .read()
+            .ok()
+            .and_then(|guard| guard.as_ref().cloned())
+        else {
+            return Vec::new();
+        };
+
+        let Some(caller_config) = coordinator.get_agent_config(caller_agent) else {
+            return Vec::new();
+        };
+
+        let suggestion_scores = focus
+            .filter(|hint| !hint.trim().is_empty())
+            .map(|hint| {
+                coordinator
+                    .suggest_agents_for_task(hint)
+                    .into_iter()
+                    .map(|suggestion| (suggestion.agent_name, suggestion.score))
+                    .collect::<HashMap<_, _>>()
+            })
+            .unwrap_or_default();
+
+        let mut ranked = coordinator
+            .list_agents()
+            .into_iter()
+            .filter(|name| name != caller_agent)
+            .filter_map(|name| {
+                let config = coordinator.get_agent_config(&name)?;
+                let shared_taxonomy = config.taxonomy_membership.iter().any(|candidate| {
+                    caller_config.taxonomy_membership.iter().any(|caller| {
+                        caller.basket == candidate.basket
+                            && caller.sub_basket == candidate.sub_basket
+                    })
+                });
+                let suggestion_score = suggestion_scores.get(&name).copied().unwrap_or(0);
+                let mut score = suggestion_score;
+                if shared_taxonomy {
+                    score += 100;
+                }
+
+                let permission_mode = match config.permission_mode {
+                    AgentPermissionMode::ReadOnly => "ro",
+                    AgentPermissionMode::ReadWrite => "rw",
+                };
+
+                let mut tags = Vec::new();
+                if shared_taxonomy {
+                    tags.push("shared-taxonomy");
+                }
+                if suggestion_score > 0 {
+                    tags.push("task-match");
+                }
+                tags.push(permission_mode);
+
+                let chunk = format!("{}[{}]", name, tags.join(","));
+                Some((name, chunk, score))
+            })
+            .collect::<Vec<_>>();
+
+        ranked.sort_by(|left, right| right.2.cmp(&left.2).then_with(|| left.0.cmp(&right.0)));
+
+        let max_items = max_items.unwrap_or(6);
+        let char_budget = char_budget.unwrap_or(600);
+        let mut chunks = Vec::new();
+        let mut used_chars = 0usize;
+        for (_, chunk, _) in ranked.into_iter().take(max_items) {
+            if !chunks.is_empty() && used_chars + chunk.len() > char_budget {
+                break;
+            }
+            used_chars += chunk.len();
+            chunks.push(chunk);
+        }
+
+        chunks
     }
 
     pub async fn find_tools_by_basket(&self, basket: &str) -> Vec<String> {

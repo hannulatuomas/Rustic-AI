@@ -1002,7 +1002,11 @@ impl Tool for FilesystemTool {
     }
 
     async fn execute(&self, args: Value, context: &ToolExecutionContext) -> Result<ToolResult> {
-        self.execute_operation(args, context)
+        let tool = self.clone();
+        let context = context.clone();
+        tokio::task::spawn_blocking(move || tool.execute_operation(args, &context))
+            .await
+            .map_err(|err| Error::Tool(format!("filesystem task failed: {err}")))?
     }
 
     async fn stream_execute(
@@ -1017,7 +1021,11 @@ impl Tool for FilesystemTool {
             args: args.clone(),
         });
 
-        let result = self.execute_operation(args, context)?;
+        let tool = self.clone();
+        let context = context.clone();
+        let result = tokio::task::spawn_blocking(move || tool.execute_operation(args, &context))
+            .await
+            .map_err(|err| Error::Tool(format!("filesystem task failed: {err}")))??;
 
         let _ = tx.try_send(Event::ToolCompleted {
             tool: tool_name,

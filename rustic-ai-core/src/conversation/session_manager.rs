@@ -14,7 +14,8 @@ use crate::rules::manual_invocation::{extract_manual_invocations, resolve_manual
 use crate::rules::precedence::sort_rule_files_by_precedence;
 use crate::rules::{TopicInferenceService, TopicTracker};
 use crate::storage::model::{
-    Message, PendingToolState, Session, SessionConfig, Todo, TodoFilter, TodoUpdate,
+    Message, PendingToolState, Session, SessionConfig, SubAgentOutput, SubAgentOutputFilter, Todo,
+    TodoFilter, TodoUpdate,
 };
 use crate::storage::{RoutingTraceFilter, StorageBackend};
 
@@ -352,5 +353,13 @@ impl SessionManager {
     /// Create a routing trace for storage
     pub async fn create_routing_trace(&self, trace: &crate::storage::RoutingTrace) -> Result<()> {
         self.storage.create_routing_trace(trace).await
+    }
+
+    /// List cached sub-agent outputs
+    pub async fn list_sub_agent_outputs(
+        &self,
+        filter: &SubAgentOutputFilter,
+    ) -> Result<Vec<SubAgentOutput>> {
+        self.storage.list_sub_agent_outputs(filter).await
     }
 }

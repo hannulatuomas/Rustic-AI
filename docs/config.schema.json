@@ -627,6 +627,15 @@
           "context_summary_enabled": { "type": ["boolean", "null"] },
           "context_summary_max_tokens": { "type": ["integer", "null"], "minimum": 1 },
           "context_summary_cache_entries": { "type": ["integer", "null"], "minimum": 1 },
+          "tool_shortlist_mode": {
+            "type": "string",
+            "enum": ["full", "priority", "task_focused"]
+          },
+          "tool_shortlist_max_items": { "type": ["integer", "null"], "minimum": 1, "maximum": 256 },
+          "tool_shortlist_char_budget": { "type": ["integer", "null"], "minimum": 1, "maximum": 32000 },
+          "sub_agent_target_shortlist_enabled": { "type": ["boolean", "null"] },
+          "sub_agent_target_shortlist_max_items": { "type": ["integer", "null"], "minimum": 1, "maximum": 64 },
+          "sub_agent_target_shortlist_char_budget": { "type": ["integer", "null"], "minimum": 1, "maximum": 8000 },
           "auto_create_todos": { "type": "boolean" },
           "todo_project_scope": { "type": "boolean" },
           "parallel_sub_agent_enabled": { "type": "boolean" },

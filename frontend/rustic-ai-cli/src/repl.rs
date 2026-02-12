@@ -380,6 +380,15 @@ impl Repl {
                 loop_hard_max_parallelism: wf_cfg.loop_hard_max_parallelism,
                 wait_default_poll_interval_ms: wf_cfg.wait_default_poll_interval_ms,
                 wait_default_timeout_seconds: wf_cfg.wait_default_timeout_seconds,
+                dynamic_routing_enabled: self.app.config().features.dynamic_routing_enabled,
+                dynamic_routing: self.app.config().dynamic_routing.clone(),
+                todo_tracking_enabled: self.app.config().features.todo_tracking_enabled,
+                project_id: self
+                    .app
+                    .config()
+                    .project
+                    .as_ref()
+                    .map(|project| project.name.clone()),
             },
         );
 
@@ -1441,63 +1450,22 @@ impl Repl {
             if self.app.config().features.dynamic_routing_enabled
                 && self.app.config().dynamic_routing.enabled
             {
-                let router = rustic_ai_core::routing::Router::new(
-                    self.app.runtime().agents.get_inner_registry(),
-                    self.app.config().dynamic_routing.clone(),
-                );
-
-                if let Ok(decision) = router.route(input) {
+                if let Ok(Some(decision)) = self
+                    .app
+                    .runtime()
+                    .agents
+                    .route_task_and_record(
+                        session_id,
+                        input,
+                        &self.app.config().dynamic_routing,
+                        self.app.config().features.todo_tracking_enabled,
+                        self.app.config().project.as_ref().map(|p| p.name.clone()),
+                        &["repl"],
+                    )
+                    .await
+                {
                     if self.app.runtime().agents.has_agent(&decision.agent) {
-                        agent_for_turn = decision.agent.clone();
-                    }
-
-                    if self.app.config().dynamic_routing.routing_trace_enabled {
-                        if let Ok(trace) = router.create_trace(session_id, input, &decision) {
-                            let _ = self
-                                .app
-                                .session_manager()
-                                .create_routing_trace(&trace)
-                                .await;
-
-                            if self.app.config().features.todo_tracking_enabled {
-                                let todo = rustic_ai_core::storage::Todo {
-                                    id: uuid::Uuid::new_v4(),
-                                    project_id: self
-                                        .app
-                                        .config()
-                                        .project
-                                        .as_ref()
-                                        .map(|p| p.name.clone()),
-                                    session_id,
-                                    parent_id: None,
-                                    title: format!(
-                                        "Routed task: {}",
-                                        input.chars().take(64).collect::<String>()
-                                    ),
-                                    description: Some(format!(
-                                        "Agent '{}', confidence {:.2}, reason: {}",
-                                        decision.agent,
-                                        decision.confidence,
-                                        decision.reason.primary_factor
-                                    )),
-                                    status: rustic_ai_core::storage::TodoStatus::Todo,
-                                    priority: rustic_ai_core::storage::TodoPriority::Medium,
-                                    tags: if decision.fallback_used {
-                                        vec!["routing".to_string(), "fallback".to_string()]
-                                    } else {
-                                        vec!["routing".to_string()]
-                                    },
-                                    metadata: rustic_ai_core::storage::TodoMetadata {
-                                        routing_trace_id: Some(trace.id),
-                                        ..Default::default()
-                                    },
-                                    created_at: Utc::now(),
-                                    updated_at: Utc::now(),
-                                    completed_at: None,
-                                };
-                                let _ = self.app.session_manager().create_todo(&todo).await;
-                            }
-                        }
+                        agent_for_turn = decision.agent;
                     }
                 }
             }

@@ -1,14 +1,16 @@
 use crate::agents::behavior::Agent;
 use crate::agents::registry::{AgentRegistry, AgentSuggestion};
-use crate::config::schema::AgentConfig;
+use crate::config::schema::{AgentConfig, DynamicRoutingConfig};
 use crate::conversation::session_manager::SessionManager;
 use crate::error::{Error, Result};
 use crate::learning::LearningManager;
 use crate::providers::registry::ProviderRegistry;
 use crate::providers::types::ChatMessage;
 use crate::rag::HybridRetriever;
+use crate::routing::{Router, RoutingDecision};
 use crate::storage::StorageBackend;
 use crate::ToolManager;
+use chrono::Utc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Semaphore};
@@ -154,6 +156,94 @@ impl AgentCoordinator {
         self.registry.suggest_for_task(task_description)
     }
 
+    pub async fn route_task_and_record(
+        &self,
+        session_id: Uuid,
+        task: &str,
+        routing_config: &DynamicRoutingConfig,
+        todo_tracking_enabled: bool,
+        project_id: Option<String>,
+        additional_todo_tags: &[&str],
+    ) -> Result<Option<RoutingDecision>> {
+        if !routing_config.enabled {
+            return Ok(None);
+        }
+
+        let router = Router::new(self.get_inner_registry(), routing_config.clone());
+        let decision = router.route(task)?;
+
+        let trace_id = if routing_config.routing_trace_enabled {
+            if let Ok(trace) = router.create_trace(session_id, task, &decision) {
+                let trace_id = trace.id;
+                let _ = self.session_manager.create_routing_trace(&trace).await;
+                Some(trace_id)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if todo_tracking_enabled {
+            let mut tags = vec!["routing".to_string()];
+            if decision.fallback_used {
+                tags.push("fallback".to_string());
+            }
+            for tag in additional_todo_tags {
+                let normalized = tag.trim();
+                if normalized.is_empty() {
+                    continue;
+                }
+                if !tags.iter().any(|existing| existing == normalized) {
+                    tags.push(normalized.to_string());
+                }
+            }
+
+            let todo = crate::storage::Todo {
+                id: uuid::Uuid::new_v4(),
+                project_id,
+                session_id,
+                parent_id: None,
+                title: format!("Routed task: {}", task.chars().take(64).collect::<String>()),
+                description: Some(format!(
+                    "Agent '{}', confidence {:.2}, reason: {}",
+                    decision.agent, decision.confidence, decision.reason.primary_factor
+                )),
+                status: crate::storage::TodoStatus::Todo,
+                priority: crate::storage::TodoPriority::Medium,
+                tags,
+                metadata: crate::storage::TodoMetadata {
+                    tools: vec![
+                        "routing".to_string(),
+                        format!("agent:{}", decision.agent),
+                        format!("policy:{:?}", decision.policy),
+                    ],
+                    routing_trace_id: trace_id,
+                    reason: Some(format!(
+                        "policy={:?}, confidence={:.2}, fallback={}, primary_factor={}, alternatives={}, task='{}'",
+                        decision.policy,
+                        decision.confidence,
+                        decision.fallback_used,
+                        decision.reason.primary_factor,
+                        if decision.alternatives.is_empty() {
+                            "<none>".to_string()
+                        } else {
+                            decision.alternatives.join("|")
+                        },
+                        task.chars().take(120).collect::<String>()
+                    )),
+                    ..Default::default()
+                },
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                completed_at: None,
+            };
+            let _ = self.session_manager.create_todo(&todo).await;
+        }
+
+        Ok(Some(decision))
+    }
+
     pub async fn run_sub_agent(
         &self,
         request: SubAgentRequest,
@@ -278,7 +368,7 @@ impl AgentCoordinator {
             .collect::<Vec<_>>();
 
         if filter.include_workspace {
-            selected.insert(0, Self::workspace_summary_message());
+            selected.insert(0, Self::workspace_summary_message().await);
         }
 
         selected = Self::trim_to_token_budget(selected, max_context_tokens);
@@ -286,14 +376,20 @@ impl AgentCoordinator {
         Ok(selected)
     }
 
-    fn workspace_summary_message() -> ChatMessage {
+    async fn workspace_summary_message() -> ChatMessage {
         let cwd = std::env::current_dir()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|_| "<unknown>".to_owned());
         let mut entries = Vec::new();
-        if let Ok(read_dir) = std::fs::read_dir(&cwd) {
-            for entry in read_dir.flatten().take(12) {
-                entries.push(entry.file_name().to_string_lossy().into_owned());
+        if let Ok(mut read_dir) = tokio::fs::read_dir(&cwd).await {
+            while entries.len() < 12 {
+                match read_dir.next_entry().await {
+                    Ok(Some(entry)) => {
+                        entries.push(entry.file_name().to_string_lossy().into_owned())
+                    }
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
             }
         }
         let listing = if entries.is_empty() {

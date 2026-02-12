@@ -9,7 +9,12 @@
     "learning_enabled": true,
     "indexing_enabled": true,
     "vector_enabled": true,
-    "rag_enabled": false
+    "rag_enabled": false,
+    "aggressive_summary_enabled": true,
+    "todo_tracking_enabled": true,
+    "sub_agent_parallel_enabled": true,
+    "sub_agent_output_caching_enabled": true,
+    "dynamic_routing_enabled": true
   },
   "retrieval": {
     "enabled": true,
@@ -126,7 +131,14 @@
     "enabled": true,
     "provider_name": "openai-main",
     "max_context_tokens": 16000,
-    "summary_max_tokens": 500
+    "summary_max_tokens": 500,
+    "trigger_mode": "hybrid",
+    "message_window_threshold": 20,
+    "token_threshold_percent": 0.7,
+    "include_user_task": true,
+    "include_completion_summary": true,
+    "quality_tracking_enabled": true,
+    "user_rating_prompt": false
   },
   "rules": {
     "global_rules_path": "~/.rustic-ai/rules",
@@ -146,6 +158,38 @@
     "topic_files": [],
     "context_files": [],
     "discovered_rules": []
+  },
+  "dynamic_routing": {
+    "enabled": true,
+    "routing_policy": "hybrid",
+    "task_keywords": {
+      "programming_languages": ["c#", "c", "c++", "rust", "javascript", "typescript", "python", "powershell", "bash", "cmd", "batch", "php", "sql", "pl/sql", "go", "assembly", "vba", "html", "css", "lua"],
+      "frameworks": ["node.js", "react", "next.js", "angular", "vue", "django", "rails", "spring", "asp.net", "vite", "tailwind", "express", "fastapi", "electron"],
+      "linux_distros": ["debian", "ubuntu", "arch", "alpine", "kali", "red hat", "opensuse", "fedora", "freebsd", "centos", "nixos", "openbsd", "proxmox", "truenas", "pfsense", "linux"],
+      "database_data": ["mssql", "mysql", "sqlite", "oracle", "postgresql", "mongodb", "neo4j", "couchdb", "redis", "dynamodb", "cassandra", "data analysis"],
+      "api_development": ["rest", "soap", "graphql", "grpc", "websocket", "kafka", "api"],
+      "cyber_security": ["cyber security", "ethical hacking", "pentest", "malware", "osint", "threat", "vulnerability", "hardening"],
+      "microsoft_azure_ecosystem": ["microsoft", "azure", "entra", "microsoft 365", "intune", "azdo", "azure devops"],
+      "windows_admin_maintenance": ["windows", "powershell", "active directory", "gpo", "winrm", "iis", "event log", "defender"],
+      "devops": ["devops", "ci/cd", "pipeline", "release", "deployment"],
+      "secdevops": ["secdevops", "sast", "dast", "sbom", "supply chain", "security automation"],
+      "ai_ml_prompt_engineering": ["ai", "ml", "model", "training", "inference", "prompt engineering", "eval", "drift"],
+      "game_development": ["unity", "godot", "bevy", "unreal", "game development", "gameplay"],
+      "infrastructure_as_code": ["terraform", "opentofu", "bicep", "ansible", "infrastructure as code"],
+      "containers": ["docker", "podman", "containers", "container orchestration", "kubernetes", "helm"],
+      "cloud": ["cloud", "azure", "aws", "gcp", "iam", "rbac", "subscription"],
+      "servers": ["server", "bare metal", "hosting", "datacenter"],
+      "vms": ["vm", "virtual machine", "hypervisor", "proxmox"],
+      "networking": ["network", "dns", "tls", "firewall", "routing", "load balancer"],
+      "security": ["security", "vulnerability", "cve", "threat", "pentest", "audit", "hardening", "secret"],
+      "data_ml": ["ml", "model", "training", "drift", "dataset", "pipeline", "feature engineering", "sql"],
+      "azure_ms": ["azure", "entra", "microsoft 365", "intune", "azdo", "rbac", "subscription"],
+      "implementation": ["implement", "build", "create", "feature", "refactor", "code"],
+      "debugging": ["debug", "fix", "error", "failure", "broken"]
+    },
+    "fallback_agent": "default",
+    "context_pressure_threshold": 0.7,
+    "routing_trace_enabled": true
   },
   "permissions": {
     "default_tool_permission": "ask",
@@ -346,7 +390,7 @@
     {
       "name": "default",
       "provider": "openai-main",
-      "tools": ["shell", "filesystem", "grep", "git", "database", "web_search", "download", "regex", "format", "encoding", "convert", "lsp", "image", "http", "ssh", "skill", "workflow", "sub_agent"],
+      "tools": ["shell", "filesystem", "grep", "code_search", "git", "database", "web_search", "web_fetch", "crawler", "watch", "download", "process", "docker", "regex", "format", "encoding", "convert", "lsp", "image", "http", "ssh", "skill", "workflow", "sub_agent"],
       "skills": [],
       "system_prompt_template": "You are a helpful AI assistant with access to shell commands.",
       "temperature": 0.7,
@@ -364,7 +408,303 @@
       "context_summary_enabled": true,
       "context_summary_max_tokens": 400,
       "context_summary_cache_entries": 64,
-      "taxonomy_membership": []
+      "tool_shortlist_mode": "task_focused",
+      "tool_shortlist_max_items": 12,
+      "tool_shortlist_char_budget": 1200,
+      "sub_agent_target_shortlist_enabled": true,
+      "sub_agent_target_shortlist_max_items": 6,
+      "sub_agent_target_shortlist_char_budget": 600,
+      "taxonomy_membership": [
+        {
+          "basket": "Development",
+          "sub_basket": "Coding"
+        }
+      ]
+    },
+    {
+      "name": "devops_container",
+      "provider": "openai-main",
+      "tools": ["shell", "filesystem", "grep", "code_search", "git", "docker", "process", "http", "download", "watch", "workflow", "sub_agent"],
+      "skills": [],
+      "system_prompt_template": "You are a DevOps and container operations specialist.",
+      "temperature": 0.3,
+      "max_tokens": 3000,
+      "context_window_size": 10000,
+      "max_tool_rounds": 4,
+      "permission_mode": "read_write",
+      "allow_sub_agent_calls": true,
+      "tool_shortlist_mode": "task_focused",
+      "taxonomy_membership": [{ "basket": "DevOps", "sub_basket": "Containers" }]
+    },
+    {
+      "name": "security_assessor",
+      "provider": "openai-main",
+      "tools": ["shell", "filesystem", "grep", "code_search", "git", "http", "web_search", "web_fetch", "crawler", "regex", "encoding", "ssh", "workflow", "sub_agent"],
+      "skills": [],
+      "system_prompt_template": "You are a defensive security assessor focused on safe, authorized analysis.",
+      "temperature": 0.2,
+      "max_tokens": 3000,
+      "context_window_size": 10000,
+      "max_tool_rounds": 4,
+      "permission_mode": "read_only",
+      "allow_sub_agent_calls": true,
+      "tool_shortlist_mode": "task_focused",
+      "taxonomy_membership": [{ "basket": "Security", "sub_basket": "Assessment" }]
+    },
+    {
+      "name": "windows_admin",
+      "provider": "openai-main",
+      "tools": ["shell", "filesystem", "grep", "code_search", "process", "http", "download", "ssh", "workflow", "sub_agent"],
+      "skills": [],
+      "system_prompt_template": "You are a Windows administration specialist for PowerShell and enterprise operations.",
+      "temperature": 0.3,
+      "max_tokens": 3000,
+      "context_window_size": 10000,
+      "max_tool_rounds": 4,
+      "permission_mode": "read_write",
+      "allow_sub_agent_calls": true,
+      "tool_shortlist_mode": "task_focused",
+      "taxonomy_membership": [{ "basket": "Infra", "sub_basket": "Operations" }]
+    },
+    {
+      "name": "data_ml_ops",
+      "provider": "openai-main",
+      "tools": ["shell", "filesystem", "grep", "code_search", "database", "http", "web_search", "web_fetch", "download", "format", "convert", "workflow", "sub_agent"],
+      "skills": [],
+      "system_prompt_template": "You are a data and ML operations specialist for pipelines, datasets, and model workflows.",
+      "temperature": 0.3,
+      "max_tokens": 3000,
+      "context_window_size": 10000,
+      "max_tool_rounds": 4,
+      "permission_mode": "read_write",
+      "allow_sub_agent_calls": true,
+      "tool_shortlist_mode": "task_focused",
+      "taxonomy_membership": [{ "basket": "Data/ML", "sub_basket": "MLOps" }]
+    },
+    {
+      "name": "azure_ms_ops",
+      "provider": "openai-main",
+      "tools": ["shell", "filesystem", "grep", "code_search", "http", "web_search", "web_fetch", "download", "process", "workflow", "sub_agent"],
+      "skills": [],
+      "system_prompt_template": "You are an Azure and Microsoft ecosystem operations specialist.",
+      "temperature": 0.3,
+      "max_tokens": 3000,
+      "context_window_size": 10000,
+      "max_tool_rounds": 4,
+      "permission_mode": "read_write",
+      "allow_sub_agent_calls": true,
+      "tool_shortlist_mode": "task_focused",
+      "taxonomy_membership": [{ "basket": "Cloud", "sub_basket": "Azure" }]
+    },
+    {
+      "name": "programming_polyglot",
+      "provider": "openai-main",
+      "tools": ["shell", "filesystem", "grep", "code_search", "git", "database", "regex", "format", "encoding", "convert", "lsp", "http", "workflow", "sub_agent"],
+      "skills": [],
+      "system_prompt_template": "You are a polyglot programming specialist across systems and scripting languages.",
+      "temperature": 0.35,
+      "max_tokens": 3200,
+      "context_window_size": 10000,
+      "max_tool_rounds": 4,
+      "permission_mode": "read_write",
+      "allow_sub_agent_calls": true,
+      "tool_shortlist_mode": "task_focused",
+      "taxonomy_membership": [{ "basket": "Development", "sub_basket": "Coding" }]
+    },
+    {
+      "name": "frameworks_web",
+      "provider": "openai-main",
+      "tools": ["shell", "filesystem", "grep", "code_search", "git", "http", "web_fetch", "web_search", "download", "lsp", "workflow", "sub_agent"],
+      "skills": [],
+      "system_prompt_template": "You are a web and API framework specialist for frontend/backend ecosystems.",
+      "temperature": 0.35,
+      "max_tokens": 3200,
+      "context_window_size": 10000,
+      "max_tool_rounds": 4,
+      "permission_mode": "read_write",
+      "allow_sub_agent_calls": true,
+      "tool_shortlist_mode": "task_focused",
+      "taxonomy_membership": [{ "basket": "Development", "sub_basket": "Coding" }]
+    },
+    {
+      "name": "linux_admin",
+      "provider": "openai-main",
+      "tools": ["shell", "filesystem", "grep", "code_search", "process", "ssh", "http", "watch", "download", "workflow", "sub_agent"],
+      "skills": [],
+      "system_prompt_template": "You are a Linux administration specialist for setup, maintenance, and troubleshooting across distributions.",
+      "temperature": 0.25,
+      "max_tokens": 3200,
+      "context_window_size": 10000,
+      "max_tool_rounds": 4,
+      "permission_mode": "read_write",
+      "allow_sub_agent_calls": true,
+      "tool_shortlist_mode": "task_focused",
+      "taxonomy_membership": [{ "basket": "Infra", "sub_basket": "Operations" }]
+    },
+    {
+      "name": "database_data",
+      "provider": "openai-main",
+      "tools": ["shell", "filesystem", "grep", "code_search", "database", "http", "web_search", "web_fetch", "format", "convert", "workflow", "sub_agent"],
+      "skills": [],
+      "system_prompt_template": "You are a database and data analysis specialist across SQL and NoSQL systems.",
+      "temperature": 0.3,
+      "max_tokens": 3200,
+      "context_window_size": 10000,
+      "max_tool_rounds": 4,
+      "permission_mode": "read_write",
+      "allow_sub_agent_calls": true,
+      "tool_shortlist_mode": "task_focused",
+      "taxonomy_membership": [{ "basket": "Data/ML", "sub_basket": "Analytics" }]
+    },
+    {
+      "name": "api_engineer",
+      "provider": "openai-main",
+      "tools": ["shell", "filesystem", "grep", "code_search", "http", "web_fetch", "web_search", "database", "format", "convert", "workflow", "sub_agent"],
+      "skills": [],
+      "system_prompt_template": "You are an API development and maintenance specialist for REST, GraphQL, gRPC, SOAP, and WebSocket systems.",
+      "temperature": 0.3,
+      "max_tokens": 3200,
+      "context_window_size": 10000,
+      "max_tool_rounds": 4,
+      "permission_mode": "read_write",
+      "allow_sub_agent_calls": true,
+      "tool_shortlist_mode": "task_focused",
+      "taxonomy_membership": [{ "basket": "Development", "sub_basket": "Coding" }]
+    },
+    {
+      "name": "cybersec_ops",
+      "provider": "openai-main",
+      "tools": ["shell", "filesystem", "grep", "code_search", "git", "http", "web_search", "web_fetch", "crawler", "download", "regex", "encoding", "ssh", "workflow", "sub_agent"],
+      "skills": [],
+      "system_prompt_template": "You are a cyber security specialist for defensive assessment, pentest planning, malware triage, and OSINT.",
+      "temperature": 0.2,
+      "max_tokens": 3200,
+      "context_window_size": 10000,
+      "max_tool_rounds": 4,
+      "permission_mode": "read_only",
+      "allow_sub_agent_calls": true,
+      "tool_shortlist_mode": "task_focused",
+      "taxonomy_membership": [{ "basket": "Security", "sub_basket": "Assessment" }]
+    },
+    {
+      "name": "devsecops",
+      "provider": "openai-main",
+      "tools": ["shell", "filesystem", "grep", "code_search", "git", "docker", "process", "http", "download", "watch", "workflow", "sub_agent"],
+      "skills": [],
+      "system_prompt_template": "You are a DevSecOps specialist for CI/CD hardening, supply-chain checks, and release safety.",
+      "temperature": 0.25,
+      "max_tokens": 3200,
+      "context_window_size": 10000,
+      "max_tool_rounds": 4,
+      "permission_mode": "read_write",
+      "allow_sub_agent_calls": true,
+      "tool_shortlist_mode": "task_focused",
+      "taxonomy_membership": [{ "basket": "DevOps", "sub_basket": "CI/CD" }]
+    },
+    {
+      "name": "ai_ml_prompt",
+      "provider": "openai-main",
+      "tools": ["shell", "filesystem", "grep", "code_search", "database", "http", "web_search", "web_fetch", "download", "format", "convert", "workflow", "sub_agent"],
+      "skills": [],
+      "system_prompt_template": "You are an AI/ML and prompt-engineering specialist for model workflows, evals, and MLOps.",
+      "temperature": 0.3,
+      "max_tokens": 3200,
+      "context_window_size": 10000,
+      "max_tool_rounds": 4,
+      "permission_mode": "read_write",
+      "allow_sub_agent_calls": true,
+      "tool_shortlist_mode": "task_focused",
+      "taxonomy_membership": [{ "basket": "Data/ML", "sub_basket": "MLOps" }]
+    },
+    {
+      "name": "game_dev",
+      "provider": "openai-main",
+      "tools": ["shell", "filesystem", "grep", "code_search", "git", "http", "download", "image", "lsp", "workflow", "sub_agent"],
+      "skills": [],
+      "system_prompt_template": "You are a game development specialist for Unity, Godot, Bevy, and Unreal workflows.",
+      "temperature": 0.35,
+      "max_tokens": 3200,
+      "context_window_size": 10000,
+      "max_tool_rounds": 4,
+      "permission_mode": "read_write",
+      "allow_sub_agent_calls": true,
+      "tool_shortlist_mode": "task_focused",
+      "taxonomy_membership": [{ "basket": "Development", "sub_basket": "Coding" }]
+    },
+    {
+      "name": "iac_ops",
+      "provider": "openai-main",
+      "tools": ["shell", "filesystem", "grep", "code_search", "git", "http", "download", "process", "watch", "workflow", "sub_agent"],
+      "skills": [],
+      "system_prompt_template": "You are an IaC specialist for Terraform, OpenTofu, Bicep, and Ansible operations.",
+      "temperature": 0.25,
+      "max_tokens": 3200,
+      "context_window_size": 10000,
+      "max_tool_rounds": 4,
+      "permission_mode": "read_write",
+      "allow_sub_agent_calls": true,
+      "tool_shortlist_mode": "task_focused",
+      "taxonomy_membership": [{ "basket": "DevOps", "sub_basket": "Deployment" }]
+    },
+    {
+      "name": "cloud_servers_networking",
+      "provider": "openai-main",
+      "tools": ["shell", "filesystem", "grep", "code_search", "http", "web_search", "web_fetch", "process", "ssh", "watch", "workflow", "sub_agent"],
+      "skills": [],
+      "system_prompt_template": "You are a cloud, servers, VMs, and networking operations specialist.",
+      "temperature": 0.25,
+      "max_tokens": 3200,
+      "context_window_size": 10000,
+      "max_tool_rounds": 4,
+      "permission_mode": "read_write",
+      "allow_sub_agent_calls": true,
+      "tool_shortlist_mode": "task_focused",
+      "taxonomy_membership": [{ "basket": "Infra", "sub_basket": "Networking" }]
+    },
+    {
+      "name": "containers_orchestration",
+      "provider": "openai-main",
+      "tools": ["shell", "filesystem", "grep", "code_search", "docker", "process", "http", "watch", "workflow", "sub_agent"],
+      "skills": [],
+      "system_prompt_template": "You are a containers and orchestration specialist for Docker, Podman, and Kubernetes workflows.",
+      "temperature": 0.25,
+      "max_tokens": 3200,
+      "context_window_size": 10000,
+      "max_tool_rounds": 4,
+      "permission_mode": "read_write",
+      "allow_sub_agent_calls": true,
+      "tool_shortlist_mode": "task_focused",
+      "taxonomy_membership": [{ "basket": "DevOps", "sub_basket": "Containers" }]
+    },
+    {
+      "name": "cloud_infrastructure",
+      "provider": "openai-main",
+      "tools": ["shell", "filesystem", "grep", "code_search", "http", "web_search", "web_fetch", "process", "download", "workflow", "sub_agent"],
+      "skills": [],
+      "system_prompt_template": "You are a cloud infrastructure specialist across Azure, AWS, and GCP operations.",
+      "temperature": 0.25,
+      "max_tokens": 3200,
+      "context_window_size": 10000,
+      "max_tool_rounds": 4,
+      "permission_mode": "read_write",
+      "allow_sub_agent_calls": true,
+      "tool_shortlist_mode": "task_focused",
+      "taxonomy_membership": [{ "basket": "Cloud", "sub_basket": "Azure" }]
+    },
+    {
+      "name": "server_vm_network_ops",
+      "provider": "openai-main",
+      "tools": ["shell", "filesystem", "grep", "code_search", "http", "process", "ssh", "watch", "download", "workflow", "sub_agent"],
+      "skills": [],
+      "system_prompt_template": "You are a servers, virtual machines, and networking operations specialist.",
+      "temperature": 0.25,
+      "max_tokens": 3200,
+      "context_window_size": 10000,
+      "max_tool_rounds": 4,
+      "permission_mode": "read_write",
+      "allow_sub_agent_calls": true,
+      "tool_shortlist_mode": "task_focused",
+      "taxonomy_membership": [{ "basket": "Infra", "sub_basket": "Networking" }]
     }
   ],
   "tools": [
@@ -397,7 +737,12 @@
         " git commit",
         " git push"
       ],
-      "taxonomy_membership": []
+      "taxonomy_membership": [
+        {
+          "basket": "Infra",
+          "sub_basket": "Operations"
+        }
+      ]
     },
     {
       "name": "filesystem",
@@ -413,7 +758,12 @@
       "require_sudo": false,
       "privileged_command_patterns": [],
       "read_only_blocked_patterns": [],
-      "taxonomy_membership": []
+      "taxonomy_membership": [
+        {
+          "basket": "Development",
+          "sub_basket": "Coding"
+        }
+      ]
     },
     {
       "name": "http",
@@ -429,7 +779,12 @@
       "require_sudo": false,
       "privileged_command_patterns": [],
       "read_only_blocked_patterns": [],
-      "taxonomy_membership": []
+      "taxonomy_membership": [
+        {
+          "basket": "Development",
+          "sub_basket": "Research"
+        }
+      ]
     },
     {
       "name": "git",
@@ -445,7 +800,12 @@
       "require_sudo": false,
       "privileged_command_patterns": [],
       "read_only_blocked_patterns": [],
-      "taxonomy_membership": []
+      "taxonomy_membership": [
+        {
+          "basket": "Development",
+          "sub_basket": "Coding"
+        }
+      ]
     },
     {
       "name": "grep",
@@ -461,7 +821,33 @@
       "require_sudo": false,
       "privileged_command_patterns": [],
       "read_only_blocked_patterns": [],
-      "taxonomy_membership": []
+      "taxonomy_membership": [
+        {
+          "basket": "Development",
+          "sub_basket": "Research"
+        }
+      ]
+    },
+    {
+      "name": "code_search",
+      "enabled": true,
+      "permission_mode": "ask",
+      "timeout_seconds": 45,
+      "allowed_commands": [],
+      "denied_commands": [],
+      "working_dir": "project_root",
+      "custom_working_dir": null,
+      "env_passthrough": false,
+      "stream_output": true,
+      "require_sudo": false,
+      "privileged_command_patterns": [],
+      "read_only_blocked_patterns": [],
+      "taxonomy_membership": [
+        {
+          "basket": "Development",
+          "sub_basket": "Research"
+        }
+      ]
     },
     {
       "name": "database",
@@ -477,7 +863,12 @@
       "require_sudo": false,
       "privileged_command_patterns": [],
       "read_only_blocked_patterns": [],
-      "taxonomy_membership": []
+      "taxonomy_membership": [
+        {
+          "basket": "Data/ML",
+          "sub_basket": "Data Engineering"
+        }
+      ]
     },
     {
       "name": "web_search",
@@ -493,7 +884,79 @@
       "require_sudo": false,
       "privileged_command_patterns": [],
       "read_only_blocked_patterns": [],
-      "taxonomy_membership": []
+      "taxonomy_membership": [
+        {
+          "basket": "Development",
+          "sub_basket": "Research"
+        }
+      ]
+    },
+    {
+      "name": "web_fetch",
+      "enabled": true,
+      "permission_mode": "ask",
+      "timeout_seconds": 45,
+      "allowed_commands": [],
+      "denied_commands": [],
+      "working_dir": "project_root",
+      "custom_working_dir": null,
+      "env_passthrough": false,
+      "stream_output": true,
+      "require_sudo": false,
+      "privileged_command_patterns": [],
+      "read_only_blocked_patterns": [],
+      "taxonomy_membership": [
+        {
+          "basket": "Development",
+          "sub_basket": "Research"
+        },
+        {
+          "basket": "Docs",
+          "sub_basket": "Research"
+        }
+      ]
+    },
+    {
+      "name": "crawler",
+      "enabled": true,
+      "permission_mode": "ask",
+      "timeout_seconds": 60,
+      "allowed_commands": [],
+      "denied_commands": [],
+      "working_dir": "project_root",
+      "custom_working_dir": null,
+      "env_passthrough": false,
+      "stream_output": true,
+      "require_sudo": false,
+      "privileged_command_patterns": [],
+      "read_only_blocked_patterns": [],
+      "taxonomy_membership": [
+        {
+          "basket": "Development",
+          "sub_basket": "Research"
+        }
+      ]
+    },
+    {
+      "name": "watch",
+      "enabled": true,
+      "permission_mode": "ask",
+      "timeout_seconds": 45,
+      "allowed_commands": [],
+      "denied_commands": [],
+      "working_dir": "project_root",
+      "custom_working_dir": null,
+      "env_passthrough": false,
+      "stream_output": true,
+      "require_sudo": false,
+      "privileged_command_patterns": [],
+      "read_only_blocked_patterns": [],
+      "taxonomy_membership": [
+        {
+          "basket": "Infra",
+          "sub_basket": "Operations"
+        }
+      ]
     },
     {
       "name": "download",
@@ -509,7 +972,54 @@
       "require_sudo": false,
       "privileged_command_patterns": [],
       "read_only_blocked_patterns": [],
-      "taxonomy_membership": []
+      "taxonomy_membership": [
+        {
+          "basket": "Development",
+          "sub_basket": "Research"
+        }
+      ]
+    },
+    {
+      "name": "process",
+      "enabled": true,
+      "permission_mode": "ask",
+      "timeout_seconds": 120,
+      "allowed_commands": [],
+      "denied_commands": [],
+      "working_dir": "project_root",
+      "custom_working_dir": null,
+      "env_passthrough": false,
+      "stream_output": true,
+      "require_sudo": false,
+      "privileged_command_patterns": [],
+      "read_only_blocked_patterns": [],
+      "taxonomy_membership": [
+        {
+          "basket": "Infra",
+          "sub_basket": "Operations"
+        }
+      ]
+    },
+    {
+      "name": "docker",
+      "enabled": true,
+      "permission_mode": "ask",
+      "timeout_seconds": 180,
+      "allowed_commands": [],
+      "denied_commands": [],
+      "working_dir": "project_root",
+      "custom_working_dir": null,
+      "env_passthrough": false,
+      "stream_output": true,
+      "require_sudo": false,
+      "privileged_command_patterns": [],
+      "read_only_blocked_patterns": [],
+      "taxonomy_membership": [
+        {
+          "basket": "DevOps",
+          "sub_basket": "Containers"
+        }
+      ]
     },
     {
       "name": "regex",
@@ -525,7 +1035,12 @@
       "require_sudo": false,
       "privileged_command_patterns": [],
       "read_only_blocked_patterns": [],
-      "taxonomy_membership": []
+      "taxonomy_membership": [
+        {
+          "basket": "Development",
+          "sub_basket": "Coding"
+        }
+      ]
     },
     {
       "name": "format",
@@ -541,7 +1056,12 @@
       "require_sudo": false,
       "privileged_command_patterns": [],
       "read_only_blocked_patterns": [],
-      "taxonomy_membership": []
+      "taxonomy_membership": [
+        {
+          "basket": "Development",
+          "sub_basket": "Coding"
+        }
+      ]
     },
     {
       "name": "encoding",
@@ -557,7 +1077,12 @@
       "require_sudo": false,
       "privileged_command_patterns": [],
       "read_only_blocked_patterns": [],
-      "taxonomy_membership": []
+      "taxonomy_membership": [
+        {
+          "basket": "Development",
+          "sub_basket": "Coding"
+        }
+      ]
     },
     {
       "name": "convert",
@@ -573,7 +1098,12 @@
       "require_sudo": false,
       "privileged_command_patterns": [],
       "read_only_blocked_patterns": [],
-      "taxonomy_membership": []
+      "taxonomy_membership": [
+        {
+          "basket": "Data/ML",
+          "sub_basket": "Data Engineering"
+        }
+      ]
     },
     {
       "name": "lsp",
@@ -589,7 +1119,12 @@
       "require_sudo": false,
       "privileged_command_patterns": [],
       "read_only_blocked_patterns": [],
-      "taxonomy_membership": []
+      "taxonomy_membership": [
+        {
+          "basket": "Development",
+          "sub_basket": "Coding"
+        }
+      ]
     },
     {
       "name": "image",
@@ -605,7 +1140,12 @@
       "require_sudo": false,
       "privileged_command_patterns": [],
       "read_only_blocked_patterns": [],
-      "taxonomy_membership": []
+      "taxonomy_membership": [
+        {
+          "basket": "Data/ML",
+          "sub_basket": "Analytics"
+        }
+      ]
     },
     {
       "name": "ssh",
@@ -621,7 +1161,12 @@
       "require_sudo": false,
       "privileged_command_patterns": [],
       "read_only_blocked_patterns": [],
-      "taxonomy_membership": []
+      "taxonomy_membership": [
+        {
+          "basket": "Infra",
+          "sub_basket": "Operations"
+        }
+      ]
     },
     {
       "name": "mcp",
@@ -637,7 +1182,12 @@
       "require_sudo": false,
       "privileged_command_patterns": [],
       "read_only_blocked_patterns": [],
-      "taxonomy_membership": []
+      "taxonomy_membership": [
+        {
+          "basket": "Development",
+          "sub_basket": "Coding"
+        }
+      ]
     },
     {
       "name": "skill",
@@ -653,7 +1203,12 @@
       "require_sudo": false,
       "privileged_command_patterns": [],
       "read_only_blocked_patterns": [],
-      "taxonomy_membership": []
+      "taxonomy_membership": [
+        {
+          "basket": "Development",
+          "sub_basket": "Coding"
+        }
+      ]
     },
     {
       "name": "workflow",
@@ -669,7 +1224,12 @@
       "require_sudo": false,
       "privileged_command_patterns": [],
       "read_only_blocked_patterns": [],
-      "taxonomy_membership": []
+      "taxonomy_membership": [
+        {
+          "basket": "DevOps",
+          "sub_basket": "CI/CD"
+        }
+      ]
     },
     {
       "name": "sub_agent",
@@ -685,10 +1245,44 @@
       "require_sudo": false,
       "privileged_command_patterns": [],
       "read_only_blocked_patterns": [],
-      "taxonomy_membership": []
+      "taxonomy_membership": [
+        {
+          "basket": "Development",
+          "sub_basket": "Coding"
+        }
+      ]
     }
   ],
   "taxonomy": {
-    "baskets": []
+    "baskets": [
+      {
+        "name": "Development",
+        "sub_baskets": ["Coding", "Research", "Testing"]
+      },
+      {
+        "name": "DevOps",
+        "sub_baskets": ["CI/CD", "Containers", "Deployment"]
+      },
+      {
+        "name": "Security",
+        "sub_baskets": ["Assessment", "Hardening", "Compliance"]
+      },
+      {
+        "name": "Data/ML",
+        "sub_baskets": ["Data Engineering", "MLOps", "Analytics"]
+      },
+      {
+        "name": "Cloud",
+        "sub_baskets": ["Azure", "AWS", "GCP"]
+      },
+      {
+        "name": "Infra",
+        "sub_baskets": ["Operations", "Networking", "Storage"]
+      },
+      {
+        "name": "Docs",
+        "sub_baskets": ["Authoring", "Research", "Runbooks"]
+      }
+    ]
   }
 }

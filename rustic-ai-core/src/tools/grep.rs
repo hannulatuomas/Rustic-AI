@@ -256,6 +256,18 @@ impl GrepTool {
 
         Ok(results)
     }
+
+    async fn run_search_async(
+        &self,
+        args: GrepArgs,
+        context: &ToolExecutionContext,
+    ) -> Result<Vec<GrepMatch>> {
+        let tool = self.clone();
+        let context = context.clone();
+        tokio::task::spawn_blocking(move || tool.run_search(args, &context))
+            .await
+            .map_err(|err| Error::Tool(format!("grep task failed: {err}")))?
+    }
 }
 
 #[async_trait]
@@ -274,7 +286,7 @@ impl Tool for GrepTool {
 
     async fn execute(&self, args: Value, context: &ToolExecutionContext) -> Result<ToolResult> {
         let parsed = self.parse_args(&args)?;
-        let matches = self.run_search(parsed, context)?;
+        let matches = self.run_search_async(parsed, context).await?;
         let payload = json!({
             "count": matches.len(),
             "matches": matches
@@ -310,7 +322,7 @@ impl Tool for GrepTool {
             args: args.clone(),
         });
 
-        let matches = self.run_search(parsed, context)?;
+        let matches = self.run_search_async(parsed, context).await?;
         for matched in &matches {
             let _ = tx.try_send(Event::ToolOutput {
                 tool: tool_name.clone(),

@@ -1,6 +1,9 @@
 pub mod bracket_validator;
+pub mod code_search;
 pub mod convert;
+pub mod crawler;
 pub mod database;
+pub mod docker;
 pub mod download;
 pub mod encoding;
 pub mod filesystem;
@@ -13,6 +16,7 @@ pub mod lsp;
 pub mod manager;
 pub mod mcp;
 pub mod plugin;
+pub mod process;
 pub mod regex;
 pub mod registry;
 pub mod shell;
@@ -20,6 +24,8 @@ pub mod skill;
 pub mod ssh;
 pub mod sub_agent;
 pub mod types;
+pub mod watch;
+pub mod web_fetch;
 pub mod web_search;
 
 pub use manager::{ToolManager, ToolManagerInit};

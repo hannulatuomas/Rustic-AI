@@ -17,7 +17,10 @@ pub struct Cli {
 pub enum Command {
     Discover,
     Topics,
-    Agents,
+    Agents {
+        #[command(subcommand)]
+        command: AgentCommand,
+    },
     Index {
         #[command(subcommand)]
         command: IndexCommand,
@@ -60,6 +63,32 @@ pub enum Command {
         #[command(subcommand)]
         command: RoutingCommand,
     },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum AgentCommand {
+    List,
+    Filter {
+        #[arg(long)]
+        tool: Option<String>,
+        #[arg(long)]
+        basket: Option<String>,
+        #[arg(long)]
+        sub_basket: Option<String>,
+        #[arg(long, value_enum)]
+        permission_mode: Option<AgentPermissionModeArg>,
+    },
+    Suggest {
+        task: String,
+        #[arg(long, default_value_t = 5)]
+        limit: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum AgentPermissionModeArg {
+    ReadOnly,
+    ReadWrite,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -177,6 +206,12 @@ pub enum TodoPriority {
 #[derive(Debug, Clone, Subcommand)]
 pub enum RoutingCommand {
     Trace {
+        #[arg(long)]
+        session_id: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    Chain {
         #[arg(long)]
         session_id: String,
         #[arg(long, default_value_t = 20)]

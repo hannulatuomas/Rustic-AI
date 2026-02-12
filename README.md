@@ -11,7 +11,7 @@ Rustic-AI is beyond the scaffold stage. Core runtime capabilities are broadly im
 
 Implemented highlights:
 - 7 LLM providers (OpenAI, Anthropic, Google, Grok, Z.ai, Ollama, Custom OpenAI-compatible)
-- Broad tooling: shell, filesystem, http, ssh, git, grep, database, web_search, download, regex, format, encoding, convert, lsp, image, mcp, skill, sub_agent
+- Broad tooling: shell, filesystem, http, ssh, git, grep, code_search, database, web_search, web_fetch, crawler, watch, download, process, docker, regex, format, encoding, convert, lsp, image, mcp, skill, sub_agent
 - Workflow engine with rich control flow (tool/skill/agent/workflow/condition/wait/loop/merge/switch)
 - Permission model with allow/deny/ask and read-only vs read-write agent enforcement
 - Session persistence and storage abstraction (SQLite + Postgres support)
@@ -103,6 +103,29 @@ cargo run -p rustic-ai-cli -- --config config.json index retrieve --query "permi
 cargo run -p rustic-ai-cli -- --config config.json index impact --symbol "ToolManager::execute_tool"
 ```
 
+Taxonomy-driven discovery:
+
+```bash
+cargo run -p rustic-ai-cli -- --config config.json taxonomy list
+cargo run -p rustic-ai-cli -- --config config.json taxonomy show Development --sub-basket Coding
+cargo run -p rustic-ai-cli -- --config config.json taxonomy search "docker"
+```
+
+Agent discovery and ranking:
+
+```bash
+cargo run -p rustic-ai-cli -- --config config.json agents list
+cargo run -p rustic-ai-cli -- --config config.json agents filter --tool docker --basket DevOps --sub-basket Containers --permission-mode read-write
+cargo run -p rustic-ai-cli -- --config config.json agents suggest "investigate a container networking outage"
+```
+
+Routing trace chain inspection:
+
+```bash
+cargo run -p rustic-ai-cli -- --config config.json routing trace --session-id <session-id>
+cargo run -p rustic-ai-cli -- --config config.json routing chain --session-id <session-id>
+```
+
 ## Feature Overview
 
 ### LLM Providers
@@ -121,7 +144,8 @@ Built-in tools and adapters include:
 
 - shell, filesystem, http, ssh
 - git, grep, database
-- web_search, download
+- web_search, web_fetch, crawler, code_search, watch, download
+- process, docker
 - regex, format, encoding, convert
 - lsp, image
 - mcp, skill, sub_agent
@@ -146,6 +170,20 @@ Implemented workflow capabilities:
 - expression parsing/evaluation
 - retry/timeout policies
 - routing by success/failure branches
+
+### Domain Presets (Example Config)
+
+- Programming languages and scripting (C#, C/C++, Rust, JS/TS, Python, PowerShell, Bash/cmd, PHP, SQL/PLSQL, Go, Assembly, VBA, HTML/CSS/Lua)
+- Frameworks (Node.js, React/Next.js, Angular, Vue, Django, Rails, Spring, ASP.NET, Vite, Tailwind, Express, FastAPI, Electron)
+- Linux administration across listed distros + Windows administration/maintenance
+- Databases and data analysis (SQL + NoSQL families)
+- API development/maintenance (REST, SOAP, GraphQL, gRPC, WebSocket, Kafka)
+- Cyber security (assessment, pentest planning, malware triage, OSINT) + DevSecOps
+- Microsoft/Azure ecosystem operations
+- AI/ML workflows including prompt engineering
+- Game development workflows
+- IaC (Terraform, OpenTofu, Bicep, Ansible)
+- Containers/orchestration, cloud infrastructure, servers/VMs/networking
 
 ### Permissions and Safety
 

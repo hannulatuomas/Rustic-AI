@@ -1,12 +1,16 @@
 use std::path::PathBuf;
 
-use crate::config::schema::WorkflowsConfig;
+use crate::config::schema::{DynamicRoutingConfig, WorkflowsConfig};
 
 use super::executor::WorkflowExecutorConfig;
 
 pub fn build_workflow_executor_config(
     workflows_config: &WorkflowsConfig,
     working_directory: PathBuf,
+    dynamic_routing_enabled: bool,
+    dynamic_routing: DynamicRoutingConfig,
+    todo_tracking_enabled: bool,
+    project_id: Option<String>,
 ) -> WorkflowExecutorConfig {
     WorkflowExecutorConfig {
         max_recursion_depth: workflows_config.max_recursion_depth,
@@ -36,5 +40,9 @@ pub fn build_workflow_executor_config(
         loop_hard_max_parallelism: workflows_config.loop_hard_max_parallelism,
         wait_default_poll_interval_ms: workflows_config.wait_default_poll_interval_ms,
         wait_default_timeout_seconds: workflows_config.wait_default_timeout_seconds,
+        dynamic_routing_enabled,
+        dynamic_routing,
+        todo_tracking_enabled,
+        project_id,
     }
 }

@@ -1,6 +1,6 @@
 use crate::agents::memory::{AgentMemory, AgentMemoryConfig};
 use crate::agents::todo_extractor;
-use crate::config::schema::AgentConfig;
+use crate::config::schema::{AgentConfig, ToolShortlistMode};
 use crate::conversation::session_manager::SessionManager;
 use crate::error::Result;
 use crate::events::Event;
@@ -23,6 +23,8 @@ const DEFAULT_MAX_TOTAL_TOOL_CALLS_PER_TURN: usize = 24;
 const DEFAULT_MAX_TURN_DURATION_SECONDS: u64 = 300;
 const DEFAULT_TOOL_SHORTLIST_ITEMS: usize = 12;
 const DEFAULT_TOOL_SHORTLIST_CHAR_BUDGET: usize = 1200;
+const DEFAULT_SUB_AGENT_TARGET_SHORTLIST_ITEMS: usize = 6;
+const DEFAULT_SUB_AGENT_TARGET_SHORTLIST_CHAR_BUDGET: usize = 600;
 const HARD_MAX_TOOL_ROUNDS: usize = 32;
 const HARD_MAX_TOOLS_PER_ROUND: usize = 64;
 const HARD_MAX_TOTAL_TOOL_CALLS_PER_TURN: usize = 256;
@@ -257,44 +259,100 @@ impl Agent {
             .config
             .tool_shortlist_char_budget
             .unwrap_or(DEFAULT_TOOL_SHORTLIST_CHAR_BUDGET);
-        let mut prioritized_tools = self
-            .tool_manager
-            .get_tool_descriptions(focus_hint, Some(shortlist_cap))
-            .await
-            .into_iter()
-            .filter(|(name, _)| configured.contains(name.as_str()))
-            .collect::<Vec<_>>();
+        let listing_mode = self.config.tool_shortlist_mode;
 
-        if prioritized_tools.is_empty() {
+        let mut prioritized_tools = match listing_mode {
+            ToolShortlistMode::Full => Vec::new(),
+            ToolShortlistMode::Priority => self
+                .tool_manager
+                .get_tool_descriptions(None, Some(shortlist_cap))
+                .await
+                .into_iter()
+                .filter(|(name, _)| configured.contains(name.as_str()))
+                .collect::<Vec<_>>(),
+            ToolShortlistMode::TaskFocused => self
+                .tool_manager
+                .get_tool_descriptions(focus_hint, Some(shortlist_cap))
+                .await
+                .into_iter()
+                .filter(|(name, _)| configured.contains(name.as_str()))
+                .collect::<Vec<_>>(),
+        };
+
+        if !matches!(listing_mode, ToolShortlistMode::Full) && prioritized_tools.is_empty() {
             prioritized_tools = self
                 .tool_manager
-                .get_tool_descriptions(None, None)
+                .get_tool_descriptions(None, Some(shortlist_cap))
                 .await
                 .into_iter()
                 .filter(|(name, _)| configured.contains(name.as_str()))
                 .collect();
         }
 
-        let mut prioritized_chunks = Vec::new();
-        let mut used_chars = 0usize;
-        for (name, description) in prioritized_tools {
-            let compact_description = description.split_whitespace().collect::<Vec<_>>().join(" ");
-            let chunk = format!("{name}: {compact_description}");
-            if !prioritized_chunks.is_empty() && used_chars + chunk.len() > shortlist_char_budget {
-                break;
-            }
-            used_chars += chunk.len();
-            prioritized_chunks.push(chunk);
-        }
-
-        let prioritized = if prioritized_chunks.is_empty() {
+        let prioritized = if matches!(listing_mode, ToolShortlistMode::Full) {
             tools.clone()
         } else {
-            prioritized_chunks.join("; ")
+            let mut prioritized_chunks = Vec::new();
+            let mut used_chars = 0usize;
+            for (name, description) in prioritized_tools {
+                let compact_description =
+                    description.split_whitespace().collect::<Vec<_>>().join(" ");
+                let chunk = format!("{name}: {compact_description}");
+                if !prioritized_chunks.is_empty()
+                    && used_chars + chunk.len() > shortlist_char_budget
+                {
+                    break;
+                }
+                used_chars += chunk.len();
+                prioritized_chunks.push(chunk);
+            }
+
+            if prioritized_chunks.is_empty() {
+                tools.clone()
+            } else {
+                prioritized_chunks.join("; ")
+            }
+        };
+
+        let sub_agent_target_hint = if self.config.allow_sub_agent_calls
+            && self.config.tools.iter().any(|tool| tool == "sub_agent")
+            && self
+                .config
+                .sub_agent_target_shortlist_enabled
+                .unwrap_or(true)
+        {
+            let target_chunks = self
+                .tool_manager
+                .get_sub_agent_target_shortlist(
+                    &self.config.name,
+                    focus_hint,
+                    Some(
+                        self.config
+                            .sub_agent_target_shortlist_max_items
+                            .unwrap_or(DEFAULT_SUB_AGENT_TARGET_SHORTLIST_ITEMS),
+                    ),
+                    Some(
+                        self.config
+                            .sub_agent_target_shortlist_char_budget
+                            .unwrap_or(DEFAULT_SUB_AGENT_TARGET_SHORTLIST_CHAR_BUDGET),
+                    ),
+                )
+                .await;
+
+            if target_chunks.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " For sub-agent delegation, prefer this shortlist and avoid broad agent catalogs: {}.",
+                    target_chunks.join("; ")
+                )
+            }
+        } else {
+            String::new()
         };
 
         format!(
-            "{base_prompt}\n\nWhen you need a tool, emit a single-line JSON object only with shape: {{\"tool\":\"<tool_name>\",\"args\":{{...}}}}. Configured tools: {tools}. Prioritize these tools for this task: {prioritized}."
+            "{base_prompt}\n\nWhen you need a tool, emit a single-line JSON object only with shape: {{\"tool\":\"<tool_name>\",\"args\":{{...}}}}. Configured tools: {tools}. Prioritize these tools for this task: {prioritized}.{sub_agent_target_hint}"
         )
     }
 

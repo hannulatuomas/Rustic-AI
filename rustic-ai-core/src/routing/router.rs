@@ -131,15 +131,21 @@ impl Router {
         let task_type = self.identify_task_type(task);
         let keyword_matches = self.find_keyword_matches(task, &task_type);
 
-        let all_agents = self.registry.list_agents();
-        let best_agent = all_agents
+        let ranked_agents = self.rank_agents_for_task_type(&task_type);
+        let best_agent = ranked_agents
             .first()
             .cloned()
             .unwrap_or_else(|| self.config.fallback_agent.clone());
+        let alternatives = ranked_agents.iter().skip(1).take(5).cloned().collect();
+        let confidence = if keyword_matches.is_empty() {
+            0.4
+        } else {
+            0.82
+        };
 
         Ok(RoutingDecision {
             agent: best_agent,
-            confidence: if keyword_matches.is_empty() { 0.3 } else { 0.8 },
+            confidence,
             reason: RoutingReason {
                 primary_factor: "task_type".to_string(),
                 explanation: format!(
@@ -151,7 +157,7 @@ impl Router {
                 keyword_matches,
             },
             policy: RoutingPolicy::TaskType,
-            alternatives: all_agents.iter().skip(1).cloned().collect(),
+            alternatives,
             fallback_used: false,
             context_pressure: None,
         })
@@ -159,18 +165,23 @@ impl Router {
 
     /// Route by agent capabilities (taxonomy and tools)
     fn route_by_capabilities(&self, task: &str) -> Result<RoutingDecision> {
-        let all_agents = self.registry.list_agents();
-        let best_agent = all_agents
+        let task_type = self.identify_task_type(task);
+        let keyword_matches = self.find_keyword_matches(task, &task_type);
+        let ranked_agents = self.rank_agents_for_task_type(&task_type);
+        let best_agent = ranked_agents
             .first()
             .cloned()
             .unwrap_or_else(|| self.config.fallback_agent.clone());
-
-        let task_type = self.identify_task_type(task);
-        let keyword_matches = self.find_keyword_matches(task, &task_type);
+        let alternatives = ranked_agents.iter().skip(1).take(5).cloned().collect();
+        let confidence = if keyword_matches.is_empty() {
+            0.55
+        } else {
+            0.72
+        };
 
         Ok(RoutingDecision {
             agent: best_agent,
-            confidence: 0.6,
+            confidence,
             reason: RoutingReason {
                 primary_factor: "agent_capabilities".to_string(),
                 explanation: "Routed based on agent capabilities (taxonomy and tools)".to_string(),
@@ -178,7 +189,7 @@ impl Router {
                 keyword_matches,
             },
             policy: RoutingPolicy::AgentCapabilities,
-            alternatives: all_agents.iter().skip(1).cloned().collect(),
+            alternatives,
             fallback_used: false,
             context_pressure: None,
         })
@@ -186,18 +197,24 @@ impl Router {
 
     /// Route by context pressure (simplified for now)
     fn route_by_context_pressure(&self, task: &str) -> Result<RoutingDecision> {
-        let all_agents = self.registry.list_agents();
-        let best_agent = all_agents
+        let task_type = self.identify_task_type(task);
+        let keyword_matches = self.find_keyword_matches(task, &task_type);
+        let ranked_agents = self.rank_agents_for_task_type(&task_type);
+        let best_agent = ranked_agents
             .first()
             .cloned()
             .unwrap_or_else(|| self.config.fallback_agent.clone());
-
-        let task_type = self.identify_task_type(task);
-        let keyword_matches = self.find_keyword_matches(task, &task_type);
+        let alternatives = ranked_agents.iter().skip(1).take(5).cloned().collect();
+        let context_pressure = self.config.default_context_pressure as f32;
+        let confidence = if context_pressure > self.config.context_pressure_threshold as f32 {
+            0.42
+        } else {
+            0.58
+        };
 
         Ok(RoutingDecision {
             agent: best_agent,
-            confidence: 0.5,
+            confidence,
             reason: RoutingReason {
                 primary_factor: "context_pressure".to_string(),
                 explanation: format!(
@@ -208,9 +225,9 @@ impl Router {
                 keyword_matches,
             },
             policy: RoutingPolicy::ContextPressure,
-            alternatives: all_agents.iter().skip(1).cloned().collect(),
+            alternatives,
             fallback_used: false,
-            context_pressure: Some(0.5),
+            context_pressure: Some(context_pressure),
         })
     }
 
@@ -290,11 +307,110 @@ impl Router {
     }
 
     /// Check if agent is suitable for a task type
-    fn is_agent_suitable_for_task_type(&self, agent_name: &str, _task_type: &str) -> bool {
-        // For now, return true if agent has any tools configured
-        // This could be enhanced with agent metadata
-        let agent_tools = self.registry.get_agent_tools(agent_name);
-        !agent_tools.is_empty()
+    fn is_agent_suitable_for_task_type(&self, agent_name: &str, task_type: &str) -> bool {
+        if task_type == "general" {
+            return true;
+        }
+
+        let Some(config) = self.registry.get_config(agent_name) else {
+            return false;
+        };
+        let (basket_hints, tool_hints) = Self::task_type_hints(task_type);
+        if basket_hints.is_empty() && tool_hints.is_empty() {
+            return !config.tools.is_empty();
+        }
+
+        let basket_match = config.taxonomy_membership.iter().any(|membership| {
+            basket_hints
+                .iter()
+                .any(|hint| membership.basket.eq_ignore_ascii_case(hint))
+        });
+        let tool_match = config.tools.iter().any(|tool| {
+            tool_hints.iter().any(|hint| {
+                tool.eq_ignore_ascii_case(hint) || tool.to_ascii_lowercase().contains(hint)
+            })
+        });
+        let name_match = agent_name.to_ascii_lowercase().contains(task_type);
+        basket_match || tool_match || name_match
+    }
+
+    fn rank_agents_for_task_type(&self, task_type: &str) -> Vec<String> {
+        let mut ranked = self
+            .registry
+            .list_agents()
+            .into_iter()
+            .map(|agent| {
+                let suitable = self.is_agent_suitable_for_task_type(&agent, task_type);
+                let tools = self.registry.get_agent_tools(&agent).len() as i32;
+                let score = (if suitable { 1000 } else { 0 }) + tools;
+                (agent, score)
+            })
+            .collect::<Vec<_>>();
+        ranked.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+        ranked.into_iter().map(|(agent, _)| agent).collect()
+    }
+
+    fn task_type_hints(task_type: &str) -> (&'static [&'static str], &'static [&'static str]) {
+        match task_type {
+            "programming"
+            | "programming_languages"
+            | "frameworks"
+            | "implementation"
+            | "debugging" => (
+                &["Development"],
+                &[
+                    "shell",
+                    "filesystem",
+                    "grep",
+                    "code_search",
+                    "git",
+                    "lsp",
+                    "http",
+                ],
+            ),
+            "linux_admin"
+            | "linux_distros"
+            | "servers_vms_networking"
+            | "servers"
+            | "vms"
+            | "networking" => (&["Infra"], &["shell", "ssh", "process", "watch", "http"]),
+            "database_data" => (
+                &["Data/ML"],
+                &["database", "format", "convert", "code_search"],
+            ),
+            "api" | "api_development" => (
+                &["Development"],
+                &["http", "web_fetch", "web_search", "grep", "code_search"],
+            ),
+            "cyber_security" | "security" => (
+                &["Security"],
+                &["grep", "code_search", "web_search", "web_fetch", "ssh"],
+            ),
+            "microsoft_azure" | "microsoft_azure_ecosystem" | "azure_ms" => {
+                (&["Cloud"], &["http", "shell", "process", "web_search"])
+            }
+            "windows_admin" | "windows_admin_maintenance" => {
+                (&["Infra"], &["shell", "process", "ssh", "filesystem"])
+            }
+            "devops_secdevops"
+            | "devops"
+            | "secdevops"
+            | "containers"
+            | "iac"
+            | "infrastructure_as_code" => {
+                (&["DevOps"], &["docker", "shell", "process", "git", "http"])
+            }
+            "ai_ml_prompt" | "ai_ml_prompt_engineering" | "data_ml" => (
+                &["Data/ML"],
+                &["database", "http", "format", "convert", "code_search"],
+            ),
+            "game_dev" | "game_development" => (
+                &["Development"],
+                &["filesystem", "code_search", "shell", "image", "lsp"],
+            ),
+            "cloud" => (&["Cloud"], &["http", "shell", "process", "web_fetch"]),
+            _ => (&[], &[]),
+        }
     }
 
     /// Identify task type from task description

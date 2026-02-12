@@ -3,6 +3,7 @@ mod cli;
 mod renderer;
 mod repl;
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -270,6 +271,176 @@ fn handle_session_command(
             })?;
             runtime.block_on(app.session_manager().delete_session(session_id))?;
             println!("Deleted session: {}", id);
+        }
+    }
+
+    Ok(())
+}
+
+fn print_agent_details(app: &rustic_ai_core::RusticAI, name: &str) {
+    if let Some(config) = app.runtime().agents.get_agent_config(name) {
+        println!(
+            "- {} (provider={}, permission_mode={:?}, allow_sub_agent_calls={}, max_sub_agent_depth={}, sub_agent_context_window_size={}, sub_agent_max_context_tokens={})",
+            config.name,
+            config.provider,
+            config.permission_mode,
+            config.allow_sub_agent_calls,
+            config
+                .max_sub_agent_depth
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "<default>".to_owned()),
+            config
+                .sub_agent_context_window_size
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "<default>".to_owned()),
+            config
+                .sub_agent_max_context_tokens
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "<default>".to_owned())
+        );
+        if config.tools.is_empty() {
+            println!("  tools: <none>");
+        } else {
+            println!("  tools: {}", config.tools.join(", "));
+        }
+        if config.skills.is_empty() {
+            println!("  skills: <none>");
+        } else {
+            println!("  skills: {}", config.skills.join(", "));
+        }
+        if config.taxonomy_membership.is_empty() {
+            println!("  taxonomy: <none>");
+        } else {
+            let memberships = config
+                .taxonomy_membership
+                .iter()
+                .map(|entry| match entry.sub_basket.as_deref() {
+                    Some(sub) => format!("{}/{}", entry.basket, sub),
+                    None => entry.basket.clone(),
+                })
+                .collect::<Vec<_>>();
+            println!("  taxonomy: {}", memberships.join(", "));
+        }
+    }
+}
+
+fn handle_agents_command(
+    app: &rustic_ai_core::RusticAI,
+    command: cli::AgentCommand,
+) -> rustic_ai_core::Result<()> {
+    match command {
+        cli::AgentCommand::List => {
+            let mut names = app.runtime().agents.list_agents();
+            names.sort();
+            if names.is_empty() {
+                println!("No agents configured.");
+                return Ok(());
+            }
+
+            println!("Configured agents:");
+            for name in names {
+                print_agent_details(app, &name);
+            }
+        }
+        cli::AgentCommand::Filter {
+            tool,
+            basket,
+            sub_basket,
+            permission_mode,
+        } => {
+            let mut candidates = app
+                .runtime()
+                .agents
+                .list_agents()
+                .into_iter()
+                .collect::<HashSet<_>>();
+
+            if let Some(tool) = tool.as_deref() {
+                let tool_filtered = app
+                    .runtime()
+                    .agents
+                    .find_agents_by_tool(tool)
+                    .into_iter()
+                    .collect::<HashSet<_>>();
+                candidates = candidates
+                    .intersection(&tool_filtered)
+                    .cloned()
+                    .collect::<HashSet<_>>();
+            }
+
+            if let Some(basket) = basket.as_deref() {
+                let basket_filtered = if let Some(sub) = sub_basket.as_deref() {
+                    app.runtime()
+                        .agents
+                        .get_inner_registry()
+                        .find_by_sub_basket(basket, sub)
+                } else {
+                    app.runtime()
+                        .agents
+                        .get_inner_registry()
+                        .find_by_basket(basket)
+                }
+                .into_iter()
+                .collect::<HashSet<_>>();
+                candidates = candidates
+                    .intersection(&basket_filtered)
+                    .cloned()
+                    .collect::<HashSet<_>>();
+            }
+
+            if let Some(mode) = permission_mode {
+                let mode = match mode {
+                    cli::AgentPermissionModeArg::ReadOnly => {
+                        rustic_ai_core::config::schema::AgentPermissionMode::ReadOnly
+                    }
+                    cli::AgentPermissionModeArg::ReadWrite => {
+                        rustic_ai_core::config::schema::AgentPermissionMode::ReadWrite
+                    }
+                };
+                let mode_filtered = app
+                    .runtime()
+                    .agents
+                    .get_inner_registry()
+                    .find_by_permission_mode(mode)
+                    .into_iter()
+                    .collect::<HashSet<_>>();
+                candidates = candidates
+                    .intersection(&mode_filtered)
+                    .cloned()
+                    .collect::<HashSet<_>>();
+            }
+
+            let mut names = candidates.into_iter().collect::<Vec<_>>();
+            names.sort();
+
+            if names.is_empty() {
+                println!("No agents matched the provided filters.");
+                return Ok(());
+            }
+
+            println!("Filtered agents:");
+            for name in names {
+                print_agent_details(app, &name);
+            }
+        }
+        cli::AgentCommand::Suggest { task, limit } => {
+            let mut suggestions = app.runtime().agents.suggest_agents_for_task(&task);
+            if suggestions.is_empty() {
+                println!("No ranked suggestions available for task: {}", task);
+                return Ok(());
+            }
+
+            let capped = limit.clamp(1, 50);
+            suggestions.truncate(capped);
+            println!(
+                "Top {} agent suggestions for task: {}",
+                suggestions.len(),
+                task
+            );
+            for suggestion in suggestions {
+                println!("- {} (score={})", suggestion.agent_name, suggestion.score);
+                print_agent_details(app, &suggestion.agent_name);
+            }
         }
     }
 
@@ -624,47 +795,8 @@ fn run() -> rustic_ai_core::Result<()> {
                         println!("Topics: {}", topics.join(", "));
                         return Ok(());
                     }
-                    cli::Command::Agents => {
-                        let names = app.runtime().agents.list_agents();
-                        if names.is_empty() {
-                            println!("No agents configured.");
-                            return Ok(());
-                        }
-
-                        println!("Configured agents:");
-                        for name in names {
-                            if let Some(config) = app.runtime().agents.get_agent_config(&name) {
-                                println!(
-                                    "- {} (provider={}, permission_mode={:?}, allow_sub_agent_calls={}, max_sub_agent_depth={}, sub_agent_context_window_size={}, sub_agent_max_context_tokens={})",
-                                    config.name,
-                                    config.provider,
-                                    config.permission_mode,
-                                    config.allow_sub_agent_calls,
-                                    config
-                                        .max_sub_agent_depth
-                                        .map(|v| v.to_string())
-                                        .unwrap_or_else(|| "<default>".to_owned()),
-                                    config
-                                        .sub_agent_context_window_size
-                                        .map(|v| v.to_string())
-                                        .unwrap_or_else(|| "<default>".to_owned()),
-                                    config
-                                        .sub_agent_max_context_tokens
-                                        .map(|v| v.to_string())
-                                        .unwrap_or_else(|| "<default>".to_owned())
-                                );
-                                if config.tools.is_empty() {
-                                    println!("  tools: <none>");
-                                } else {
-                                    println!("  tools: {}", config.tools.join(", "));
-                                }
-                                if config.skills.is_empty() {
-                                    println!("  skills: <none>");
-                                } else {
-                                    println!("  skills: {}", config.skills.join(", "));
-                                }
-                            }
-                        }
+                    cli::Command::Agents { command } => {
+                        handle_agents_command(&app, command)?;
                         return Ok(());
                     }
                     cli::Command::Index { command } => {
@@ -1203,7 +1335,7 @@ fn handle_routing_command(
     command: cli::RoutingCommand,
 ) -> rustic_ai_core::Result<()> {
     use rustic_ai_core::routing::Router;
-    use rustic_ai_core::storage::model::RoutingTraceFilter;
+    use rustic_ai_core::storage::model::{RoutingTraceFilter, SubAgentOutputFilter, TodoFilter};
 
     let runtime = tokio::runtime::Runtime::new().map_err(|err| {
         rustic_ai_core::Error::Config(format!("failed to create tokio runtime: {err}"))
@@ -1312,6 +1444,145 @@ fn handle_routing_command(
             if !decision.alternatives.is_empty() {
                 println!();
                 println!("Alternative Agents: {}", decision.alternatives.join(", "));
+            }
+        }
+        cli::RoutingCommand::Chain { session_id, limit } => {
+            if !config.features.dynamic_routing_enabled {
+                println!("Dynamic routing is disabled. Enable it in config.features.dynamic_routing_enabled.");
+                return Ok(());
+            }
+
+            let session_uuid = uuid::Uuid::parse_str(&session_id).map_err(|err| {
+                rustic_ai_core::Error::Config(format!("invalid session id '{session_id}': {err}"))
+            })?;
+
+            let traces = runtime.block_on(app.session_manager().list_routing_traces(
+                &RoutingTraceFilter {
+                    session_id: Some(session_uuid),
+                    selected_agent: None,
+                    min_confidence: None,
+                    fallback_only: false,
+                    limit: Some(limit),
+                },
+            ))?;
+
+            if traces.is_empty() {
+                println!("No routing traces found for session: {session_id}");
+                return Ok(());
+            }
+
+            let todos = runtime.block_on(app.session_manager().list_todos(&TodoFilter {
+                session_id: Some(session_uuid),
+                project_id: None,
+                parent_id: None,
+                status: None,
+                priority: None,
+                tags: None,
+                limit: Some(limit.saturating_mul(20).clamp(20, 500)),
+            }))?;
+
+            let sub_outputs = runtime.block_on(app.session_manager().list_sub_agent_outputs(
+                &SubAgentOutputFilter {
+                    caller_agent: None,
+                    target_agent: None,
+                    task_key: None,
+                    task_type: None,
+                    exclude_expired: false,
+                    limit: Some(limit.saturating_mul(20).clamp(20, 500)),
+                },
+            ))?;
+
+            let sub_output_by_id = sub_outputs
+                .iter()
+                .map(|output| (output.id, output))
+                .collect::<std::collections::HashMap<_, _>>();
+
+            println!("Routing -> TODO -> Sub-agent chain for session {session_id}:");
+            for trace in traces {
+                println!();
+                println!(
+                    "- Trace {} | agent={} | confidence={:.2} | policy={}{}",
+                    trace.id,
+                    trace.selected_agent,
+                    trace.confidence,
+                    trace.policy,
+                    if trace.fallback_used {
+                        " | fallback"
+                    } else {
+                        ""
+                    }
+                );
+                println!("  task: {}", trace.task);
+
+                let linked = todos
+                    .iter()
+                    .filter(|todo| todo.metadata.routing_trace_id == Some(trace.id))
+                    .collect::<Vec<_>>();
+
+                if linked.is_empty() {
+                    println!("  todos: <none>");
+                    continue;
+                }
+
+                for root in linked {
+                    println!(
+                        "  todo: {} | status={:?} | priority={:?} | tags={}",
+                        root.id,
+                        root.status,
+                        root.priority,
+                        if root.tags.is_empty() {
+                            "<none>".to_string()
+                        } else {
+                            root.tags.join(",")
+                        }
+                    );
+                    println!("    title: {}", root.title);
+                    if let Some(reason) = &root.metadata.reason {
+                        println!("    reason: {}", reason);
+                    }
+
+                    let mut stack = vec![root.id];
+                    let mut descendants = Vec::new();
+                    while let Some(parent_id) = stack.pop() {
+                        for todo in &todos {
+                            if todo.parent_id == Some(parent_id) {
+                                stack.push(todo.id);
+                                descendants.push(todo);
+                            }
+                        }
+                    }
+
+                    if descendants.is_empty() {
+                        println!("    sub_tasks: <none>");
+                    } else {
+                        for child in descendants {
+                            println!(
+                                "    sub_task: {} | status={:?} | tags={}",
+                                child.id,
+                                child.status,
+                                if child.tags.is_empty() {
+                                    "<none>".to_string()
+                                } else {
+                                    child.tags.join(",")
+                                }
+                            );
+                            println!("      title: {}", child.title);
+                            if let Some(output_id) = child.metadata.sub_agent_output_id {
+                                if let Some(output) = sub_output_by_id.get(&output_id) {
+                                    println!(
+                                        "      sub_agent_output: {} | caller={} -> target={} | task_type={}",
+                                        output.id,
+                                        output.caller_agent,
+                                        output.target_agent,
+                                        output.task_type.as_deref().unwrap_or("<unknown>")
+                                    );
+                                } else {
+                                    println!("      sub_agent_output: {}", output_id);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

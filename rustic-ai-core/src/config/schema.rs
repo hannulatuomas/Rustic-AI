@@ -106,6 +106,15 @@ pub enum RoutingPolicy {
     ContextPressure,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolShortlistMode {
+    Full,
+    Priority,
+    #[default]
+    TaskFocused,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DynamicRoutingConfig {
@@ -147,6 +156,179 @@ impl Default for DynamicRoutingConfig {
                 "build".to_string(),
                 "building".to_string(),
                 "create".to_string(),
+            ],
+        );
+        task_keywords.insert(
+            "programming".to_string(),
+            vec![
+                "rust".to_string(),
+                "python".to_string(),
+                "javascript".to_string(),
+                "typescript".to_string(),
+                "c#".to_string(),
+                "go".to_string(),
+                "sql".to_string(),
+            ],
+        );
+        task_keywords.insert(
+            "frameworks".to_string(),
+            vec![
+                "react".to_string(),
+                "next.js".to_string(),
+                "angular".to_string(),
+                "vue".to_string(),
+                "django".to_string(),
+                "rails".to_string(),
+                "asp.net".to_string(),
+            ],
+        );
+        task_keywords.insert(
+            "linux_admin".to_string(),
+            vec![
+                "linux".to_string(),
+                "ubuntu".to_string(),
+                "debian".to_string(),
+                "fedora".to_string(),
+                "red hat".to_string(),
+                "nixos".to_string(),
+                "systemd".to_string(),
+            ],
+        );
+        task_keywords.insert(
+            "database_data".to_string(),
+            vec![
+                "postgres".to_string(),
+                "mysql".to_string(),
+                "sqlite".to_string(),
+                "mssql".to_string(),
+                "oracle".to_string(),
+                "mongodb".to_string(),
+                "redis".to_string(),
+                "analytics".to_string(),
+            ],
+        );
+        task_keywords.insert(
+            "api".to_string(),
+            vec![
+                "rest".to_string(),
+                "graphql".to_string(),
+                "grpc".to_string(),
+                "websocket".to_string(),
+                "soap".to_string(),
+                "kafka".to_string(),
+                "endpoint".to_string(),
+            ],
+        );
+        task_keywords.insert(
+            "cyber_security".to_string(),
+            vec![
+                "security".to_string(),
+                "pentest".to_string(),
+                "ethical hacking".to_string(),
+                "malware".to_string(),
+                "osint".to_string(),
+                "threat".to_string(),
+                "vulnerability".to_string(),
+            ],
+        );
+        task_keywords.insert(
+            "microsoft_azure".to_string(),
+            vec![
+                "azure".to_string(),
+                "entra".to_string(),
+                "microsoft 365".to_string(),
+                "intune".to_string(),
+                "azdo".to_string(),
+                "azure devops".to_string(),
+            ],
+        );
+        task_keywords.insert(
+            "windows_admin".to_string(),
+            vec![
+                "windows".to_string(),
+                "powershell".to_string(),
+                "active directory".to_string(),
+                "gpo".to_string(),
+                "winrm".to_string(),
+                "iis".to_string(),
+            ],
+        );
+        task_keywords.insert(
+            "devops_secdevops".to_string(),
+            vec![
+                "devops".to_string(),
+                "secdevops".to_string(),
+                "pipeline".to_string(),
+                "ci/cd".to_string(),
+                "sast".to_string(),
+                "sbom".to_string(),
+                "supply chain".to_string(),
+            ],
+        );
+        task_keywords.insert(
+            "ai_ml_prompt".to_string(),
+            vec![
+                "ai".to_string(),
+                "ml".to_string(),
+                "model".to_string(),
+                "training".to_string(),
+                "inference".to_string(),
+                "prompt engineering".to_string(),
+                "eval".to_string(),
+            ],
+        );
+        task_keywords.insert(
+            "game_dev".to_string(),
+            vec![
+                "unity".to_string(),
+                "godot".to_string(),
+                "bevy".to_string(),
+                "unreal".to_string(),
+                "game".to_string(),
+                "gameplay".to_string(),
+            ],
+        );
+        task_keywords.insert(
+            "iac".to_string(),
+            vec![
+                "terraform".to_string(),
+                "opentofu".to_string(),
+                "bicep".to_string(),
+                "ansible".to_string(),
+                "infrastructure as code".to_string(),
+            ],
+        );
+        task_keywords.insert(
+            "containers".to_string(),
+            vec![
+                "docker".to_string(),
+                "podman".to_string(),
+                "container".to_string(),
+                "kubernetes".to_string(),
+                "helm".to_string(),
+            ],
+        );
+        task_keywords.insert(
+            "cloud".to_string(),
+            vec![
+                "cloud".to_string(),
+                "aws".to_string(),
+                "gcp".to_string(),
+                "azure".to_string(),
+                "iam".to_string(),
+                "rbac".to_string(),
+            ],
+        );
+        task_keywords.insert(
+            "servers_vms_networking".to_string(),
+            vec![
+                "server".to_string(),
+                "vm".to_string(),
+                "virtual machine".to_string(),
+                "network".to_string(),
+                "dns".to_string(),
+                "tls".to_string(),
+                "firewall".to_string(),
             ],
         );
 
@@ -785,8 +967,12 @@ pub struct AgentConfig {
     pub context_summary_enabled: Option<bool>,
     pub context_summary_max_tokens: Option<usize>,
     pub context_summary_cache_entries: Option<usize>,
+    pub tool_shortlist_mode: ToolShortlistMode,
     pub tool_shortlist_max_items: Option<usize>,
     pub tool_shortlist_char_budget: Option<usize>,
+    pub sub_agent_target_shortlist_enabled: Option<bool>,
+    pub sub_agent_target_shortlist_max_items: Option<usize>,
+    pub sub_agent_target_shortlist_char_budget: Option<usize>,
     pub auto_create_todos: bool,
     pub todo_project_scope: bool,
     pub parallel_sub_agent_enabled: bool,
@@ -822,8 +1008,12 @@ impl Default for AgentConfig {
             context_summary_enabled: None,
             context_summary_max_tokens: None,
             context_summary_cache_entries: None,
+            tool_shortlist_mode: ToolShortlistMode::TaskFocused,
             tool_shortlist_max_items: None,
             tool_shortlist_char_budget: None,
+            sub_agent_target_shortlist_enabled: None,
+            sub_agent_target_shortlist_max_items: None,
+            sub_agent_target_shortlist_char_budget: None,
             auto_create_todos: true,
             todo_project_scope: true,
             parallel_sub_agent_enabled: false,
