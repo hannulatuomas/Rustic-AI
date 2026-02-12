@@ -10,14 +10,14 @@ use crate::permissions::{
 use crate::skills::SkillRegistry;
 use crate::tools::plugin::PluginLoader;
 use crate::tools::{
-    convert::ConvertTool, database::DatabaseTool, download::DownloadTool, encoding::EncodingTool,
-    filesystem::FilesystemTool, format::FormatTool, git::GitTool, grep::GrepTool, http::HttpTool,
-    image::ImageTool, lsp::LspTool, mcp::McpToolAdapter, regex::RegexTool, shell::ShellTool,
-    skill::SkillTool, ssh::SshTool, sub_agent::SubAgentTool, web_search::WebSearchTool, Tool,
-    ToolExecutionContext,
+    bracket_validator::BracketValidatorTool, convert::ConvertTool, database::DatabaseTool,
+    download::DownloadTool, encoding::EncodingTool, filesystem::FilesystemTool, format::FormatTool,
+    git::GitTool, grep::GrepTool, http::HttpTool, image::ImageTool, lsp::LspTool,
+    mcp::McpToolAdapter, regex::RegexTool, shell::ShellTool, skill::SkillTool, ssh::SshTool,
+    sub_agent::SubAgentTool, web_search::WebSearchTool, Tool, ToolExecutionContext,
 };
 use crate::workflows::{
-    WorkflowExecutor, WorkflowExecutorConfig, WorkflowRegistry, WorkflowRunRequest,
+    build_workflow_executor_config, WorkflowExecutor, WorkflowRegistry, WorkflowRunRequest,
 };
 use crate::{agents::coordinator::AgentCoordinator, conversation::session_manager::SessionManager};
 use serde_json::{json, Value};
@@ -92,6 +92,7 @@ impl ToolManager {
             "format" => 84,
             "encoding" => 83,
             "convert" => 82,
+            "bracket_validator" => 81,
             "lsp" => 81,
             "image" => 79,
             "workflow" => 85,
@@ -116,6 +117,9 @@ impl ToolManager {
             "format" => "Format and minify JSON/XML payloads",
             "encoding" => "Encode/decode base64, URL, HTML, and UTF-8",
             "convert" => "Convert payloads across common data formats",
+            "bracket_validator" => {
+                "Validate bracket nesting with language-aware comment/string handling"
+            }
             "lsp" => "LSP symbol and navigation queries",
             "image" => "Image resize/crop/rotate/convert/metadata",
             "git" => "Inspect and modify git repositories",
@@ -128,11 +132,23 @@ impl ToolManager {
         }
     }
 
-    fn create_tool_instance(&self, config: &ToolConfig) -> Option<Arc<dyn Tool>> {
+    #[allow(clippy::too_many_arguments)]
+    fn build_tool_instance(
+        config: &ToolConfig,
+        permission_config: &PermissionConfig,
+        skills_enabled: bool,
+        skills: &Arc<SkillRegistry>,
+        mcp_enabled: bool,
+        mcp_config: &Arc<McpConfig>,
+        agents: &Arc<StdRwLock<Option<Arc<AgentCoordinator>>>>,
+        session_manager: &Arc<SessionManager>,
+        sub_agent_output_caching_enabled: bool,
+        sub_agent_parallel_enabled: bool,
+    ) -> Option<Arc<dyn Tool>> {
         match config.name.as_str() {
             "shell" => Some(Arc::new(ShellTool::new(
                 config.clone(),
-                self.permission_config.sudo_cache_ttl_secs,
+                permission_config.sudo_cache_ttl_secs,
             ))),
             "filesystem" => Some(Arc::new(FilesystemTool::new(config.clone()))),
             "grep" => Some(Arc::new(GrepTool::new(config.clone()))),
@@ -144,40 +160,53 @@ impl ToolManager {
             "format" => Some(Arc::new(FormatTool::new(config.clone()))),
             "encoding" => Some(Arc::new(EncodingTool::new(config.clone()))),
             "convert" => Some(Arc::new(ConvertTool::new(config.clone()))),
+            "bracket_validator" => Some(Arc::new(BracketValidatorTool::new(config.clone()))),
             "lsp" => Some(Arc::new(LspTool::new(config.clone()))),
             "image" => Some(Arc::new(ImageTool::new(config.clone()))),
             "http" => Some(Arc::new(HttpTool::new(config.clone()))),
             "ssh" => Some(Arc::new(SshTool::new(config.clone()))),
             "skill" => {
-                if !self.skills_enabled {
+                if !skills_enabled {
                     return None;
                 }
-                Some(Arc::new(SkillTool::new(
-                    config.clone(),
-                    self.skills.clone(),
-                )))
+                Some(Arc::new(SkillTool::new(config.clone(), skills.clone())))
             }
             "mcp" => {
-                if !self.mcp_enabled {
+                if !mcp_enabled {
                     return None;
                 }
                 Some(Arc::new(McpToolAdapter::new(
                     config.clone(),
-                    self.mcp_config.clone(),
+                    mcp_config.clone(),
                 )))
             }
             "sub_agent" => Some(Arc::new(SubAgentTool::new(
                 config.clone(),
-                self.agents.clone(),
-                self.session_manager.storage(),
-                self.sub_agent_output_caching_enabled,
-                self.sub_agent_parallel_enabled,
+                agents.clone(),
+                session_manager.storage(),
+                sub_agent_output_caching_enabled,
+                sub_agent_parallel_enabled,
                 false,
                 SubAgentCacheMode::Hybrid,
                 Some(3600),
             ))),
             _ => None,
         }
+    }
+
+    fn create_tool_instance(&self, config: &ToolConfig) -> Option<Arc<dyn Tool>> {
+        Self::build_tool_instance(
+            config,
+            self.permission_config.as_ref(),
+            self.skills_enabled,
+            &self.skills,
+            self.mcp_enabled,
+            &self.mcp_config,
+            &self.agents,
+            &self.session_manager,
+            self.sub_agent_output_caching_enabled,
+            self.sub_agent_parallel_enabled,
+        )
     }
 
     async fn get_or_load_tool(&self, tool_name: &str) -> Result<Arc<dyn Tool>> {
@@ -383,30 +412,19 @@ impl ToolManager {
                 continue;
             }
 
-            let tool: Arc<dyn Tool> = match config.name.as_str() {
-                "shell" => Arc::new(ShellTool::new(
-                    config.clone(),
-                    permission_config.sudo_cache_ttl_secs,
-                )),
-                "filesystem" => Arc::new(FilesystemTool::new(config.clone())),
-                "http" => Arc::new(HttpTool::new(config.clone())),
-                "ssh" => Arc::new(SshTool::new(config.clone())),
-                "skill" => {
-                    if !skills_enabled {
-                        continue;
-                    }
-                    Arc::new(SkillTool::new(config.clone(), skills.clone()))
-                }
-                "mcp" => {
-                    if !mcp_enabled {
-                        continue;
-                    }
-                    Arc::new(McpToolAdapter::new(config.clone(), mcp_config.clone()))
-                }
-                _ => {
-                    // For now, skip unknown tools
-                    continue;
-                }
+            let Some(tool) = Self::build_tool_instance(
+                &config,
+                permission_config.as_ref(),
+                skills_enabled,
+                &skills,
+                mcp_enabled,
+                &mcp_config,
+                &agents,
+                &session_manager,
+                sub_agent_output_caching_enabled,
+                sub_agent_parallel_enabled,
+            ) else {
+                continue;
             };
 
             tools.insert(config.name.clone(), tool);
@@ -573,40 +591,10 @@ impl ToolManager {
             self.skills.clone(),
             agents,
             self.session_manager.clone(),
-            WorkflowExecutorConfig {
-                max_recursion_depth: self.workflows_config.max_recursion_depth,
-                max_steps_per_run: self.workflows_config.max_steps_per_run,
-                working_directory: self.execution_context.working_directory.clone(),
-                default_timeout_seconds: self.workflows_config.default_timeout_seconds,
-                compatibility_preset: self.workflows_config.compatibility_preset,
-                switch_case_sensitive_default: self.workflows_config.switch_case_sensitive_default,
-                switch_pattern_priority: self.workflows_config.switch_pattern_priority.clone(),
-                loop_continue_on_iteration_error_default: self
-                    .workflows_config
-                    .loop_continue_on_iteration_error_default,
-                wait_timeout_succeeds: self.workflows_config.wait_timeout_succeeds,
-                condition_missing_path_as_false: self
-                    .workflows_config
-                    .condition_missing_path_as_false,
-                default_continue_on_error: self.workflows_config.default_continue_on_error,
-                continue_on_error_routing: self.workflows_config.continue_on_error_routing.clone(),
-                execution_error_policy: self.workflows_config.execution_error_policy.clone(),
-                timeout_error_policy: self.workflows_config.timeout_error_policy.clone(),
-                default_retry_count: self.workflows_config.default_retry_count,
-                default_retry_backoff_ms: self.workflows_config.default_retry_backoff_ms,
-                default_retry_backoff_multiplier: self
-                    .workflows_config
-                    .default_retry_backoff_multiplier,
-                default_retry_backoff_max_ms: self.workflows_config.default_retry_backoff_max_ms,
-                condition_group_max_depth: self.workflows_config.condition_group_max_depth,
-                expression_max_length: self.workflows_config.expression_max_length,
-                expression_max_depth: self.workflows_config.expression_max_depth,
-                loop_default_max_iterations: self.workflows_config.loop_default_max_iterations,
-                loop_default_max_parallelism: self.workflows_config.loop_default_max_parallelism,
-                loop_hard_max_parallelism: self.workflows_config.loop_hard_max_parallelism,
-                wait_default_poll_interval_ms: self.workflows_config.wait_default_poll_interval_ms,
-                wait_default_timeout_seconds: self.workflows_config.wait_default_timeout_seconds,
-            },
+            build_workflow_executor_config(
+                self.workflows_config.as_ref(),
+                self.execution_context.working_directory.clone(),
+            ),
         );
 
         let result = executor

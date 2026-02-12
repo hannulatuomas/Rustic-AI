@@ -458,11 +458,11 @@ Last updated: 2026-02-12
     - [ ] Add release runbook (build, verification, rollback)
     - [ ] Add production runtime/deployment docs
 
-24. **Complexity and Duplication Refactors** (5-7 days)
-    - [ ] Refactor `rustic-ai-core/src/agents/behavior.rs` into smaller units
-    - [ ] Refactor large workflow/config paths into focused modules
-    - [ ] Reduce duplicated provider/tool option-building logic
-    - [ ] Keep behavior parity with targeted regression checks
+24. **Complexity and Duplication Refactors** (5-7 days) [DONE]
+    - [x] Refactor `rustic-ai-core/src/agents/behavior.rs` into smaller units
+    - [x] Refactor large workflow/config paths into focused modules
+    - [x] Reduce duplicated provider/tool option-building logic
+    - [x] Keep behavior parity with targeted regression checks
 
 25. **Session and Project TODO Tracking** (3-4 days) [DONE]
     - [x] Add TODO model for session/project scopes
@@ -482,11 +482,11 @@ Last updated: 2026-02-12
     - [x] Add implicit quality tracking (acceptance/rejection counts)
     - [x] Add optional user rating prompt for summaries
 
-27. **Bracket Validator Tool** (2-3 days)
-    - [ ] Implement `bracket_validator` tool with (), {}, [], <> nesting checks
-    - [ ] Ignore brackets in comments and string literals with per-language rules
-    - [ ] Return structured mismatches with line/column, suggestions, and max error cap
-    - [ ] Support summary/detailed output plus CI/LSP-friendly formatting
+27. **Bracket Validator Tool** (2-3 days) [DONE]
+    - [x] Implement `bracket_validator` tool with (), {}, [], <> nesting checks
+    - [x] Ignore brackets in comments and string literals with per-language rules
+    - [x] Return structured mismatches with line/column, suggestions, and max error cap
+    - [x] Support summary/detailed output plus CI/LSP-friendly formatting
 
 28. **Dynamic Routing Engine (LangGraph-like)** (5-7 days) [DONE]
     - [x] Add rule- and state-driven routing layer for agent/task orchestration
@@ -560,7 +560,7 @@ Last updated: 2026-02-12
 
 **Remaining standalone items:**
 
-- [ ] Implement Bracket Validator Tool (item 27)
+- [ ] Continue test coverage expansion across core modules
 
 ---
 

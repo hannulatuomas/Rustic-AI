@@ -4,15 +4,13 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio::time::Duration;
 
 use crate::auth::SubscriptionAuthManager;
 use crate::error::{Error, Result};
+use crate::providers::http_client::{append_extra_headers, build_client};
 use crate::providers::retry::{send_with_retry, RetryPolicy};
 use crate::providers::streaming::spawn_sse_stream;
 use crate::providers::types::{ChatMessage, GenerateOptions, ModelProvider};
-
-const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Clone)]
 pub enum OpenAiAuth {
@@ -61,7 +59,7 @@ pub struct OpenAiProviderOptions {
 impl Default for OpenAiProviderOptions {
     fn default() -> Self {
         Self {
-            timeout_ms: DEFAULT_TIMEOUT_MS,
+            timeout_ms: 30_000,
             extra_headers: Vec::new(),
             retry_policy: RetryPolicy::default(),
         }
@@ -100,18 +98,8 @@ impl OpenAiProvider {
         options: OpenAiProviderOptions,
     ) -> Result<Self> {
         let endpoint = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-        let timeout_ms = if options.timeout_ms == 0 {
-            DEFAULT_TIMEOUT_MS
-        } else {
-            options.timeout_ms
-        };
-
         let (headers, subscription_headers) = Self::build_headers(&auth, &options.extra_headers)?;
-        let client = reqwest::Client::builder()
-            .default_headers(headers)
-            .timeout(Duration::from_millis(timeout_ms))
-            .build()
-            .map_err(|err| Error::Provider(format!("failed to build OpenAI client: {err}")))?;
+        let client = build_client(headers, options.timeout_ms, "OpenAI")?;
 
         Ok(Self {
             name,
@@ -171,17 +159,7 @@ impl OpenAiProvider {
             }
         }
 
-        for (name, value) in extra_headers {
-            let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(|err| {
-                Error::Config(format!("invalid OpenAI custom header name '{name}': {err}"))
-            })?;
-            let header_value = HeaderValue::from_str(value).map_err(|err| {
-                Error::Config(format!(
-                    "invalid OpenAI custom header value for '{name}': {err}"
-                ))
-            })?;
-            headers.insert(header_name, header_value);
-        }
+        append_extra_headers(&mut headers, extra_headers, "OpenAI")?;
 
         Ok((headers, subscription_headers))
     }

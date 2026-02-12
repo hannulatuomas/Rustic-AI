@@ -1,3 +1,4 @@
+pub mod bracket_validator;
 pub mod convert;
 pub mod database;
 pub mod download;

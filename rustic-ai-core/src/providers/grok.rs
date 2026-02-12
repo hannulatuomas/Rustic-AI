@@ -1,16 +1,14 @@
 use async_trait::async_trait;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
-use tokio::time::Duration;
 
 use crate::error::{Error, Result};
+use crate::providers::http_client::{append_extra_headers, build_client};
 use crate::providers::retry::{send_with_retry, RetryPolicy};
 use crate::providers::streaming::spawn_sse_stream;
 use crate::providers::types::{ChatMessage, GenerateOptions, ModelProvider};
-
-const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Debug, Clone)]
 pub struct GrokProviderOptions {
@@ -22,7 +20,7 @@ pub struct GrokProviderOptions {
 impl Default for GrokProviderOptions {
     fn default() -> Self {
         Self {
-            timeout_ms: DEFAULT_TIMEOUT_MS,
+            timeout_ms: 30_000,
             extra_headers: Vec::new(),
             retry_policy: RetryPolicy::default(),
         }
@@ -59,35 +57,15 @@ impl GrokProvider {
         base_url: String,
         options: GrokProviderOptions,
     ) -> Result<Self> {
-        let timeout_ms = if options.timeout_ms == 0 {
-            DEFAULT_TIMEOUT_MS
-        } else {
-            options.timeout_ms
-        };
-
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         let auth = HeaderValue::from_str(&format!("Bearer {api_key}"))
             .map_err(|err| Error::Config(format!("invalid Grok authorization header: {err}")))?;
         headers.insert(AUTHORIZATION, auth);
 
-        for (name, value) in options.extra_headers {
-            let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(|err| {
-                Error::Config(format!("invalid Grok custom header name '{name}': {err}"))
-            })?;
-            let header_value = HeaderValue::from_str(&value).map_err(|err| {
-                Error::Config(format!(
-                    "invalid Grok custom header value for '{name}': {err}"
-                ))
-            })?;
-            headers.insert(header_name, header_value);
-        }
+        append_extra_headers(&mut headers, &options.extra_headers, "Grok")?;
 
-        let client = reqwest::Client::builder()
-            .default_headers(headers)
-            .timeout(Duration::from_millis(timeout_ms))
-            .build()
-            .map_err(|err| Error::Provider(format!("failed to build Grok client: {err}")))?;
+        let client = build_client(headers, options.timeout_ms, "Grok")?;
 
         let base = base_url.trim_end_matches('/');
         Ok(Self {

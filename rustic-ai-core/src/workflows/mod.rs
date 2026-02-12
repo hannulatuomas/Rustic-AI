@@ -1,3 +1,4 @@
+mod config_bridge;
 pub mod executor;
 pub mod expressions;
 pub mod loader;
@@ -5,6 +6,7 @@ pub mod registry;
 pub mod trigger;
 pub mod types;
 
+pub use config_bridge::build_workflow_executor_config;
 pub use executor::{
     WorkflowExecutionResult, WorkflowExecutor, WorkflowExecutorConfig, WorkflowRunRequest,
 };

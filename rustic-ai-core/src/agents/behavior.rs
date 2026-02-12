@@ -1,4 +1,5 @@
 use crate::agents::memory::{AgentMemory, AgentMemoryConfig};
+use crate::agents::todo_extractor;
 use crate::config::schema::AgentConfig;
 use crate::conversation::session_manager::SessionManager;
 use crate::error::Result;
@@ -6,7 +7,7 @@ use crate::events::Event;
 use crate::learning::{LearningManager, MistakeType};
 use crate::providers::types::{ChatMessage, GenerateOptions, ModelProvider};
 use crate::rag::HybridRetriever;
-use crate::storage::{PendingToolState, Todo, TodoMetadata, TodoPriority, TodoStatus};
+use crate::storage::PendingToolState;
 use crate::ToolManager;
 use chrono::Utc;
 use serde::Deserialize;
@@ -1464,92 +1465,13 @@ impl Agent {
     /// and creates session TODOs. When todo_project_scope is true, also creates
     /// a project-scoped parent TODO and links child TODOs via parent_id.
     async fn maybe_auto_create_todos(&self, session_id: uuid::Uuid, response: &str) -> Result<()> {
-        if !self.config.auto_create_todos {
-            return Ok(());
-        }
-
-        let mut todo_items = Vec::new();
-
-        // Parse lines looking for TODO patterns
-        for line in response.lines() {
-            let trimmed = line.trim();
-            let title = if trimmed.starts_with("TODO:") || trimmed.starts_with("todo:") {
-                trimmed[5..].trim().to_string()
-            } else if trimmed.starts_with("- [ ]") {
-                trimmed[4..].trim().to_string()
-            } else if trimmed.starts_with("- [x]") {
-                // Skip completed items
-                continue;
-            } else {
-                continue;
-            };
-
-            if !title.is_empty() {
-                todo_items.push(title);
-            }
-        }
-
-        if todo_items.is_empty() {
-            return Ok(());
-        }
-
-        // Get project ID from session manager if available
-        let project_id = self
-            .session_manager
-            .project_profile()
-            .map(|p| p.name.clone());
-
-        let parent_id = if self.config.todo_project_scope && project_id.is_some() {
-            // Create a parent TODO for project scope
-            let parent_id = uuid::Uuid::new_v4();
-            let parent_todo = Todo {
-                id: parent_id,
-                project_id: project_id.clone(),
-                session_id,
-                parent_id: None,
-                title: format!("Session TODOs ({})", todo_items.len()),
-                description: Some("Auto-generated TODOs from agent response".to_string()),
-                status: TodoStatus::Todo,
-                priority: TodoPriority::Medium,
-                tags: vec!["auto-generated".to_string()],
-                metadata: TodoMetadata::default(),
-                created_at: Utc::now(),
-                updated_at: Utc::now(),
-                completed_at: None,
-            };
-
-            self.session_manager.create_todo(&parent_todo).await?;
-            Some(parent_id)
-        } else {
-            None
-        };
-
-        // Create child TODOs for each parsed item
-        for title in todo_items {
-            let todo = Todo {
-                id: uuid::Uuid::new_v4(),
-                project_id: if self.config.todo_project_scope {
-                    project_id.clone()
-                } else {
-                    None
-                },
-                session_id,
-                parent_id,
-                title,
-                description: None,
-                status: TodoStatus::Todo,
-                priority: TodoPriority::Medium,
-                tags: vec!["auto-generated".to_string()],
-                metadata: TodoMetadata::default(),
-                created_at: Utc::now(),
-                updated_at: Utc::now(),
-                completed_at: None,
-            };
-
-            self.session_manager.create_todo(&todo).await?;
-        }
-
-        Ok(())
+        todo_extractor::auto_create_todos_from_response(
+            self.session_manager.as_ref(),
+            &self.config,
+            session_id,
+            response,
+        )
+        .await
     }
 
     async fn maybe_auto_create_todos_from_input(
@@ -1557,108 +1479,13 @@ impl Agent {
         session_id: uuid::Uuid,
         input: &str,
     ) -> Result<()> {
-        if !self.config.auto_create_todos {
-            return Ok(());
-        }
-
-        let mut tasks = Vec::new();
-        for segment in input.split('\n') {
-            let trimmed = segment.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-
-            let normalized = trimmed
-                .trim_start_matches(|c: char| {
-                    c.is_ascii_digit() || c == '.' || c == '-' || c == ' '
-                })
-                .trim();
-            if normalized.is_empty() {
-                continue;
-            }
-
-            if normalized.contains(" and ") {
-                for part in normalized.split(" and ") {
-                    let part = part.trim().trim_end_matches('.');
-                    if !part.is_empty() {
-                        tasks.push(part.to_string());
-                    }
-                }
-                continue;
-            }
-
-            if normalized.contains(",") {
-                for part in normalized.split(',') {
-                    let part = part.trim().trim_end_matches('.');
-                    if !part.is_empty() {
-                        tasks.push(part.to_string());
-                    }
-                }
-                continue;
-            }
-
-            tasks.push(normalized.trim_end_matches('.').to_string());
-        }
-
-        tasks.sort();
-        tasks.dedup();
-
-        if tasks.len() < 2 {
-            return Ok(());
-        }
-
-        let project_id = self
-            .session_manager
-            .project_profile()
-            .map(|p| p.name.clone());
-
-        let parent_id = if self.config.todo_project_scope && project_id.is_some() {
-            let parent_id = uuid::Uuid::new_v4();
-            let parent_todo = Todo {
-                id: parent_id,
-                project_id: project_id.clone(),
-                session_id,
-                parent_id: None,
-                title: format!("User request with {} tasks", tasks.len()),
-                description: Some(input.to_string()),
-                status: TodoStatus::Todo,
-                priority: TodoPriority::High,
-                tags: vec!["auto-generated".to_string(), "multi-step".to_string()],
-                metadata: TodoMetadata::default(),
-                created_at: Utc::now(),
-                updated_at: Utc::now(),
-                completed_at: None,
-            };
-            self.session_manager.create_todo(&parent_todo).await?;
-            Some(parent_id)
-        } else {
-            None
-        };
-
-        for task in tasks {
-            let todo = Todo {
-                id: uuid::Uuid::new_v4(),
-                project_id: if self.config.todo_project_scope {
-                    project_id.clone()
-                } else {
-                    None
-                },
-                session_id,
-                parent_id,
-                title: task,
-                description: None,
-                status: TodoStatus::Todo,
-                priority: TodoPriority::Medium,
-                tags: vec!["auto-generated".to_string(), "input-task".to_string()],
-                metadata: TodoMetadata::default(),
-                created_at: Utc::now(),
-                updated_at: Utc::now(),
-                completed_at: None,
-            };
-            self.session_manager.create_todo(&todo).await?;
-        }
-
-        Ok(())
+        todo_extractor::auto_create_todos_from_input(
+            self.session_manager.as_ref(),
+            &self.config,
+            session_id,
+            input,
+        )
+        .await
     }
 }
 

@@ -4,15 +4,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio::time::Duration;
 
 use crate::auth::SubscriptionAuthManager;
 use crate::error::{Error, Result};
+use crate::providers::http_client::{append_extra_headers, build_client};
 use crate::providers::retry::{send_with_retry, RetryPolicy};
 use crate::providers::streaming::spawn_sse_stream_with_data_parser;
 use crate::providers::types::{ChatMessage, GenerateOptions, ModelProvider};
-
-const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Clone)]
 pub enum GoogleAuth {
@@ -49,7 +47,7 @@ pub struct GoogleProviderOptions {
 impl Default for GoogleProviderOptions {
     fn default() -> Self {
         Self {
-            timeout_ms: DEFAULT_TIMEOUT_MS,
+            timeout_ms: 30_000,
             extra_headers: Vec::new(),
             retry_policy: RetryPolicy::default(),
         }
@@ -90,18 +88,8 @@ impl GoogleProvider {
         base_url: String,
         options: GoogleProviderOptions,
     ) -> Result<Self> {
-        let timeout_ms = if options.timeout_ms == 0 {
-            DEFAULT_TIMEOUT_MS
-        } else {
-            options.timeout_ms
-        };
-
         let headers = Self::build_headers(&options)?;
-        let client = reqwest::Client::builder()
-            .default_headers(headers)
-            .timeout(Duration::from_millis(timeout_ms))
-            .build()
-            .map_err(|err| Error::Provider(format!("failed to build Google client: {err}")))?;
+        let client = build_client(headers, options.timeout_ms, "Google")?;
 
         let base = base_url.trim_end_matches('/');
         let model_path = format!("{base}/models/{model}");
@@ -122,17 +110,7 @@ impl GoogleProvider {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
-        for (name, value) in &options.extra_headers {
-            let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(|err| {
-                Error::Config(format!("invalid Google custom header name '{name}': {err}"))
-            })?;
-            let header_value = HeaderValue::from_str(value).map_err(|err| {
-                Error::Config(format!(
-                    "invalid Google custom header value for '{name}': {err}"
-                ))
-            })?;
-            headers.insert(header_name, header_value);
-        }
+        append_extra_headers(&mut headers, &options.extra_headers, "Google")?;
 
         Ok(headers)
     }

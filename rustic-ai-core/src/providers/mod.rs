@@ -3,6 +3,7 @@ pub mod auth_capabilities;
 pub mod factory;
 pub mod google;
 pub mod grok;
+pub mod http_client;
 pub mod ollama;
 pub mod openai;
 pub mod registry;
