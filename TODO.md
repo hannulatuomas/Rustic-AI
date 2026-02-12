@@ -2,7 +2,7 @@
 
 Single source of truth for active implementation work.
 
-Last updated: 2026-02-11
+Last updated: 2026-02-12
 
 ## Project Status
 
@@ -464,17 +464,23 @@ Last updated: 2026-02-11
     - [ ] Reduce duplicated provider/tool option-building logic
     - [ ] Keep behavior parity with targeted regression checks
 
-25. **Session and Project TODO Tracking** (3-4 days)
-    - [ ] Add TODO model for session/project scopes
-    - [ ] Add CLI commands to list/add/update/complete TODO tasks
-    - [ ] Persist TODO state in storage backend
-    - [ ] Render TODO progress in session status output
+25. **Session and Project TODO Tracking** (3-4 days) [DONE]
+    - [x] Add TODO model for session/project scopes
+    - [x] Add CLI commands to list/add/update/complete TODO tasks
+    - [x] Persist TODO state in storage backend
+    - [x] Render TODO progress in session status output
+    - [x] Implement hierarchical TODO linking (parent-child between session and project TODOs)
+    - [x] Add metadata support (files, tools, routing traces, sub-agent outputs)
+    - [x] Implement auto-TODO creation for agents (complex multi-step tasks + sub-agent tasks)
 
-26. **Aggressive Context Summary Controls** (3-4 days)
-    - [ ] Add configurable message-window threshold for summarization
-    - [ ] Summarize what user asked and what was completed each cycle
-    - [ ] Add summary quality and token-budget controls
-    - [ ] Expose config and CLI visibility for active summaries
+26. **Aggressive Context Summary Controls** (3-4 days) [DONE]
+    - [x] Add configurable message-window threshold for summarization
+    - [x] Summarize what user asked and what was completed each cycle
+    - [x] Add summary quality and token-budget controls
+    - [x] Expose config and CLI visibility for active summaries
+    - [x] Implement hybrid trigger mode (token threshold + turn-based)
+    - [x] Add implicit quality tracking (acceptance/rejection counts)
+    - [x] Add optional user rating prompt for summaries
 
 27. **Bracket Validator Tool** (2-3 days)
     - [ ] Implement `bracket_validator` tool with (), {}, [], <> nesting checks
@@ -482,18 +488,25 @@ Last updated: 2026-02-11
     - [ ] Return structured mismatches with line/column, suggestions, and max error cap
     - [ ] Support summary/detailed output plus CI/LSP-friendly formatting
 
-28. **Dynamic Routing Engine (LangGraph-like)** (5-7 days)
-    - [ ] Add rule- and state-driven routing layer for agent/task orchestration
-    - [ ] Support conditional branching, retries, fallbacks, and loop controls
-    - [ ] Add runtime route tracing for explainability/debugging
-    - [ ] Integrate routing policies with permission and tool selection systems
+28. **Dynamic Routing Engine (LangGraph-like)** (5-7 days) [DONE]
+    - [x] Add rule- and state-driven routing layer for agent/task orchestration
+    - [x] Support conditional branching, retries, fallbacks, and loop controls
+    - [x] Add runtime route tracing for explainability/debugging
+    - [x] Integrate routing policies with permission and tool selection systems
+    - [x] Implement hybrid routing policy (task type + capabilities + context pressure)
+    - [x] Add configurable fallback agent for low-confidence routing
+    - [x] Integrate routing traces with TODO tracking (metadata linking)
 
-29. **Sub-Agent Orchestration v2** (6-8 days)
-    - [ ] Enable aggressive sub-agent delegation policies by task type and context pressure
-    - [ ] Add parallel sub-agent execution with bounded concurrency
-    - [ ] Treat sub-agent calls as first-class tool invocations with explicit input/output contracts
-    - [ ] Surface full sub-agent execution traces in CLI (timeline, events, outcomes)
-    - [ ] Capture and persist sub-agent outputs for parent-agent reuse
+29. **Sub-Agent Orchestration v2** (6-8 days) [DONE]
+    - [x] Enable aggressive sub-agent delegation policies by task type and context pressure
+    - [x] Add parallel sub-agent execution with bounded concurrency
+    - [x] Treat sub-agent calls as first-class tool invocations with explicit input/output contracts
+    - [x] Surface full sub-agent execution traces in CLI (timeline, events, outcomes)
+    - [x] Capture and persist sub-agent outputs for parent-agent reuse
+    - [x] Implement hybrid caching mode (exact match + semantic fallback)
+    - [x] Add parallel visibility controls (progress bars + detailed logs toggle)
+    - [x] Integrate with TODO tracking (sub-agent tasks spawn child TODOs)
+    - [x] Integrate with routing (per-task-type semantic caching)
 
 30. **CLI Document Change Visibility** (2-3 days)
     - [ ] Add command/output path to show changed documents for current session
@@ -518,6 +531,7 @@ Last updated: 2026-02-11
 
 ## Current Focus (Continuing)
 
+- [x] Re-stabilize recovered Phase A-D worktree (build + strict clippy green) before continuing feature implementation
 - [ ] Release hardening and productization
     - [ ] Complete API server foundation planning and execution scope
     - [ ] Start test and CI quality gate implementation
@@ -527,11 +541,26 @@ Last updated: 2026-02-11
 
 ## Next (Immediate)
 
-- [ ] Implement Sub-Agent Orchestration v2 (item 29)
-- [ ] Implement Session and Project TODO Tracking (item 25)
-- [ ] Implement Aggressive Context Summary Controls (item 26)
+**Implementation Phases (see docs/implementation-plan-four-optional-features.md):**
+
+- [x] **Phase A (Week 1):** Feature A - Aggressive Context Summary
+    - Implement hybrid trigger mode, quality tracking, summary events
+
+- [x] **Phase B (Week 2):** Feature B - TODO Tracking
+    - Implement TODO hierarchy (parent-child linking), metadata, auto-TODO creation
+
+- [x] **Phase C (Weeks 3-4):** Feature C - Sub-Agent Orchestration v2
+    - Implement parallel execution, hybrid caching, visibility controls, TODO integration
+
+- [x] **Phase D (Weeks 5-6):** Feature D - Dynamic Routing
+    - Implement hybrid routing, fallback agent, routing traces, TODO linking
+
+- [x] **Phase E (Week 7):** Cross-Feature Integration
+    - Coordinate all features working together, E2E tests
+
+**Remaining standalone items:**
+
 - [ ] Implement Bracket Validator Tool (item 27)
-- [ ] Start Dynamic Routing Engine (item 28)
 
 ---
 

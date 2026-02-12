@@ -31,6 +31,13 @@ struct PendingSudoRequest {
     reason: String,
 }
 
+#[derive(Debug, Clone)]
+struct PendingSummaryFeedback {
+    session_id: String,
+    agent: String,
+    summary_key: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum FeedbackCommandType {
     Explicit,
@@ -504,10 +511,14 @@ impl Repl {
         let pending_permission: Arc<Mutex<Option<PendingPermissionRequest>>> =
             Arc::new(Mutex::new(None));
         let pending_sudo: Arc<Mutex<Option<PendingSudoRequest>>> = Arc::new(Mutex::new(None));
+        let pending_summary_feedback: Arc<Mutex<Option<PendingSummaryFeedback>>> =
+            Arc::new(Mutex::new(None));
         let active_turn_tokens: Arc<Mutex<HashMap<uuid::Uuid, CancellationToken>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let pending_for_listener = pending_permission.clone();
         let pending_sudo_for_listener = pending_sudo.clone();
+        let pending_summary_for_listener = pending_summary_feedback.clone();
+        let summary_prompt_enabled = self.app.config().summarization.user_rating_prompt;
         let learning_for_listener = self.app.learning().clone();
         let agent_name_for_listener = agent_name.clone();
         let session_id_for_listener = session_id;
@@ -543,6 +554,23 @@ impl Repl {
                         command: command.clone(),
                         reason: reason.clone(),
                     });
+                }
+
+                if summary_prompt_enabled {
+                    if let Event::SummaryGenerated {
+                        session_id,
+                        agent,
+                        summary_key,
+                        ..
+                    } = &event
+                    {
+                        let mut guard = pending_summary_for_listener.lock().await;
+                        *guard = Some(PendingSummaryFeedback {
+                            session_id: session_id.clone(),
+                            agent: agent.clone(),
+                            summary_key: summary_key.clone(),
+                        });
+                    }
                 }
 
                 renderer.render_event(&event);
@@ -586,6 +614,44 @@ impl Repl {
                 let guard = pending_sudo.lock().await;
                 guard.clone()
             };
+
+            let pending_summary_request = {
+                let guard = pending_summary_feedback.lock().await;
+                guard.clone()
+            };
+
+            if let Some(request) = pending_summary_request {
+                println!(
+                    "[summary] Rate generated summary quality for key {}",
+                    request.summary_key
+                );
+                print!("[summary] y=good, n=poor, s=skip > ");
+                io::stdout().flush()?;
+                let mut feedback = String::new();
+                io::stdin()
+                    .read_line(&mut feedback)
+                    .map_err(rustic_ai_core::Error::Io)?;
+                let feedback = feedback.trim().to_ascii_lowercase();
+
+                if feedback == "y" || feedback == "n" {
+                    if let Ok(agent) = self.app.runtime().agents.get_agent(Some(&request.agent)) {
+                        if let Some(event) = agent
+                            .record_summary_feedback(
+                                &request.session_id,
+                                &request.summary_key,
+                                feedback == "y",
+                            )
+                            .await
+                        {
+                            let _ = event_tx.try_send(event);
+                        }
+                    }
+                }
+
+                let mut guard = pending_summary_feedback.lock().await;
+                *guard = None;
+                continue;
+            }
 
             if let Some(request) = pending_sudo_request {
                 println!("[sudo] {}", request.reason);
@@ -1371,7 +1437,72 @@ impl Repl {
                 }
             }
 
-            let agent = self.app.runtime().agents.get_agent(Some(&agent_name))?;
+            let mut agent_for_turn = agent_name.clone();
+            if self.app.config().features.dynamic_routing_enabled
+                && self.app.config().dynamic_routing.enabled
+            {
+                let router = rustic_ai_core::routing::Router::new(
+                    self.app.runtime().agents.get_inner_registry(),
+                    self.app.config().dynamic_routing.clone(),
+                );
+
+                if let Ok(decision) = router.route(input) {
+                    if self.app.runtime().agents.has_agent(&decision.agent) {
+                        agent_for_turn = decision.agent.clone();
+                    }
+
+                    if self.app.config().dynamic_routing.routing_trace_enabled {
+                        if let Ok(trace) = router.create_trace(session_id, input, &decision) {
+                            let _ = self
+                                .app
+                                .session_manager()
+                                .create_routing_trace(&trace)
+                                .await;
+
+                            if self.app.config().features.todo_tracking_enabled {
+                                let todo = rustic_ai_core::storage::Todo {
+                                    id: uuid::Uuid::new_v4(),
+                                    project_id: self
+                                        .app
+                                        .config()
+                                        .project
+                                        .as_ref()
+                                        .map(|p| p.name.clone()),
+                                    session_id,
+                                    parent_id: None,
+                                    title: format!(
+                                        "Routed task: {}",
+                                        input.chars().take(64).collect::<String>()
+                                    ),
+                                    description: Some(format!(
+                                        "Agent '{}', confidence {:.2}, reason: {}",
+                                        decision.agent,
+                                        decision.confidence,
+                                        decision.reason.primary_factor
+                                    )),
+                                    status: rustic_ai_core::storage::TodoStatus::Todo,
+                                    priority: rustic_ai_core::storage::TodoPriority::Medium,
+                                    tags: if decision.fallback_used {
+                                        vec!["routing".to_string(), "fallback".to_string()]
+                                    } else {
+                                        vec!["routing".to_string()]
+                                    },
+                                    metadata: rustic_ai_core::storage::TodoMetadata {
+                                        routing_trace_id: Some(trace.id),
+                                        ..Default::default()
+                                    },
+                                    created_at: Utc::now(),
+                                    updated_at: Utc::now(),
+                                    completed_at: None,
+                                };
+                                let _ = self.app.session_manager().create_todo(&todo).await;
+                            }
+                        }
+                    }
+                }
+            }
+
+            let agent = self.app.runtime().agents.get_agent(Some(&agent_for_turn))?;
 
             let agent_clone = agent.clone();
             let session_id_clone = session_id;

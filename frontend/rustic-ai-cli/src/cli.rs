@@ -52,6 +52,14 @@ pub enum Command {
         #[command(subcommand)]
         command: AuthCommand,
     },
+    Todo {
+        #[command(subcommand)]
+        command: TodoCommand,
+    },
+    Routing {
+        #[command(subcommand)]
+        command: RoutingCommand,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -78,6 +86,107 @@ pub enum AuthCommand {
 pub enum AuthMethod {
     Browser,
     Headless,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum TodoCommand {
+    List {
+        #[arg(long)]
+        session_id: Option<String>,
+        #[arg(long)]
+        project_id: Option<String>,
+        #[arg(long, value_enum)]
+        status: Option<TodoStatus>,
+        #[arg(long, value_enum)]
+        priority: Option<TodoPriority>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, default_value_t = false)]
+        show_metadata: bool,
+    },
+    Add {
+        #[arg(long)]
+        session_id: String,
+        #[arg(long)]
+        title: String,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long, value_enum)]
+        priority: Option<TodoPriority>,
+        #[arg(long)]
+        tag: Vec<String>,
+        #[arg(long)]
+        parent_id: Option<String>,
+        #[arg(long)]
+        file: Vec<String>,
+        #[arg(long)]
+        tool: Vec<String>,
+        #[arg(long)]
+        routing_trace_id: Option<String>,
+        #[arg(long)]
+        sub_agent_output_id: Option<String>,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    Update {
+        id: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long, value_enum)]
+        status: Option<TodoStatus>,
+        #[arg(long, value_enum)]
+        priority: Option<TodoPriority>,
+        #[arg(long)]
+        tag: Option<Vec<String>>,
+        #[arg(long)]
+        file: Option<Vec<String>>,
+        #[arg(long)]
+        tool: Option<Vec<String>>,
+        #[arg(long)]
+        routing_trace_id: Option<String>,
+        #[arg(long)]
+        sub_agent_output_id: Option<String>,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    Complete {
+        id: String,
+    },
+    Delete {
+        id: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum TodoStatus {
+    Todo,
+    InProgress,
+    Blocked,
+    Completed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum TodoPriority {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum RoutingCommand {
+    Trace {
+        #[arg(long)]
+        session_id: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    Analyze {
+        task: String,
+        #[arg(long)]
+        context_pressure: Option<f64>,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]

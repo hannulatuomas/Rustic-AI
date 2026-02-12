@@ -7,6 +7,7 @@
     "mode",
     "features",
     "retrieval",
+    "dynamic_routing",
     "mcp",
     "plugins",
     "skills",
@@ -35,7 +36,12 @@
         "learning_enabled",
         "indexing_enabled",
         "vector_enabled",
-        "rag_enabled"
+        "rag_enabled",
+        "aggressive_summary_enabled",
+        "todo_tracking_enabled",
+        "sub_agent_parallel_enabled",
+        "sub_agent_output_caching_enabled",
+        "dynamic_routing_enabled"
       ],
       "properties": {
         "mcp_enabled": { "type": "boolean" },
@@ -46,7 +52,41 @@
         "learning_enabled": { "type": "boolean" },
         "indexing_enabled": { "type": "boolean" },
         "vector_enabled": { "type": "boolean" },
-        "rag_enabled": { "type": "boolean" }
+        "rag_enabled": { "type": "boolean" },
+        "aggressive_summary_enabled": { "type": "boolean" },
+        "todo_tracking_enabled": { "type": "boolean" },
+        "sub_agent_parallel_enabled": { "type": "boolean" },
+        "sub_agent_output_caching_enabled": { "type": "boolean" },
+        "dynamic_routing_enabled": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "dynamic_routing": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "routing_policy",
+        "task_keywords",
+        "fallback_agent",
+        "context_pressure_threshold",
+        "routing_trace_enabled"
+      ],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "routing_policy": {
+          "type": "string",
+          "enum": ["hybrid", "task_type", "agent_capabilities", "context_pressure"]
+        },
+        "task_keywords": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "fallback_agent": { "type": "string", "minLength": 1 },
+        "context_pressure_threshold": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "routing_trace_enabled": { "type": "boolean" }
       },
       "additionalProperties": false
     },
@@ -313,13 +353,30 @@
         "enabled",
         "provider_name",
         "max_context_tokens",
-        "summary_max_tokens"
+        "summary_max_tokens",
+        "trigger_mode",
+        "message_window_threshold",
+        "token_threshold_percent",
+        "include_user_task",
+        "include_completion_summary",
+        "quality_tracking_enabled",
+        "user_rating_prompt"
       ],
       "properties": {
         "enabled": { "type": "boolean" },
         "provider_name": { "type": ["string", "null"] },
         "max_context_tokens": { "type": "integer", "minimum": 1 },
-        "summary_max_tokens": { "type": "integer", "minimum": 1 }
+        "summary_max_tokens": { "type": "integer", "minimum": 1 },
+        "trigger_mode": {
+          "type": "string",
+          "enum": ["hybrid", "fixed_message_count", "token_threshold", "turn_based"]
+        },
+        "message_window_threshold": { "type": ["integer", "null"], "minimum": 1 },
+        "token_threshold_percent": { "type": ["number", "null"], "minimum": 0.0, "maximum": 1.0 },
+        "include_user_task": { "type": "boolean" },
+        "include_completion_summary": { "type": "boolean" },
+        "quality_tracking_enabled": { "type": "boolean" },
+        "user_rating_prompt": { "type": "boolean" }
       },
       "additionalProperties": false
     },
@@ -570,6 +627,21 @@
           "context_summary_enabled": { "type": ["boolean", "null"] },
           "context_summary_max_tokens": { "type": ["integer", "null"], "minimum": 1 },
           "context_summary_cache_entries": { "type": ["integer", "null"], "minimum": 1 },
+          "auto_create_todos": { "type": "boolean" },
+          "todo_project_scope": { "type": "boolean" },
+          "parallel_sub_agent_enabled": { "type": "boolean" },
+          "aggressive_delegation_policy": {
+            "type": ["string", "null"],
+            "enum": ["aggressive", "conservative", null]
+          },
+          "sub_agent_max_parallel_tasks": { "type": ["integer", "null"], "minimum": 0 },
+          "sub_agent_output_cache_mode": {
+            "type": "string",
+            "enum": ["hybrid", "exact_match", "semantic"]
+          },
+          "sub_agent_output_cache_ttl_secs": { "type": ["integer", "null"], "minimum": 0 },
+          "sub_agent_parallel_progress_enabled": { "type": "boolean" },
+          "sub_agent_parallel_detailed_logs": { "type": "boolean" },
           "taxonomy_membership": {
             "type": "array",
             "items": {

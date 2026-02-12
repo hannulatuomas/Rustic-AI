@@ -60,6 +60,26 @@ pub fn load_from_env() -> Result<Config> {
         parse_bool_env("RUSTIC_AI_ENABLE_VECTOR", config.features.vector_enabled)?;
     config.features.rag_enabled =
         parse_bool_env("RUSTIC_AI_ENABLE_RAG", config.features.rag_enabled)?;
+    config.features.aggressive_summary_enabled = parse_bool_env(
+        "RUSTIC_AI_ENABLE_AGGRESSIVE_SUMMARY",
+        config.features.aggressive_summary_enabled,
+    )?;
+    config.features.todo_tracking_enabled = parse_bool_env(
+        "RUSTIC_AI_ENABLE_TODO_TRACKING",
+        config.features.todo_tracking_enabled,
+    )?;
+    config.features.sub_agent_parallel_enabled = parse_bool_env(
+        "RUSTIC_AI_ENABLE_SUB_AGENT_PARALLEL",
+        config.features.sub_agent_parallel_enabled,
+    )?;
+    config.features.sub_agent_output_caching_enabled = parse_bool_env(
+        "RUSTIC_AI_ENABLE_SUB_AGENT_OUTPUT_CACHING",
+        config.features.sub_agent_output_caching_enabled,
+    )?;
+    config.features.dynamic_routing_enabled = parse_bool_env(
+        "RUSTIC_AI_ENABLE_DYNAMIC_ROUTING",
+        config.features.dynamic_routing_enabled,
+    )?;
     config.retrieval.enabled =
         parse_bool_env("RUSTIC_AI_ENABLE_RETRIEVAL", config.retrieval.enabled)?;
 
@@ -71,6 +91,10 @@ pub fn merge(base: Config, override_config: Config) -> Config {
         mode: override_config.mode,
         features: override_config.features,
         retrieval: merge_retrieval(base.retrieval, override_config.retrieval),
+        dynamic_routing: merge_dynamic_routing(
+            base.dynamic_routing,
+            override_config.dynamic_routing,
+        ),
         mcp: if override_config.mcp.servers.is_empty() {
             base.mcp
         } else {
@@ -450,6 +474,17 @@ fn merge_summarization(
             base.summary_max_tokens,
             override_values.summary_max_tokens,
         ),
+        trigger_mode: override_values.trigger_mode,
+        message_window_threshold: override_values
+            .message_window_threshold
+            .or(base.message_window_threshold),
+        token_threshold_percent: override_values
+            .token_threshold_percent
+            .or(base.token_threshold_percent),
+        include_user_task: override_values.include_user_task,
+        include_completion_summary: override_values.include_completion_summary,
+        quality_tracking_enabled: override_values.quality_tracking_enabled,
+        user_rating_prompt: override_values.user_rating_prompt,
     }
 }
 
@@ -531,6 +566,31 @@ fn merge_retrieval(
         embedding_api_key_env: merge_optional_string(
             base.embedding_api_key_env,
             override_values.embedding_api_key_env,
+        ),
+    }
+}
+
+fn merge_dynamic_routing(
+    base: crate::config::schema::DynamicRoutingConfig,
+    override_values: crate::config::schema::DynamicRoutingConfig,
+) -> crate::config::schema::DynamicRoutingConfig {
+    crate::config::schema::DynamicRoutingConfig {
+        enabled: merge_bool(base.enabled, override_values.enabled),
+        routing_policy: override_values.routing_policy,
+        task_keywords: if override_values.task_keywords.is_empty() {
+            base.task_keywords
+        } else {
+            override_values.task_keywords
+        },
+        fallback_agent: merge_string(base.fallback_agent, override_values.fallback_agent),
+        context_pressure_threshold: if override_values.context_pressure_threshold > 0.0 {
+            override_values.context_pressure_threshold
+        } else {
+            base.context_pressure_threshold
+        },
+        routing_trace_enabled: merge_bool(
+            base.routing_trace_enabled,
+            override_values.routing_trace_enabled,
         ),
     }
 }

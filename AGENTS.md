@@ -1,166 +1,168 @@
-# AGENTS.md (Repository Guide for Coding Agents)
+# AGENTS.md
 
-This file defines how agentic coding assistants should operate in this repository.
+Operational guide for agentic coding assistants working in this repository.
 
-## Repository Overview
-- Workspace: Rust monorepo (edition 2021).
-- Core crate: `rustic-ai-core` (engine/library, UI-agnostic).
-- Frontend crate: `frontend/rustic-ai-cli` (CLI consumer).
-- Rule: keep product/runtime logic in core; keep UX/CLI behavior in frontend.
-- Keep implementation complete: no placeholders, no fake integrations.
+## 1) Repository Snapshot
 
-## Required Reading Before Non-Trivial Changes
+- Rust workspace (edition 2021), resolver 2.
+- Core crate: `rustic-ai-core` (runtime, providers, tools, workflows, permissions, storage, learning, indexing/RAG).
+- Frontend crate: `frontend/rustic-ai-cli` (CLI commands, REPL, rendering).
+- Architectural rule: keep business/runtime behavior in core; keep CLI UX in frontend.
+- Current state: large feature surface, low automated test coverage; prioritize safe, minimal, verifiable changes.
+
+## 2) Mandatory Context Files
+
+Read these before non-trivial work:
+
+- `README.md`
+- `TODO.md`
 - `docs/DESIGN_GUIDE.md`
 - `docs/DECISIONS.md`
-- `docs/initial-planning/big-picture.md`
-- `docs/initial-planning/integration-plan.md`
+- `docs/comprehensive-state-analysis.md`
 - `docs/initial-planning/REQUIREMENTS.md`
 - `docs/initial-planning/tools.md`
-- `TODO.md`
 
-## Cursor/Copilot Rules Status
-Checked paths:
+If scope touches workflows/agents/retrieval, also read relevant module docs and adjacent source files.
+
+## 3) Cursor/Copilot Rules
+
+Checked locations:
+
 - `.cursor/rules/`
 - `.cursorrules`
 - `.github/copilot-instructions.md`
 
-Current status: none of these rule files exist in this repository.
+Status at time of writing: none of these files exist.
 
-If they are added later, treat them as hard constraints and update this file.
+If any are added later, treat them as hard constraints and update this file in the same change.
 
-## Delivery Workflow (Use This Sequence)
-1. Read relevant docs and touched modules.
-2. Plan integration impact (config, runtime, storage, providers, tools, docs).
-3. Implement full behavior (no scaffold-only changes).
-4. Validate build/lint/tests for touched scope.
-5. Update docs + `TODO.md` in the same change.
+## 4) Build, Lint, and Test Commands
 
-## Build, Format, Lint, and Test Commands
-Run all commands from repository root.
+Run from repo root: `/home/debian/Github/Rustic-AI`.
 
-### Environment
-- Ensure Cargo is available:
-  - `export PATH="$HOME/.cargo/bin:$PATH"`
+Environment:
 
-### Build
-- Workspace debug build: `cargo build --workspace`
-- Workspace release build: `cargo build --workspace --release`
-- Core crate only: `cargo build -p rustic-ai-core`
-- CLI crate only: `cargo build -p rustic-ai-cli`
+- `export PATH="$HOME/.cargo/bin:$PATH"`
 
-### Format
-- Check formatting only: `cargo fmt --all -- --check`
-- Apply formatting: `cargo fmt --all`
+Build:
 
-### Lint (Clippy)
-- Strict workspace lint:
-  - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-- Strict core crate lint:
-  - `cargo clippy -p rustic-ai-core --all-targets --all-features -- -D warnings`
-- Strict CLI crate lint:
-  - `cargo clippy -p rustic-ai-cli --all-targets --all-features -- -D warnings`
+- Workspace debug: `cargo build --workspace`
+- Workspace release: `cargo build --workspace --release`
+- Core only: `cargo build -p rustic-ai-core`
+- CLI only: `cargo build -p rustic-ai-cli`
 
-### Test (Full and Scoped)
-- Full workspace tests:
-  - `cargo test --workspace --all-features`
-- One crate tests:
-  - `cargo test -p rustic-ai-core --all-features`
-  - `cargo test -p rustic-ai-cli --all-features`
+Format:
 
-### Single-Test Commands (Important)
-- Run by test name substring:
-  - `cargo test -p rustic-ai-core accepts_minimal_valid_config -- --nocapture`
-- Run exact fully-qualified test path:
-  - `cargo test -p rustic-ai-core config::validation::tests::accepts_minimal_valid_config -- --exact --nocapture`
-- Run one module subset:
-  - `cargo test -p rustic-ai-core config::validation -- --nocapture`
-- Run a single loader test by exact name:
-  - `cargo test -p rustic-ai-core config::loader::tests::merge_prefers_non_empty_override_vectors -- --exact --nocapture`
-- Run one CLI test by exact path:
-  - `cargo test -p rustic-ai-cli cli::tests::parses_config_flag -- --exact --nocapture`
-- Run ignored tests only:
-  - `cargo test -p rustic-ai-core -- --ignored --nocapture`
+- Check only: `cargo fmt --all -- --check`
+- Apply: `cargo fmt --all`
 
-## Runtime and Config Validation Commands
-- Validate config against schema and runtime rules:
-  - `cargo run -p rustic-ai-cli -- --config config.json validate-config --schema docs/config.schema.json`
-- Strict validation mode (recommended):
+Lint (strict):
+
+- Workspace: `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- Core only: `cargo clippy -p rustic-ai-core --all-targets --all-features -- -D warnings`
+- CLI only: `cargo clippy -p rustic-ai-cli --all-targets --all-features -- -D warnings`
+
+Tests:
+
+- Full workspace: `cargo test --workspace --all-features`
+- Per crate: `cargo test -p rustic-ai-core --all-features`
+- Per crate: `cargo test -p rustic-ai-cli --all-features`
+
+Single-test execution (important patterns):
+
+- By substring: `cargo test -p rustic-ai-core <test_name_substring> -- --nocapture`
+- Exact name/path: `cargo test -p rustic-ai-core <module::tests::test_name> -- --exact --nocapture`
+- Module subset: `cargo test -p rustic-ai-core <module::tests> -- --nocapture`
+- Ignored only: `cargo test -p rustic-ai-core -- --ignored --nocapture`
+- Stop on first failure: `cargo test -p rustic-ai-core <pattern> -- --nocapture --test-threads=1`
+
+Note: this repo may have sparse tests in some modules; if no tests match, add focused tests with behavior changes.
+
+## 5) CLI/Runtime Validation Commands
+
+- Strict config validation:
   - `cargo run -p rustic-ai-cli -- --config config.json validate-config --strict`
-- List auth capability matrix from config:
+- Schema-based validation:
+  - `cargo run -p rustic-ai-cli -- --config config.json validate-config --schema docs/config.schema.json`
+- Auth capability matrix:
   - `cargo run -p rustic-ai-cli -- --config config.json auth methods`
+- Index diagnostics:
+  - `cargo run -p rustic-ai-cli -- --config config.json index status`
 
-## Key Configuration Files
-- Example config: `config.example.json`
-- Runtime default config: `config.json`
-- Main JSON schema: `docs/config.schema.json`
-- CLI envelope schema: `docs/config.cli-output.schema.json`
+## 6) Code Style and Engineering Rules
 
-Design constraints:
-- Do not add provider-specific hardcoded fallback values.
-- Require explicit provider model/base URL/credential env var names where needed.
-- Enforce provider/auth-mode compatibility in validation.
+### Formatting and Layout
 
-## Code Style Guidelines (Rust)
-
-### Formatting and File Organization
-- Treat `rustfmt` output as canonical.
-- Keep files cohesive by module responsibility.
-- Keep functions focused; extract helpers for deeply nested logic.
-- Add comments only for non-obvious rationale.
+- `rustfmt` output is canonical.
+- Keep functions focused; split large branches into private helpers.
+- Prefer cohesive modules over cross-cutting utility sprawl.
+- Add comments only for non-obvious rationale or invariants.
 
 ### Imports
+
 - Group imports in this order with blank lines:
-  1) `std::...`
-  2) external crates
-  3) `crate::...` or `super::...`
-- Avoid glob imports (`*`).
+  1. `std::...`
+  2. third-party crates
+  3. `crate::...` / `super::...`
+- Avoid wildcard imports.
 - Remove unused imports instead of allowing warnings.
 
-### Naming Conventions
-- Modules/files/functions/variables: `snake_case`
-- Structs/enums/traits: `PascalCase`
-- Constants/statics: `SCREAMING_SNAKE_CASE`
-- Name booleans to read clearly at call site (`is_*`, `has_*`, `should_*`).
+### Naming
+
+- `snake_case`: modules, files, functions, variables.
+- `PascalCase`: structs, enums, traits.
+- `SCREAMING_SNAKE_CASE`: constants/statics.
+- Prefer intention-revealing names (`is_*`, `has_*`, `should_*`).
 
 ### Types and API Boundaries
-- Prefer explicit typed structs/enums over stringly-typed maps.
-- Minimize public surface area (`pub` only where required).
-- Keep provider/tool-specific details behind module boundaries.
-- Prefer constructors and validated config objects over mutable public fields.
+
+- Prefer typed structs/enums over untyped JSON maps where practical.
+- Keep `pub` surface minimal; default to private.
+- Keep provider/tool internals behind module boundaries.
+- Validate config at boundaries; avoid hidden fallbacks.
 
 ### Error Handling
-- No `unwrap()` / `expect()` in runtime paths.
-- Prefer typed errors (`thiserror`) and propagate with context.
-- Error messages should state what failed and where.
-- In tests, `expect()` is acceptable when message improves diagnosis.
 
-### Async, Concurrency, and I/O
+- Do not use `unwrap()`/`expect()` in runtime paths.
+- Use typed errors (`thiserror`) and propagate with context.
+- Error messages should include failing operation and relevant identifier/path.
+- `expect()` is acceptable in tests for clear diagnostics.
+
+### Async and Concurrency
+
 - Use Tokio-native async APIs.
-- Avoid blocking work in async contexts.
-- Do not hold locks across `.await` points.
-- Use timeouts/cancellation for long-running operations.
+- Avoid blocking calls in async contexts.
+- Do not hold locks across `.await`.
+- Use cancellation and timeout controls for long-running operations.
 
 ### Logging and Security
-- Use `tracing` for diagnostics.
-- Never log secrets, tokens, API keys, or sensitive payloads.
-- Never persist raw credentials in session/history stores.
-- Redact sensitive values in user-facing and debug output.
 
-### Testing Expectations
-- Add/adjust unit tests when changing behavior.
-- Prefer deterministic tests (no external network dependencies).
-- Keep test fixtures minimal and explicit.
-- Validate both success and failure paths for config/provider/tool logic.
+- Use `tracing` for structured diagnostics.
+- Never log secrets, tokens, API keys, or raw credentials.
+- Redact sensitive values in errors and events.
+- Preserve permission checks when adding/changing tools.
 
-## Repository-Specific Practices
-- Update `TODO.md` when starting/completing/re-scoping non-trivial work.
-- Update `docs/DECISIONS.md` for architecture or boundary changes.
-- Keep `README.md` and config docs aligned with actual behavior.
-- Preserve core/frontend separation in all new code.
+## 7) Change Management Rules
 
-## Definition of Done
-- Touched scope compiles.
+- For non-trivial work, update `TODO.md` in the same change.
+- For architecture/boundary decisions, update `docs/DECISIONS.md`.
+- Keep `README.md` aligned with real implementation status.
+- Do not ship placeholder/stub behavior labeled as complete.
+- Do not revert user-authored unrelated changes.
+
+## 8) Definition of Done
+
+- Scope compiles for touched crates.
 - `cargo fmt --all` passes.
-- Clippy is clean for touched scope (`-D warnings`).
-- Relevant tests pass, including targeted single-test runs where appropriate.
-- Docs and `TODO.md` updated in the same change.
+- Clippy passes with `-D warnings` for touched scope (or workspace for broad changes).
+- Relevant tests pass; run focused single-test commands when available.
+- Docs (`README.md`, `TODO.md`, `DECISIONS.md`) updated when behavior/scope changed.
+
+## 9) Practical Workflow for Agents
+
+1. Inspect impacted modules and nearby patterns.
+2. Implement minimal, complete change (no speculative rewrites).
+3. Run format/build/lint.
+4. Run the smallest useful test scope, then widen as needed.
+5. Update docs and roadmap files.
+6. Summarize what changed, how to verify, and what remains.

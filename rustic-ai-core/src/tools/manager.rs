@@ -1,5 +1,6 @@
 use crate::config::schema::{
-    AgentPermissionMode, McpConfig, PermissionConfig, PluginConfig, ToolConfig, WorkflowsConfig,
+    AgentPermissionMode, McpConfig, PermissionConfig, PluginConfig, SubAgentCacheMode, ToolConfig,
+    WorkflowsConfig,
 };
 use crate::error::{Error, Result};
 use crate::events::Event;
@@ -47,6 +48,8 @@ pub struct ToolManager {
     mcp_enabled: bool,
     mcp_config: Arc<McpConfig>,
     skills_enabled: bool,
+    sub_agent_parallel_enabled: bool,
+    sub_agent_output_caching_enabled: bool,
     lazy_loaders: Arc<RwLock<HashMap<String, LazyToolSpec>>>,
     active_tools: Arc<RwLock<HashSet<String>>>,
 }
@@ -57,6 +60,8 @@ pub struct ToolManagerInit {
     pub mcp_enabled: bool,
     pub mcp_config: Arc<McpConfig>,
     pub skills_enabled: bool,
+    pub sub_agent_parallel_enabled: bool,
+    pub sub_agent_output_caching_enabled: bool,
     pub skills: Arc<SkillRegistry>,
     pub workflows_enabled: bool,
     pub workflows: Arc<WorkflowRegistry>,
@@ -164,6 +169,12 @@ impl ToolManager {
             "sub_agent" => Some(Arc::new(SubAgentTool::new(
                 config.clone(),
                 self.agents.clone(),
+                self.session_manager.storage(),
+                self.sub_agent_output_caching_enabled,
+                self.sub_agent_parallel_enabled,
+                false,
+                SubAgentCacheMode::Hybrid,
+                Some(3600),
             ))),
             _ => None,
         }
@@ -337,6 +348,8 @@ impl ToolManager {
             mcp_enabled,
             mcp_config,
             skills_enabled,
+            sub_agent_parallel_enabled,
+            sub_agent_output_caching_enabled,
             skills,
             workflows_enabled,
             workflows,
@@ -432,6 +445,8 @@ impl ToolManager {
             mcp_enabled,
             mcp_config,
             skills_enabled,
+            sub_agent_parallel_enabled,
+            sub_agent_output_caching_enabled,
             lazy_loaders: Arc::new(RwLock::new(lazy_loaders)),
             active_tools: Arc::new(RwLock::new(HashSet::new())),
         }
@@ -502,7 +517,16 @@ impl ToolManager {
             let mut tools = self.tools.blocking_write();
             tools.insert(
                 "sub_agent".to_owned(),
-                Arc::new(SubAgentTool::new(config, self.agents.clone())),
+                Arc::new(SubAgentTool::new(
+                    config,
+                    self.agents.clone(),
+                    self.session_manager.storage(),
+                    self.sub_agent_output_caching_enabled,
+                    self.sub_agent_parallel_enabled,
+                    false,
+                    SubAgentCacheMode::Hybrid,
+                    Some(3600),
+                )),
             );
         }
     }

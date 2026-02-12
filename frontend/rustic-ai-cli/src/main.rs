@@ -276,6 +276,274 @@ fn handle_session_command(
     Ok(())
 }
 
+fn handle_todo_command(
+    app: &rustic_ai_core::RusticAI,
+    command: cli::TodoCommand,
+) -> rustic_ai_core::Result<()> {
+    use chrono::Utc;
+    use rustic_ai_core::storage::model::{TodoFilter, TodoPriority, TodoStatus, TodoUpdate};
+
+    let runtime = tokio::runtime::Runtime::new().map_err(|err| {
+        rustic_ai_core::Error::Config(format!("failed to create tokio runtime: {err}"))
+    })?;
+
+    match command {
+        cli::TodoCommand::List {
+            session_id,
+            project_id,
+            status,
+            priority,
+            limit,
+            show_metadata,
+        } => {
+            let filter = TodoFilter {
+                session_id: session_id
+                    .as_ref()
+                    .and_then(|id| uuid::Uuid::parse_str(id).ok()),
+                project_id,
+                parent_id: None,
+                status: status.map(|s| match s {
+                    cli::TodoStatus::Todo => TodoStatus::Todo,
+                    cli::TodoStatus::InProgress => TodoStatus::InProgress,
+                    cli::TodoStatus::Blocked => TodoStatus::Blocked,
+                    cli::TodoStatus::Completed => TodoStatus::Completed,
+                    cli::TodoStatus::Cancelled => TodoStatus::Cancelled,
+                }),
+                priority: priority.map(|p| match p {
+                    cli::TodoPriority::Low => TodoPriority::Low,
+                    cli::TodoPriority::Medium => TodoPriority::Medium,
+                    cli::TodoPriority::High => TodoPriority::High,
+                    cli::TodoPriority::Critical => TodoPriority::Critical,
+                }),
+                tags: None,
+                limit: Some(limit),
+            };
+
+            let todos = runtime.block_on(app.session_manager().list_todos(&filter))?;
+
+            if todos.is_empty() {
+                println!("No TODOs found.");
+                return Ok(());
+            }
+
+            let mut todo_by_parent: std::collections::HashMap<
+                Option<uuid::Uuid>,
+                Vec<&rustic_ai_core::storage::model::Todo>,
+            > = std::collections::HashMap::new();
+            for todo in &todos {
+                todo_by_parent.entry(todo.parent_id).or_default().push(todo);
+            }
+
+            println!("TODOs:");
+            let mut roots = todo_by_parent.remove(&None).unwrap_or_default();
+            roots.sort_by_key(|t| t.created_at);
+            for todo in roots {
+                let status_str = match todo.status {
+                    TodoStatus::Todo => "[TODO]",
+                    TodoStatus::InProgress => "[IN_PROGRESS]",
+                    TodoStatus::Blocked => "[BLOCKED]",
+                    TodoStatus::Completed => "[COMPLETED]",
+                    TodoStatus::Cancelled => "[CANCELLED]",
+                };
+                let priority_str = match todo.priority {
+                    TodoPriority::Low => "low",
+                    TodoPriority::Medium => "medium",
+                    TodoPriority::High => "high",
+                    TodoPriority::Critical => "CRITICAL",
+                };
+                let tags_str = if todo.tags.is_empty() {
+                    String::new()
+                } else {
+                    format!(" tags:{}", todo.tags.join(","))
+                };
+                let project_str = if let Some(ref pid) = todo.project_id {
+                    format!(" project:{}", pid)
+                } else {
+                    String::new()
+                };
+                println!(
+                    "- {} {} [priority:{}]{}{} - {}",
+                    status_str, todo.id, priority_str, project_str, tags_str, todo.title
+                );
+                if let Some(ref desc) = todo.description {
+                    println!("  {}", desc);
+                }
+
+                if show_metadata {
+                    if !todo.metadata.files.is_empty() {
+                        println!("  files: {}", todo.metadata.files.join(", "));
+                    }
+                    if !todo.metadata.tools.is_empty() {
+                        println!("  tools: {}", todo.metadata.tools.join(", "));
+                    }
+                    if let Some(trace_id) = todo.metadata.routing_trace_id {
+                        println!("  routing_trace_id: {trace_id}");
+                    }
+                    if let Some(output_id) = todo.metadata.sub_agent_output_id {
+                        println!("  sub_agent_output_id: {output_id}");
+                    }
+                    if let Some(reason) = &todo.metadata.reason {
+                        println!("  reason: {reason}");
+                    }
+                }
+
+                if let Some(children) = todo_by_parent.get(&Some(todo.id)) {
+                    for child in children {
+                        let child_status = match child.status {
+                            TodoStatus::Todo => "[TODO]",
+                            TodoStatus::InProgress => "[IN_PROGRESS]",
+                            TodoStatus::Blocked => "[BLOCKED]",
+                            TodoStatus::Completed => "[COMPLETED]",
+                            TodoStatus::Cancelled => "[CANCELLED]",
+                        };
+                        println!("  -> {} {} - {}", child_status, child.id, child.title);
+                    }
+                }
+            }
+        }
+        cli::TodoCommand::Add {
+            session_id,
+            title,
+            description,
+            priority,
+            tag,
+            parent_id,
+            file,
+            tool,
+            routing_trace_id,
+            sub_agent_output_id,
+            reason,
+        } => {
+            let session_uuid = uuid::Uuid::parse_str(&session_id).map_err(|err| {
+                rustic_ai_core::Error::Config(format!(
+                    "invalid session id '{}': {}",
+                    session_id, err
+                ))
+            })?;
+
+            let parent_uuid = parent_id.and_then(|id| uuid::Uuid::parse_str(&id).ok());
+
+            let project_id = app.config().project.as_ref().map(|p| p.name.clone());
+
+            let todo = rustic_ai_core::storage::model::Todo {
+                id: uuid::Uuid::new_v4(),
+                project_id,
+                session_id: session_uuid,
+                parent_id: parent_uuid,
+                title,
+                description,
+                status: TodoStatus::Todo,
+                priority: priority
+                    .map(|p| match p {
+                        cli::TodoPriority::Low => TodoPriority::Low,
+                        cli::TodoPriority::Medium => TodoPriority::Medium,
+                        cli::TodoPriority::High => TodoPriority::High,
+                        cli::TodoPriority::Critical => TodoPriority::Critical,
+                    })
+                    .unwrap_or(TodoPriority::Medium),
+                tags: tag,
+                metadata: rustic_ai_core::storage::model::TodoMetadata {
+                    files: file,
+                    tools: tool,
+                    routing_trace_id: routing_trace_id
+                        .as_ref()
+                        .and_then(|id| uuid::Uuid::parse_str(id).ok()),
+                    sub_agent_output_id: sub_agent_output_id
+                        .as_ref()
+                        .and_then(|id| uuid::Uuid::parse_str(id).ok()),
+                    summary_id: None,
+                    reason,
+                },
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                completed_at: None,
+            };
+
+            runtime.block_on(app.session_manager().create_todo(&todo))?;
+            println!("Created TODO: {}", todo.id);
+        }
+        cli::TodoCommand::Update {
+            id,
+            title,
+            status,
+            priority,
+            tag,
+            file,
+            tool,
+            routing_trace_id,
+            sub_agent_output_id,
+            reason,
+        } => {
+            let todo_uuid = uuid::Uuid::parse_str(&id).map_err(|err| {
+                rustic_ai_core::Error::Config(format!("invalid todo id '{}': {}", id, err))
+            })?;
+
+            let mut update = TodoUpdate {
+                title,
+                status: status.map(|s| match s {
+                    cli::TodoStatus::Todo => TodoStatus::Todo,
+                    cli::TodoStatus::InProgress => TodoStatus::InProgress,
+                    cli::TodoStatus::Blocked => TodoStatus::Blocked,
+                    cli::TodoStatus::Completed => TodoStatus::Completed,
+                    cli::TodoStatus::Cancelled => TodoStatus::Cancelled,
+                }),
+                priority: priority.map(|p| match p {
+                    cli::TodoPriority::Low => TodoPriority::Low,
+                    cli::TodoPriority::Medium => TodoPriority::Medium,
+                    cli::TodoPriority::High => TodoPriority::High,
+                    cli::TodoPriority::Critical => TodoPriority::Critical,
+                }),
+                ..Default::default()
+            };
+
+            if let Some(tag_value) = tag {
+                update.tags = Some(Some(tag_value));
+            }
+
+            if file.is_some()
+                || tool.is_some()
+                || routing_trace_id.is_some()
+                || sub_agent_output_id.is_some()
+                || reason.is_some()
+            {
+                update.metadata = Some(rustic_ai_core::storage::model::TodoMetadata {
+                    files: file.unwrap_or_default(),
+                    tools: tool.unwrap_or_default(),
+                    routing_trace_id: routing_trace_id
+                        .as_ref()
+                        .and_then(|value| uuid::Uuid::parse_str(value).ok()),
+                    sub_agent_output_id: sub_agent_output_id
+                        .as_ref()
+                        .and_then(|value| uuid::Uuid::parse_str(value).ok()),
+                    summary_id: None,
+                    reason,
+                });
+            }
+
+            runtime.block_on(app.session_manager().update_todo(todo_uuid, &update))?;
+            println!("Updated TODO: {}", id);
+        }
+        cli::TodoCommand::Complete { id } => {
+            let todo_uuid = uuid::Uuid::parse_str(&id).map_err(|err| {
+                rustic_ai_core::Error::Config(format!("invalid todo id '{}': {}", id, err))
+            })?;
+
+            runtime.block_on(app.session_manager().complete_todo_chain(todo_uuid))?;
+            println!("Completed TODO: {}", id);
+        }
+        cli::TodoCommand::Delete { id } => {
+            let todo_uuid = uuid::Uuid::parse_str(&id).map_err(|err| {
+                rustic_ai_core::Error::Config(format!("invalid todo id '{}': {}", id, err))
+            })?;
+
+            runtime.block_on(app.session_manager().delete_todo(todo_uuid))?;
+            println!("Deleted TODO: {}", id);
+        }
+    }
+
+    Ok(())
+}
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("rustic-ai-cli failed: {error}");
@@ -751,6 +1019,14 @@ fn run() -> rustic_ai_core::Result<()> {
                         runtime.block_on(repl.run())?;
                         return Ok(());
                     }
+                    cli::Command::Todo { command } => {
+                        handle_todo_command(&app, command)?;
+                        return Ok(());
+                    }
+                    cli::Command::Routing { command } => {
+                        handle_routing_command(&app, command)?;
+                        return Ok(());
+                    }
                     _ => unreachable!("command variant handled earlier"),
                 }
             }
@@ -916,6 +1192,127 @@ fn handle_config_command(
 
             let snapshot = runtime.block_on(manager.patch(changes, expected_version))?;
             print_mutation_result("patched", snapshot.version, output)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_routing_command(
+    app: &rustic_ai_core::RusticAI,
+    command: cli::RoutingCommand,
+) -> rustic_ai_core::Result<()> {
+    use rustic_ai_core::routing::Router;
+    use rustic_ai_core::storage::model::RoutingTraceFilter;
+
+    let runtime = tokio::runtime::Runtime::new().map_err(|err| {
+        rustic_ai_core::Error::Config(format!("failed to create tokio runtime: {err}"))
+    })?;
+
+    let config = app.config();
+
+    match command {
+        cli::RoutingCommand::Trace { session_id, limit } => {
+            if !config.features.dynamic_routing_enabled {
+                println!("Dynamic routing is disabled. Enable it in config.features.dynamic_routing_enabled.");
+                return Ok(());
+            }
+
+            let session_uuid = uuid::Uuid::parse_str(&session_id).map_err(|err| {
+                rustic_ai_core::Error::Config(format!("invalid session id '{session_id}': {err}"))
+            })?;
+
+            let filter = RoutingTraceFilter {
+                session_id: Some(session_uuid),
+                selected_agent: None,
+                min_confidence: None,
+                fallback_only: false,
+                limit: Some(limit),
+            };
+
+            let traces = runtime.block_on(app.session_manager().list_routing_traces(&filter))?;
+
+            if traces.is_empty() {
+                println!("No routing traces found for session: {session_id}");
+                return Ok(());
+            }
+
+            println!("Routing traces for session {session_id}:");
+            for trace in &traces {
+                let fallback_marker = if trace.fallback_used {
+                    " [FALLBACK]"
+                } else {
+                    ""
+                };
+                println!();
+                println!("- Trace ID: {}", trace.id);
+                println!("  Task: {}", trace.task);
+                println!(
+                    "  Selected Agent: {}{}",
+                    trace.selected_agent, fallback_marker
+                );
+                println!("  Reason: {}", trace.reason);
+                println!("  Confidence: {:.2}", trace.confidence);
+                println!("  Policy: {}", trace.policy);
+                if !trace.alternatives.is_empty() {
+                    println!("  Alternatives: {}", trace.alternatives.join(", "));
+                }
+                if let Some(pressure) = trace.context_pressure {
+                    println!("  Context Pressure: {:.2}", pressure);
+                }
+                println!(
+                    "  Created At: {}",
+                    trace.created_at.format("%Y-%m-%d %H:%M:%S UTC")
+                );
+            }
+        }
+        cli::RoutingCommand::Analyze {
+            task,
+            context_pressure,
+        } => {
+            if !config.features.dynamic_routing_enabled {
+                println!("Dynamic routing is disabled. Enable it in config.features.dynamic_routing_enabled.");
+                return Ok(());
+            }
+
+            let routing_config = config.dynamic_routing.clone();
+            let registry = app.runtime().agents.get_inner_registry();
+
+            let router = Router::new(registry, routing_config);
+            let decision = router.route(&task)?;
+
+            println!("Routing Analysis for task:");
+            println!("  Task: {}", task);
+            println!();
+            println!("Selected Agent: {}", decision.agent);
+            println!("  Confidence: {:.2}", decision.confidence);
+            println!("  Policy: {:?}", decision.policy);
+            println!("  Fallback Used: {}", decision.fallback_used);
+            println!();
+            println!("Reason:");
+            println!("  Primary Factor: {}", decision.reason.primary_factor);
+            println!("  Explanation: {}", decision.reason.explanation);
+            if let Some(ref task_type) = decision.reason.task_type {
+                println!("  Task Type: {}", task_type);
+            }
+            if !decision.reason.keyword_matches.is_empty() {
+                println!(
+                    "  Keyword Matches: {}",
+                    decision.reason.keyword_matches.join(", ")
+                );
+            }
+            if let Some(pressure) = context_pressure {
+                println!();
+                println!("Simulated Context Pressure: {:.2}", pressure);
+                println!(
+                    "  Threshold: {:.2}",
+                    app.config().dynamic_routing.context_pressure_threshold
+                );
+            }
+            if !decision.alternatives.is_empty() {
+                println!();
+                println!("Alternative Agents: {}", decision.alternatives.join(", "));
+            }
         }
     }
 

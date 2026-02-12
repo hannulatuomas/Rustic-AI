@@ -10,7 +10,7 @@ pub struct AgentSuggestion {
     pub score: usize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct AgentRegistry {
     agents: HashMap<String, Arc<Agent>>,
     configs: HashMap<String, AgentConfig>,
@@ -32,6 +32,17 @@ impl AgentRegistry {
 
     pub fn get_config(&self, name: &str) -> Option<&AgentConfig> {
         self.configs.get(name)
+    }
+
+    pub fn get_agent_tools(&self, name: &str) -> Vec<String> {
+        self.configs
+            .get(name)
+            .map(|config| config.tools.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn get_inner_registry(&self) -> &Self {
+        self
     }
 
     pub fn has_agent(&self, name: &str) -> bool {

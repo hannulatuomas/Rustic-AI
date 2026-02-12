@@ -514,6 +514,110 @@ ADR-0027: Code Graph and Impact Analysis via Index Snapshot
 
 ---
 
+ADR-0028: Four Optional Features (Summary, TODO, Sub-Agent v2, Dynamic Routing)
+
+- Status: Accepted
+- Date: 2026-02-12
+- Context: The roadmap requires four advanced features for production readiness: aggressive context summary, session/project TODO tracking, sub-agent orchestration v2 (parallel, caching), and dynamic routing (LangGraph-like). These features must be fully optional and configurable to avoid disrupting existing workflows.
+- Decision:
+  - Implement all four features as fully optional via `FeatureConfig` toggles:
+    - `features.aggressive_summary_enabled` for aggressive context summary
+    - `features.todo_tracking_enabled` for TODO tracking
+    - `features.sub_agent_parallel_enabled` for sub-agent parallelism
+    - `features.dynamic_routing_enabled` for dynamic routing
+  - Each feature has per-agent config overrides where applicable:
+    - `auto_create_todos`, `todo_project_scope` for TODO auto-creation
+    - `parallel_sub_agent_enabled`, `aggressive_delegation_policy` for sub-agents
+    - `sub_agent_output_cache_mode`, `sub_agent_max_parallel_tasks` for sub-agent tuning
+    - `trigger_mode`, `message_window_threshold`, `token_threshold_percent` for summary
+    - `routing_policy`, `fallback_agent`, `context_pressure_threshold` for routing
+  - All storage backends (SQLite, Postgres) support the new tables and operations.
+  - CLI commands expose feature diagnostics and configuration.
+- Consequences:
+  - Features can be enabled/disabled independently without breaking existing functionality.
+  - All features work together when enabled (cross-feature integration planned for Phase E).
+  - Storage schema versioning must track these additions (v6+).
+  - Event stream includes new events for each feature (summary, TODO, routing, sub-agent parallelism).
+
+---
+
+ADR-0029: Sub-Agent Caching Strategy (Hybrid: Exact + Semantic)
+
+- Status: Accepted
+- Date: 2026-02-12
+- Context: Sub-agent output caching improves performance and reduces token usage by reusing results from identical or similar tasks. Pure exact-match caching is safe but has low hit rates. Pure semantic caching has higher hit rates but risks stale/irrelevant outputs.
+- Decision:
+  - Implement hybrid caching mode as default (`SubAgentCacheMode::Hybrid`):
+    - First attempt exact-match lookup by task key (hash of task + context_filter).
+    - If no match, fall back to semantic lookup by task type (from routing decision).
+    - Both modes are configurable (`ExactMatch`, `Semantic`, `Hybrid`).
+  - Cache entries include:
+    - `task_key`: exact-match hash
+    - `task_type`: semantic category (e.g., "testing", "debugging")
+    - `expires_at`: TTL-based expiration (default 1 hour)
+  - Cache is backend-agnostic via `StorageBackend` trait.
+  - CLI events emit cache hits/misses for visibility.
+- Consequences:
+  - Higher cache hit rates while maintaining safety (exact-match first).
+  - Cache can be disabled or restricted to exact-only for strict use cases.
+  - TTL pruning prevents bloat and stale data.
+  - Semantic caching quality depends on routing task-type accuracy.
+
+---
+
+ADR-0030: TODO Hierarchy Model (Parent-Child Session ↔ Project Links)
+
+- Status: Accepted
+- Date: 2026-02-12
+- Context: TODO tracking must support both session-scoped and project-scoped tasks. Hierarchical linking enables automatic status propagation when child tasks complete.
+- Decision:
+  - Add hierarchical linking via `parent_id` field in `Todo` model:
+    - Project TODOs have `project_id` set, `session_id = None`, `parent_id = None`.
+    - Session TODOs have `session_id` set and can link to project TODOs via `parent_id`.
+  - Implement status propagation logic in `complete_todo_chain()`:
+    - When a session TODO is completed, check if it has a parent project TODO.
+    - If all children of a parent TODO are completed, mark parent as `Completed`.
+    - If any child is `InProgress`, mark parent as `InProgress`.
+    - If any child is `Blocked`, mark parent as `Blocked`.
+  - TODO metadata supports linking to:
+    - Files/paths (for file-related tasks)
+    - Tools (for task-specific tools)
+    - Routing traces (for routing-triggered TODOs)
+    - Sub-agent outputs (for sub-agent-triggered TODOs)
+  - CLI display shows hierarchical structure (tree-like) for project TODOs.
+- Consequences:
+  - Automatic status synchronization between session and project TODOs.
+  - TODOs can be traced back to their origins (routing decisions, sub-agent outputs, files).
+  - Hierarchical queries enable progress tracking across sessions.
+  - Cascade deletion or re-parenting must be handled carefully (prevent cycles).
+
+---
+
+ADR-0031: Dynamic Routing Fallback and Confidence Thresholding
+
+- Status: Accepted
+- Date: 2026-02-12
+- Context: Dynamic routing selects agents based on task type, capabilities, and context pressure. When no agent matches well, the system must still complete tasks rather than fail.
+- Decision:
+  - Implement configurable fallback agent in `DynamicRoutingConfig`:
+    - `fallback_agent`: default to "general" or first configured agent.
+    - Fallback is used when routing confidence < 0.3.
+  - Routing confidence is calculated via hybrid scoring:
+    - Capability match (0-0.5): agent taxonomy/tools overlap with task type.
+    - Tool overlap (0-0.3): task keywords vs agent tool names.
+    - Context pressure adjustment (-0.2 to 0.0): penalize agents when context is full.
+  - Routing traces store:
+    - Target agent, reason, confidence, alternatives considered.
+    - Fallback flag when used.
+  - CLI diagnostics expose routing decisions and traces.
+- Consequences:
+  - Routing never fails; fallback ensures completion.
+  - Users can see why routing chose a particular agent (traceability).
+  - Fallback agent can be tuned per project or task patterns.
+  - Alternatives list enables manual override if routing is incorrect.
+
+---
+
 Template (copy/paste)
 
 ADR-XXXX: <Title>

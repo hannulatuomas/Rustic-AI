@@ -87,6 +87,8 @@ impl Runtime {
             mcp_enabled: config.features.mcp_enabled,
             mcp_config: Arc::new(config.mcp.clone()),
             skills_enabled: config.features.skills_enabled,
+            sub_agent_parallel_enabled: config.features.sub_agent_parallel_enabled,
+            sub_agent_output_caching_enabled: config.features.sub_agent_output_caching_enabled,
             skills: skills.clone(),
             workflows_enabled: config.features.workflows_enabled,
             workflows: workflows.clone(),
@@ -113,6 +115,8 @@ impl Runtime {
             session_manager.clone(),
             learning,
             retriever,
+            config.features.aggressive_summary_enabled,
+            session_manager.storage(),
         )?;
         tools.attach_agents(Arc::new(agents.clone()));
 

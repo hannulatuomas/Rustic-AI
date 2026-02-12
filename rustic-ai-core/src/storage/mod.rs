@@ -17,7 +17,11 @@ use crate::learning::{
 use crate::vector::StoredVector;
 
 pub use factory::create_storage_backend;
-pub use model::{Message, PendingToolState, Session, SessionConfig};
+pub use model::{
+    Message, PendingToolState, RoutingTrace, RoutingTraceFilter, Session, SessionConfig,
+    SubAgentOutput, SubAgentOutputFilter, Todo, TodoFilter, TodoMetadata, TodoPriority, TodoStatus,
+    TodoUpdate,
+};
 
 #[async_trait]
 pub trait StorageBackend: Send + Sync {
@@ -139,4 +143,31 @@ pub trait StorageBackend: Send + Sync {
         metadata: &serde_json::Value,
     ) -> Result<()>;
     async fn list_vector_embeddings(&self, workspace: &str) -> Result<Vec<StoredVector>>;
+
+    // TODO tracking
+    async fn create_todo(&self, todo: &Todo) -> Result<()>;
+    async fn list_todos(&self, filter: &TodoFilter) -> Result<Vec<Todo>>;
+    async fn update_todo(&self, id: Uuid, update: &TodoUpdate) -> Result<()>;
+    async fn delete_todo(&self, id: Uuid) -> Result<()>;
+    async fn get_todo(&self, id: Uuid) -> Result<Option<Todo>>;
+    async fn complete_todo_chain(&self, id: Uuid) -> Result<()>;
+
+    // Sub-agent output caching
+    async fn upsert_sub_agent_output(&self, output: &SubAgentOutput) -> Result<()>;
+    async fn get_sub_agent_output_exact(&self, task_key: &str) -> Result<Option<SubAgentOutput>>;
+    async fn get_sub_agent_output_semantic(
+        &self,
+        task_type: &str,
+        caller_agent: &str,
+        target_agent: &str,
+    ) -> Result<Vec<SubAgentOutput>>;
+    async fn list_sub_agent_outputs(
+        &self,
+        filter: &SubAgentOutputFilter,
+    ) -> Result<Vec<SubAgentOutput>>;
+    async fn delete_expired_sub_agent_outputs(&self) -> Result<usize>;
+
+    // Routing traces
+    async fn create_routing_trace(&self, trace: &RoutingTrace) -> Result<()>;
+    async fn list_routing_traces(&self, filter: &RoutingTraceFilter) -> Result<Vec<RoutingTrace>>;
 }

@@ -212,6 +212,75 @@ impl Renderer {
                 eprintln!();
                 eprintln!("[error] {err}");
             }
+            Event::SummaryGenerated {
+                session_id,
+                agent,
+                trigger,
+                message_count,
+                token_pressure,
+                summary_length,
+                summary_key,
+                has_user_task,
+                has_completion_summary,
+            } => {
+                println!(
+                    "[summary] generated: session={session_id}, agent={agent}, trigger={trigger:?}, messages={message_count}, token_pressure={:.1}%, length={summary_length}, key={summary_key}, has_user_task={has_user_task}, has_completion_summary={has_completion_summary}",
+                    token_pressure * 100.0
+                );
+            }
+            Event::SummaryQualityUpdated {
+                session_id,
+                summary_key,
+                rating,
+                implicit,
+                acceptance_count,
+            } => {
+                println!(
+                    "[summary] quality updated: session={session_id}, key={summary_key}, rating={rating}, implicit={implicit}, acceptances={acceptance_count}"
+                );
+            }
+            Event::SubAgentParallelStarted {
+                session_id,
+                caller_agent,
+                task_count,
+                max_parallelism,
+            } => {
+                println!(
+                    "[sub-agent] parallel started: session={session_id}, caller={caller_agent}, tasks={task_count}, max_parallelism={max_parallelism}"
+                );
+            }
+            Event::SubAgentParallelProgress {
+                caller_agent,
+                completed,
+                total,
+                ..
+            } => {
+                println!(
+                    "[sub-agent] parallel progress: caller={caller_agent}, {}/{} completed",
+                    completed, total
+                );
+            }
+            Event::SubAgentDetailedLog {
+                caller_agent,
+                target_agent,
+                log_level,
+                message,
+                ..
+            } => {
+                println!("[sub-agent] {caller_agent} -> {target_agent} [{log_level}] {message}");
+            }
+            Event::SubAgentOutputCacheHit {
+                caller_agent,
+                target_agent,
+                task_key,
+                cache_mode,
+                ..
+            } => {
+                println!(
+                    "[sub-agent] cache hit: {caller_agent} -> {target_agent} (mode={cache_mode}, key={})",
+                    task_key
+                );
+            }
         }
     }
 
@@ -459,6 +528,94 @@ impl Renderer {
             Event::Error(err) => serde_json::json!({
                 "type": "error",
                 "message": err
+            }),
+            Event::SummaryGenerated {
+                session_id,
+                agent,
+                trigger,
+                message_count,
+                token_pressure,
+                summary_length,
+                summary_key,
+                has_user_task,
+                has_completion_summary,
+            } => serde_json::json!({
+                "type": "summary_generated",
+                "session_id": session_id,
+                "agent": agent,
+                "trigger": format!("{:?}", trigger),
+                "message_count": message_count,
+                "token_pressure": token_pressure,
+                "summary_length": summary_length,
+                "summary_key": summary_key,
+                "has_user_task": has_user_task,
+                "has_completion_summary": has_completion_summary,
+            }),
+            Event::SummaryQualityUpdated {
+                session_id,
+                summary_key,
+                rating,
+                implicit,
+                acceptance_count,
+            } => serde_json::json!({
+                "type": "summary_quality_updated",
+                "session_id": session_id,
+                "summary_key": summary_key,
+                "rating": rating,
+                "implicit": implicit,
+                "acceptance_count": acceptance_count,
+            }),
+            Event::SubAgentParallelStarted {
+                session_id,
+                caller_agent,
+                task_count,
+                max_parallelism,
+            } => serde_json::json!({
+                "type": "sub_agent_parallel_started",
+                "session_id": session_id,
+                "caller_agent": caller_agent,
+                "task_count": task_count,
+                "max_parallelism": max_parallelism,
+            }),
+            Event::SubAgentParallelProgress {
+                session_id,
+                caller_agent,
+                completed,
+                total,
+            } => serde_json::json!({
+                "type": "sub_agent_parallel_progress",
+                "session_id": session_id,
+                "caller_agent": caller_agent,
+                "completed": completed,
+                "total": total,
+            }),
+            Event::SubAgentDetailedLog {
+                session_id,
+                caller_agent,
+                target_agent,
+                log_level,
+                message,
+            } => serde_json::json!({
+                "type": "sub_agent_detailed_log",
+                "session_id": session_id,
+                "caller_agent": caller_agent,
+                "target_agent": target_agent,
+                "log_level": log_level,
+                "message": message,
+            }),
+            Event::SubAgentOutputCacheHit {
+                session_id,
+                caller_agent,
+                target_agent,
+                task_key,
+                cache_mode,
+            } => serde_json::json!({
+                "type": "sub_agent_output_cache_hit",
+                "session_id": session_id,
+                "caller_agent": caller_agent,
+                "target_agent": target_agent,
+                "task_key": task_key,
+                "cache_mode": cache_mode,
             }),
         };
 

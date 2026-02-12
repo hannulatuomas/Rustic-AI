@@ -13,6 +13,7 @@ pub mod permissions;
 pub mod project;
 pub mod providers;
 pub mod rag;
+pub mod routing;
 pub mod rules;
 pub mod runtime;
 pub mod skills;

@@ -23,6 +23,7 @@ pub struct Config {
     pub mode: RuntimeMode,
     pub features: FeatureConfig,
     pub retrieval: RetrievalConfig,
+    pub dynamic_routing: DynamicRoutingConfig,
     pub mcp: McpConfig,
     pub plugins: PluginConfig,
     pub skills: SkillsConfig,
@@ -44,6 +45,7 @@ impl Default for Config {
             mode: RuntimeMode::Direct,
             features: FeatureConfig::default(),
             retrieval: RetrievalConfig::default(),
+            dynamic_routing: DynamicRoutingConfig::default(),
             mcp: McpConfig::default(),
             plugins: PluginConfig::default(),
             skills: SkillsConfig::default(),
@@ -65,6 +67,97 @@ impl Default for Config {
 #[serde(default)]
 pub struct McpConfig {
     pub servers: Vec<McpServerConfig>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SummaryTriggerMode {
+    #[default]
+    Hybrid,
+    FixedMessageCount,
+    TokenThreshold,
+    TurnBased,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DelegationPolicy {
+    #[default]
+    Aggressive,
+    Conservative,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubAgentCacheMode {
+    #[default]
+    Hybrid,
+    ExactMatch,
+    Semantic,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutingPolicy {
+    #[default]
+    Hybrid,
+    TaskType,
+    AgentCapabilities,
+    ContextPressure,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DynamicRoutingConfig {
+    pub enabled: bool,
+    pub routing_policy: RoutingPolicy,
+    pub task_keywords: std::collections::HashMap<String, Vec<String>>,
+    pub fallback_agent: String,
+    pub context_pressure_threshold: f64,
+    pub routing_trace_enabled: bool,
+}
+
+impl Default for DynamicRoutingConfig {
+    fn default() -> Self {
+        let mut task_keywords = std::collections::HashMap::new();
+        task_keywords.insert(
+            "testing".to_string(),
+            vec![
+                "test".to_string(),
+                "testing".to_string(),
+                "unit test".to_string(),
+                "integration test".to_string(),
+            ],
+        );
+        task_keywords.insert(
+            "debugging".to_string(),
+            vec![
+                "debug".to_string(),
+                "debugging".to_string(),
+                "fix bug".to_string(),
+                "error".to_string(),
+            ],
+        );
+        task_keywords.insert(
+            "implementation".to_string(),
+            vec![
+                "implement".to_string(),
+                "implementing".to_string(),
+                "build".to_string(),
+                "building".to_string(),
+                "create".to_string(),
+            ],
+        );
+
+        Self {
+            enabled: false,
+            routing_policy: RoutingPolicy::Hybrid,
+            task_keywords,
+            fallback_agent: "general".to_string(),
+            context_pressure_threshold: 0.7,
+            routing_trace_enabled: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -330,6 +423,13 @@ pub struct SummarizationConfig {
     pub provider_name: Option<String>,
     pub max_context_tokens: usize,
     pub summary_max_tokens: usize,
+    pub trigger_mode: SummaryTriggerMode,
+    pub message_window_threshold: Option<usize>,
+    pub token_threshold_percent: Option<f64>,
+    pub include_user_task: bool,
+    pub include_completion_summary: bool,
+    pub quality_tracking_enabled: bool,
+    pub user_rating_prompt: bool,
 }
 
 impl Default for SummarizationConfig {
@@ -339,6 +439,13 @@ impl Default for SummarizationConfig {
             provider_name: None,
             max_context_tokens: 16_000,
             summary_max_tokens: 500,
+            trigger_mode: SummaryTriggerMode::Hybrid,
+            message_window_threshold: Some(12),
+            token_threshold_percent: Some(0.6),
+            include_user_task: true,
+            include_completion_summary: true,
+            quality_tracking_enabled: true,
+            user_rating_prompt: false,
         }
     }
 }
@@ -437,6 +544,11 @@ pub struct FeatureConfig {
     pub indexing_enabled: bool,
     pub vector_enabled: bool,
     pub rag_enabled: bool,
+    pub aggressive_summary_enabled: bool,
+    pub todo_tracking_enabled: bool,
+    pub sub_agent_parallel_enabled: bool,
+    pub sub_agent_output_caching_enabled: bool,
+    pub dynamic_routing_enabled: bool,
 }
 
 impl Default for FeatureConfig {
@@ -451,6 +563,11 @@ impl Default for FeatureConfig {
             indexing_enabled: true,
             vector_enabled: true,
             rag_enabled: false,
+            aggressive_summary_enabled: false,
+            todo_tracking_enabled: true,
+            sub_agent_parallel_enabled: false,
+            sub_agent_output_caching_enabled: false,
+            dynamic_routing_enabled: false,
         }
     }
 }
@@ -643,7 +760,7 @@ pub enum AuthMode {
     None,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentConfig {
     pub name: String,
@@ -666,7 +783,53 @@ pub struct AgentConfig {
     pub context_summary_enabled: Option<bool>,
     pub context_summary_max_tokens: Option<usize>,
     pub context_summary_cache_entries: Option<usize>,
+    pub auto_create_todos: bool,
+    pub todo_project_scope: bool,
+    pub parallel_sub_agent_enabled: bool,
+    pub aggressive_delegation_policy: Option<DelegationPolicy>,
+    pub sub_agent_max_parallel_tasks: Option<usize>,
+    pub sub_agent_output_cache_mode: SubAgentCacheMode,
+    pub sub_agent_output_cache_ttl_secs: Option<u64>,
+    pub sub_agent_parallel_progress_enabled: bool,
+    pub sub_agent_parallel_detailed_logs: bool,
     pub taxonomy_membership: Vec<TaxonomyMembershipConfig>,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            provider: String::new(),
+            tools: Vec::new(),
+            skills: Vec::new(),
+            system_prompt_template: None,
+            temperature: 0.1,
+            max_tokens: 2048,
+            context_window_size: 16_000,
+            max_tool_rounds: None,
+            max_tools_per_round: None,
+            max_total_tool_calls_per_turn: None,
+            max_turn_duration_seconds: None,
+            permission_mode: AgentPermissionMode::ReadWrite,
+            allow_sub_agent_calls: false,
+            max_sub_agent_depth: None,
+            sub_agent_context_window_size: None,
+            sub_agent_max_context_tokens: None,
+            context_summary_enabled: None,
+            context_summary_max_tokens: None,
+            context_summary_cache_entries: None,
+            auto_create_todos: true,
+            todo_project_scope: true,
+            parallel_sub_agent_enabled: false,
+            aggressive_delegation_policy: Some(DelegationPolicy::Aggressive),
+            sub_agent_max_parallel_tasks: Some(8),
+            sub_agent_output_cache_mode: SubAgentCacheMode::Hybrid,
+            sub_agent_output_cache_ttl_secs: Some(3600),
+            sub_agent_parallel_progress_enabled: true,
+            sub_agent_parallel_detailed_logs: false,
+            taxonomy_membership: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]

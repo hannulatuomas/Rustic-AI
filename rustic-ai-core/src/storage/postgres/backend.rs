@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgPoolOptions, PgRow};
 use sqlx::Row;
 use tokio::sync::OnceCell;
 use uuid::Uuid;
@@ -14,7 +14,10 @@ use crate::learning::{
     FeedbackType, MistakePattern, MistakeType, PatternCategory, PreferenceValue, SuccessPattern,
     UserFeedback, UserPreference,
 };
-use crate::storage::model::{Message, PendingToolState, Session, SessionConfig};
+use crate::storage::model::{
+    Message, PendingToolState, RoutingTrace, RoutingTraceFilter, Session, SessionConfig,
+    SubAgentOutput, SubAgentOutputFilter, Todo, TodoFilter, TodoPriority, TodoStatus, TodoUpdate,
+};
 use crate::storage::StorageBackend;
 use crate::vector::StoredVector;
 
@@ -67,6 +70,28 @@ const SCHEMA_V5_MIGRATION: [&str; 3] = [
     "CREATE TABLE IF NOT EXISTS vector_embeddings (workspace TEXT NOT NULL, id TEXT NOT NULL, vector_json TEXT NOT NULL, metadata_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(workspace, id))",
     "CREATE INDEX IF NOT EXISTS idx_vector_embeddings_workspace ON vector_embeddings(workspace)",
     "UPDATE schema_version SET version = 5",
+];
+
+const SCHEMA_V6_MIGRATION: [&str; 5] = [
+    "CREATE TABLE IF NOT EXISTS todos (id TEXT PRIMARY KEY, project_id TEXT, session_id TEXT NOT NULL, parent_id TEXT, title TEXT NOT NULL, description TEXT, status TEXT NOT NULL, priority TEXT NOT NULL, tags_json TEXT NOT NULL, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT)",
+    "CREATE INDEX IF NOT EXISTS idx_todos_session_id ON todos(session_id)",
+    "CREATE INDEX IF NOT EXISTS idx_todos_project_id ON todos(project_id)",
+    "CREATE INDEX IF NOT EXISTS idx_todos_parent_id ON todos(parent_id)",
+    "UPDATE schema_version SET version = 6",
+];
+
+const SCHEMA_V7_MIGRATION: [&str; 5] = [
+    "CREATE TABLE IF NOT EXISTS sub_agent_outputs (id TEXT PRIMARY KEY, caller_agent TEXT NOT NULL, target_agent TEXT NOT NULL, task_key TEXT NOT NULL, task_type TEXT, output TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT, metadata_json TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_sub_agent_outputs_task_key ON sub_agent_outputs(task_key)",
+    "CREATE INDEX IF NOT EXISTS idx_sub_agent_outputs_caller_target ON sub_agent_outputs(caller_agent, target_agent)",
+    "CREATE INDEX IF NOT EXISTS idx_sub_agent_outputs_expires_at ON sub_agent_outputs(expires_at)",
+    "UPDATE schema_version SET version = 7",
+];
+
+const SCHEMA_V8_MIGRATION: [&str; 3] = [
+    "CREATE TABLE IF NOT EXISTS routing_traces (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, task TEXT NOT NULL, selected_agent TEXT NOT NULL, reason TEXT NOT NULL, confidence DOUBLE PRECISION NOT NULL, policy TEXT NOT NULL, alternatives_json TEXT NOT NULL, fallback_used BOOLEAN NOT NULL, context_pressure DOUBLE PRECISION, created_at TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_routing_traces_session_id ON routing_traces(session_id)",
+    "UPDATE schema_version SET version = 8",
 ];
 
 #[derive(Debug, Clone)]
@@ -146,6 +171,24 @@ impl PostgresStorage {
                     }
                 }
 
+                if current_version < 6 {
+                    for statement in SCHEMA_V6_MIGRATION {
+                        sqlx::query(statement).execute(&self.pool).await?;
+                    }
+                }
+
+                if current_version < 7 {
+                    for statement in SCHEMA_V7_MIGRATION {
+                        sqlx::query(statement).execute(&self.pool).await?;
+                    }
+                }
+
+                if current_version < 8 {
+                    for statement in SCHEMA_V8_MIGRATION {
+                        sqlx::query(statement).execute(&self.pool).await?;
+                    }
+                }
+
                 Ok::<(), sqlx::Error>(())
             })
             .await
@@ -187,6 +230,71 @@ impl PostgresStorage {
             "testing" => PatternCategory::Testing,
             _ => PatternCategory::FeatureImplementation,
         }
+    }
+
+    fn parse_todo_status(value: &str) -> TodoStatus {
+        match value {
+            "todo" => TodoStatus::Todo,
+            "in_progress" => TodoStatus::InProgress,
+            "blocked" => TodoStatus::Blocked,
+            "completed" => TodoStatus::Completed,
+            "cancelled" => TodoStatus::Cancelled,
+            _ => TodoStatus::Todo,
+        }
+    }
+
+    fn parse_todo_priority(value: &str) -> TodoPriority {
+        match value {
+            "low" => TodoPriority::Low,
+            "medium" => TodoPriority::Medium,
+            "high" => TodoPriority::High,
+            "critical" => TodoPriority::Critical,
+            _ => TodoPriority::Medium,
+        }
+    }
+
+    fn todo_status_as_str(status: TodoStatus) -> &'static str {
+        match status {
+            TodoStatus::Todo => "todo",
+            TodoStatus::InProgress => "in_progress",
+            TodoStatus::Blocked => "blocked",
+            TodoStatus::Completed => "completed",
+            TodoStatus::Cancelled => "cancelled",
+        }
+    }
+
+    fn todo_priority_as_str(priority: TodoPriority) -> &'static str {
+        match priority {
+            TodoPriority::Low => "low",
+            TodoPriority::Medium => "medium",
+            TodoPriority::High => "high",
+            TodoPriority::Critical => "critical",
+        }
+    }
+
+    fn parse_sub_agent_output(&self, row: PgRow) -> Result<SubAgentOutput> {
+        let id = row.get::<String, _>("id");
+        let created_at = row.get::<String, _>("created_at");
+        let expires_at: Option<String> = row.get("expires_at");
+        let metadata_json = row.get::<String, _>("metadata_json");
+
+        Ok(SubAgentOutput {
+            id: Uuid::parse_str(&id).map_err(|err| {
+                Error::Storage(format!("invalid sub-agent output uuid '{id}': {err}"))
+            })?,
+            caller_agent: row.get("caller_agent"),
+            target_agent: row.get("target_agent"),
+            task_key: row.get("task_key"),
+            task_type: row.get("task_type"),
+            output: row.get("output"),
+            created_at: Self::parse_timestamp(&created_at)?,
+            expires_at: expires_at
+                .as_deref()
+                .map(Self::parse_timestamp)
+                .transpose()?,
+            metadata: serde_json::from_str(&metadata_json)
+                .unwrap_or_else(|_| serde_json::json!({})),
+        })
     }
 }
 
@@ -1080,5 +1188,524 @@ impl StorageBackend for PostgresStorage {
         }
 
         Ok(vectors)
+    }
+
+    async fn create_todo(&self, todo: &Todo) -> Result<()> {
+        self.ensure_initialized().await?;
+        let now = Utc::now();
+        sqlx::query(
+            "INSERT INTO todos(id, project_id, session_id, parent_id, title, description, status, priority, tags_json, metadata_json, created_at, updated_at, completed_at) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+        )
+        .bind(todo.id.to_string())
+        .bind(todo.project_id.as_deref())
+        .bind(todo.session_id.to_string())
+        .bind(todo.parent_id.map(|id| id.to_string()))
+        .bind(&todo.title)
+        .bind(&todo.description)
+        .bind(Self::todo_status_as_str(todo.status))
+        .bind(Self::todo_priority_as_str(todo.priority))
+        .bind(serde_json::to_string(&todo.tags)?)
+        .bind(serde_json::to_string(&todo.metadata)?)
+        .bind(todo.created_at.to_rfc3339())
+        .bind(now.to_rfc3339())
+        .bind(todo.completed_at.map(|dt| dt.to_rfc3339()))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn list_todos(&self, filter: &TodoFilter) -> Result<Vec<Todo>> {
+        self.ensure_initialized().await?;
+
+        // Build dynamic query based on filter
+        let mut where_clauses = Vec::new();
+        let mut bind_index = 1u32;
+        let mut query = String::from(
+            "SELECT id, project_id, session_id, parent_id, title, description, status, priority, tags_json, metadata_json, created_at, updated_at, completed_at FROM todos",
+        );
+
+        if filter.session_id.is_some() {
+            where_clauses.push(format!("session_id = ${}", bind_index));
+            bind_index += 1;
+        }
+        if filter.project_id.is_some() {
+            where_clauses.push(format!("project_id = ${}", bind_index));
+            bind_index += 1;
+        }
+        if filter.parent_id.is_some() {
+            where_clauses.push(format!("parent_id = ${}", bind_index));
+            bind_index += 1;
+        }
+        if filter.status.is_some() {
+            where_clauses.push(format!("status = ${}", bind_index));
+            bind_index += 1;
+        }
+        if filter.priority.is_some() {
+            where_clauses.push(format!("priority = ${}", bind_index));
+        }
+
+        if !where_clauses.is_empty() {
+            query.push_str(" WHERE ");
+            query.push_str(&where_clauses.join(" AND "));
+        }
+
+        query.push_str(" ORDER BY created_at DESC");
+
+        if let Some(limit) = filter.limit {
+            query.push_str(&format!(" LIMIT {}", limit));
+        }
+
+        let mut q = sqlx::query(&query);
+
+        // Bind parameters in order
+        if let Some(session_id) = filter.session_id {
+            q = q.bind(session_id.to_string());
+        }
+        if let Some(ref project_id) = filter.project_id {
+            q = q.bind(project_id.clone());
+        }
+        if let Some(parent_id) = filter.parent_id {
+            q = q.bind(parent_id.to_string());
+        }
+        if let Some(status) = filter.status {
+            q = q.bind(Self::todo_status_as_str(status));
+        }
+        if let Some(priority) = filter.priority {
+            q = q.bind(Self::todo_priority_as_str(priority));
+        }
+
+        let rows = q.fetch_all(&self.pool).await?;
+        let mut todos = Vec::with_capacity(rows.len());
+
+        for row in rows {
+            let id = row.get::<String, _>("id");
+            let parent_id: Option<String> = row.get("parent_id");
+            let created_at = row.get::<String, _>("created_at");
+            let updated_at = row.get::<String, _>("updated_at");
+            let completed_at: Option<String> = row.get("completed_at");
+
+            todos.push(Todo {
+                id: Uuid::parse_str(&id)
+                    .map_err(|err| Error::Storage(format!("invalid todo uuid '{id}': {err}")))?,
+                project_id: row.get("project_id"),
+                session_id: Uuid::parse_str(&row.get::<String, _>("session_id"))
+                    .map_err(|err| Error::Storage(format!("invalid todo session uuid: {err}")))?,
+                parent_id: parent_id.and_then(|value| Uuid::parse_str(&value).ok()),
+                title: row.get("title"),
+                description: row.get("description"),
+                status: Self::parse_todo_status(row.get("status")),
+                priority: Self::parse_todo_priority(row.get("priority")),
+                tags: serde_json::from_str(row.get("tags_json"))?,
+                metadata: serde_json::from_str(row.get("metadata_json"))?,
+                created_at: Self::parse_timestamp(&created_at)?,
+                updated_at: Self::parse_timestamp(&updated_at)?,
+                completed_at: completed_at
+                    .as_ref()
+                    .and_then(|value| Self::parse_timestamp(value).ok()),
+            });
+        }
+
+        Ok(todos)
+    }
+
+    async fn update_todo(&self, id: Uuid, update: &TodoUpdate) -> Result<()> {
+        self.ensure_initialized().await?;
+        let mut set_clauses = Vec::new();
+        let mut bind_index = 1u32;
+
+        if update.title.is_some() {
+            set_clauses.push(format!("title = ${}", bind_index));
+            bind_index += 1;
+        }
+        if update.description.is_some() {
+            set_clauses.push(format!("description = ${}", bind_index));
+            bind_index += 1;
+        }
+        if update.status.is_some() {
+            set_clauses.push(format!("status = ${}", bind_index));
+            bind_index += 1;
+            if let Some(status) = update.status {
+                if status == TodoStatus::Completed {
+                    set_clauses.push(format!("completed_at = ${}", bind_index));
+                    bind_index += 1;
+                }
+            }
+        }
+        if update.priority.is_some() {
+            set_clauses.push(format!("priority = ${}", bind_index));
+            bind_index += 1;
+        }
+        if update.tags.is_some() {
+            set_clauses.push(format!("tags_json = ${}", bind_index));
+            bind_index += 1;
+        }
+        if update.metadata.is_some() {
+            set_clauses.push(format!("metadata_json = ${}", bind_index));
+            bind_index += 1;
+        }
+
+        if set_clauses.is_empty() {
+            return Ok(());
+        }
+
+        set_clauses.push(format!("updated_at = ${}", bind_index));
+        bind_index += 1;
+
+        let query = format!(
+            "UPDATE todos SET {} WHERE id = ${}",
+            set_clauses.join(", "),
+            bind_index
+        );
+
+        let mut q = sqlx::query(&query);
+
+        // Bind parameters in order
+        if let Some(ref title) = update.title {
+            q = q.bind(title);
+        }
+        if let Some(ref description) = update.description {
+            q = q.bind(description.as_deref().unwrap_or(""));
+        }
+        if let Some(status) = update.status {
+            q = q.bind(Self::todo_status_as_str(status));
+            if status == TodoStatus::Completed {
+                q = q.bind(Utc::now().to_rfc3339());
+            }
+        }
+        if let Some(priority) = update.priority {
+            q = q.bind(Self::todo_priority_as_str(priority));
+        }
+        if let Some(ref tags) = update.tags {
+            q = q.bind(serde_json::to_string(tags)?);
+        }
+        if let Some(ref metadata) = update.metadata {
+            q = q.bind(serde_json::to_string(metadata)?);
+        }
+        q = q.bind(Utc::now().to_rfc3339());
+        q = q.bind(id.to_string());
+
+        q.execute(&self.pool).await?;
+        Ok(())
+    }
+
+    async fn delete_todo(&self, id: Uuid) -> Result<()> {
+        self.ensure_initialized().await?;
+        sqlx::query("DELETE FROM todos WHERE id = $1")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn get_todo(&self, id: Uuid) -> Result<Option<Todo>> {
+        self.ensure_initialized().await?;
+        let row = sqlx::query(
+            "SELECT id, project_id, session_id, parent_id, title, description, status, priority, tags_json, metadata_json, created_at, updated_at, completed_at FROM todos WHERE id = $1",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        let id = row.get::<String, _>("id");
+        let parent_id: Option<String> = row.get("parent_id");
+        let created_at = row.get::<String, _>("created_at");
+        let updated_at = row.get::<String, _>("updated_at");
+        let completed_at: Option<String> = row.get("completed_at");
+
+        Ok(Some(Todo {
+            id: Uuid::parse_str(&id)
+                .map_err(|err| Error::Storage(format!("invalid todo uuid '{id}': {err}")))?,
+            project_id: row.get("project_id"),
+            session_id: Uuid::parse_str(&row.get::<String, _>("session_id"))
+                .map_err(|err| Error::Storage(format!("invalid todo session uuid: {err}")))?,
+            parent_id: parent_id.and_then(|value| Uuid::parse_str(&value).ok()),
+            title: row.get("title"),
+            description: row.get("description"),
+            status: Self::parse_todo_status(row.get("status")),
+            priority: Self::parse_todo_priority(row.get("priority")),
+            tags: serde_json::from_str(row.get("tags_json"))?,
+            metadata: serde_json::from_str(row.get("metadata_json"))?,
+            created_at: Self::parse_timestamp(&created_at)?,
+            updated_at: Self::parse_timestamp(&updated_at)?,
+            completed_at: completed_at
+                .as_ref()
+                .and_then(|value| Self::parse_timestamp(value).ok()),
+        }))
+    }
+
+    async fn complete_todo_chain(&self, id: Uuid) -> Result<()> {
+        self.ensure_initialized().await?;
+        let mut current_id = Some(id);
+
+        while let Some(todo_id) = current_id {
+            // Get the current TODO
+            let todo = self.get_todo(todo_id).await?;
+            let Some(ref todo) = todo else {
+                break;
+            };
+
+            // Update to completed status
+            self.update_todo(
+                todo_id,
+                &TodoUpdate {
+                    status: Some(TodoStatus::Completed),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+            // Check if this TODO has a parent, and if all siblings are completed
+            if let Some(parent_id) = todo.parent_id {
+                // Get all siblings of this TODO (children of the same parent)
+                let siblings = self
+                    .list_todos(&TodoFilter {
+                        parent_id: Some(parent_id),
+                        ..Default::default()
+                    })
+                    .await?;
+
+                // Check if all siblings are completed
+                let all_completed = siblings
+                    .iter()
+                    .all(|sib| sib.status == TodoStatus::Completed);
+
+                if all_completed {
+                    current_id = Some(parent_id);
+                    continue;
+                }
+            }
+
+            break;
+        }
+
+        Ok(())
+    }
+
+    async fn upsert_sub_agent_output(&self, output: &SubAgentOutput) -> Result<()> {
+        self.ensure_initialized().await?;
+
+        let expires_at = output.expires_at.map(|dt| dt.to_rfc3339());
+
+        sqlx::query(
+            "INSERT INTO sub_agent_outputs(id, caller_agent, target_agent, task_key, task_type, output, created_at, expires_at, metadata_json) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (id) DO UPDATE SET caller_agent = EXCLUDED.caller_agent, target_agent = EXCLUDED.target_agent, task_key = EXCLUDED.task_key, task_type = EXCLUDED.task_type, output = EXCLUDED.output, expires_at = EXCLUDED.expires_at, metadata_json = EXCLUDED.metadata_json",
+        )
+        .bind(output.id.to_string())
+        .bind(&output.caller_agent)
+        .bind(&output.target_agent)
+        .bind(&output.task_key)
+        .bind(&output.task_type)
+        .bind(&output.output)
+        .bind(output.created_at.to_rfc3339())
+        .bind(expires_at)
+        .bind(serde_json::to_string(&output.metadata)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_sub_agent_output_exact(&self, task_key: &str) -> Result<Option<SubAgentOutput>> {
+        self.ensure_initialized().await?;
+
+        let row = sqlx::query(
+            "SELECT id, caller_agent, target_agent, task_key, task_type, output, created_at, expires_at, metadata_json FROM sub_agent_outputs WHERE task_key = $1 AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(task_key)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        Ok(Some(self.parse_sub_agent_output(row)?))
+    }
+
+    async fn get_sub_agent_output_semantic(
+        &self,
+        task_type: &str,
+        caller_agent: &str,
+        target_agent: &str,
+    ) -> Result<Vec<SubAgentOutput>> {
+        self.ensure_initialized().await?;
+
+        let rows = sqlx::query(
+            "SELECT id, caller_agent, target_agent, task_key, task_type, output, created_at, expires_at, metadata_json FROM sub_agent_outputs WHERE task_type = $1 AND caller_agent = $2 AND target_agent = $3 AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY created_at DESC LIMIT 10",
+        )
+        .bind(task_type)
+        .bind(caller_agent)
+        .bind(target_agent)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut outputs = Vec::with_capacity(rows.len());
+        for row in rows {
+            outputs.push(self.parse_sub_agent_output(row)?);
+        }
+        Ok(outputs)
+    }
+
+    async fn list_sub_agent_outputs(
+        &self,
+        filter: &SubAgentOutputFilter,
+    ) -> Result<Vec<SubAgentOutput>> {
+        self.ensure_initialized().await?;
+
+        let mut query = String::from(
+            "SELECT id, caller_agent, target_agent, task_key, task_type, output, created_at, expires_at, metadata_json FROM sub_agent_outputs WHERE 1=1",
+        );
+
+        let mut bind_idx = 0;
+        if filter.caller_agent.is_some() {
+            bind_idx += 1;
+            query.push_str(&format!(" AND caller_agent = ${} ", bind_idx));
+        }
+        if filter.target_agent.is_some() {
+            bind_idx += 1;
+            query.push_str(&format!(" AND target_agent = ${} ", bind_idx));
+        }
+        if filter.task_type.is_some() {
+            bind_idx += 1;
+            query.push_str(&format!(" AND task_type = ${} ", bind_idx));
+        }
+        if filter.exclude_expired {
+            query.push_str(" AND (expires_at IS NULL OR expires_at > NOW())");
+        }
+
+        query.push_str(" ORDER BY created_at DESC");
+
+        let limit = filter.limit.unwrap_or(100);
+        bind_idx += 1;
+        query.push_str(&format!(" LIMIT ${} ", bind_idx));
+
+        let mut query_builder = sqlx::query(&query);
+        if let Some(ref caller) = filter.caller_agent {
+            query_builder = query_builder.bind(caller);
+        }
+        if let Some(ref target) = filter.target_agent {
+            query_builder = query_builder.bind(target);
+        }
+        if let Some(ref task_type) = filter.task_type {
+            query_builder = query_builder.bind(task_type);
+        }
+        query_builder = query_builder.bind(limit as i64);
+
+        let rows = query_builder.fetch_all(&self.pool).await?;
+        let mut outputs = Vec::with_capacity(rows.len());
+        for row in rows {
+            outputs.push(self.parse_sub_agent_output(row)?);
+        }
+        Ok(outputs)
+    }
+
+    async fn delete_expired_sub_agent_outputs(&self) -> Result<usize> {
+        self.ensure_initialized().await?;
+
+        let result = sqlx::query(
+            "DELETE FROM sub_agent_outputs WHERE expires_at IS NOT NULL AND expires_at <= NOW()",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() as usize)
+    }
+
+    async fn create_routing_trace(&self, trace: &RoutingTrace) -> Result<()> {
+        self.ensure_initialized().await?;
+
+        let context_pressure = trace.context_pressure.map(|p| p as f64);
+
+        sqlx::query(
+            "INSERT INTO routing_traces(id, session_id, task, selected_agent, reason, confidence, policy, alternatives_json, fallback_used, context_pressure, created_at) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        )
+        .bind(trace.id.to_string())
+        .bind(trace.session_id.to_string())
+        .bind(&trace.task)
+        .bind(&trace.selected_agent)
+        .bind(&trace.reason)
+        .bind(trace.confidence as f64)
+        .bind(&trace.policy)
+        .bind(serde_json::to_string(&trace.alternatives)?)
+        .bind(trace.fallback_used)
+        .bind(context_pressure)
+        .bind(trace.created_at.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn list_routing_traces(&self, filter: &RoutingTraceFilter) -> Result<Vec<RoutingTrace>> {
+        self.ensure_initialized().await?;
+
+        let mut query = String::from(
+            "SELECT id, session_id, task, selected_agent, reason, confidence, policy, alternatives_json, fallback_used, context_pressure, created_at FROM routing_traces WHERE 1=1",
+        );
+
+        let mut bind_idx = 0;
+        if filter.session_id.is_some() {
+            bind_idx += 1;
+            query.push_str(&format!(" AND session_id = ${} ", bind_idx));
+        }
+        if filter.selected_agent.is_some() {
+            bind_idx += 1;
+            query.push_str(&format!(" AND selected_agent = ${} ", bind_idx));
+        }
+        if filter.min_confidence.is_some() {
+            bind_idx += 1;
+            query.push_str(&format!(" AND confidence >= ${} ", bind_idx));
+        }
+        if filter.fallback_only {
+            query.push_str(" AND fallback_used = TRUE");
+        }
+
+        query.push_str(" ORDER BY created_at DESC");
+
+        let limit = filter.limit.unwrap_or(100);
+        bind_idx += 1;
+        query.push_str(&format!(" LIMIT ${} ", bind_idx));
+
+        let mut query_builder = sqlx::query(&query);
+        if let Some(session_id) = filter.session_id {
+            query_builder = query_builder.bind(session_id.to_string());
+        }
+        if let Some(ref selected_agent) = filter.selected_agent {
+            query_builder = query_builder.bind(selected_agent);
+        }
+        if let Some(min_confidence) = filter.min_confidence {
+            query_builder = query_builder.bind(min_confidence as f64);
+        }
+        query_builder = query_builder.bind(limit as i64);
+
+        let rows = query_builder.fetch_all(&self.pool).await?;
+        let mut traces = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id = row.get::<String, _>("id");
+            let session_id_str = row.get::<String, _>("session_id");
+            let context_pressure: Option<f64> = row.get("context_pressure");
+            let created_at = row.get::<String, _>("created_at");
+
+            traces.push(RoutingTrace {
+                id: Uuid::parse_str(&id)
+                    .map_err(|err| Error::Storage(format!("invalid trace uuid '{id}': {err}")))?,
+                session_id: Uuid::parse_str(&session_id_str).map_err(|err| {
+                    Error::Storage(format!(
+                        "invalid trace session uuid '{session_id_str}': {err}"
+                    ))
+                })?,
+                task: row.get("task"),
+                selected_agent: row.get("selected_agent"),
+                reason: row.get("reason"),
+                confidence: row.get::<f64, _>("confidence") as f32,
+                policy: row.get("policy"),
+                alternatives: serde_json::from_str(row.get("alternatives_json"))?,
+                fallback_used: row.get("fallback_used"),
+                context_pressure: context_pressure.map(|p| p as f32),
+                created_at: Self::parse_timestamp(&created_at)?,
+            });
+        }
+        Ok(traces)
     }
 }

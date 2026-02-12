@@ -1,3 +1,4 @@
+use crate::config::schema::SummaryTriggerMode;
 use crate::permissions::AskResolution;
 
 #[derive(Debug, Clone)]
@@ -94,6 +95,32 @@ pub enum Event {
         target_agent: String,
         success: bool,
     },
+    SubAgentParallelStarted {
+        session_id: String,
+        caller_agent: String,
+        task_count: usize,
+        max_parallelism: usize,
+    },
+    SubAgentParallelProgress {
+        session_id: String,
+        caller_agent: String,
+        completed: usize,
+        total: usize,
+    },
+    SubAgentDetailedLog {
+        session_id: String,
+        caller_agent: String,
+        target_agent: String,
+        log_level: String,
+        message: String,
+    },
+    SubAgentOutputCacheHit {
+        session_id: String,
+        caller_agent: String,
+        target_agent: String,
+        task_key: String,
+        cache_mode: String,
+    },
     LearningFeedbackRecorded {
         session_id: String,
         agent: String,
@@ -124,6 +151,24 @@ pub enum Event {
         snippets: usize,
         keyword_hits: usize,
         vector_hits: usize,
+    },
+    SummaryGenerated {
+        session_id: String,
+        agent: String,
+        trigger: SummaryTriggerMode,
+        message_count: usize,
+        token_pressure: f64,
+        summary_length: usize,
+        summary_key: String,
+        has_user_task: bool,
+        has_completion_summary: bool,
+    },
+    SummaryQualityUpdated {
+        session_id: String,
+        summary_key: String,
+        rating: i8,
+        implicit: bool,
+        acceptance_count: u32,
     },
     SessionUpdated(String),
     Error(String),

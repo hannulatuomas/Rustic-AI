@@ -13,8 +13,10 @@ use crate::rules::discovery::simple_glob_match;
 use crate::rules::manual_invocation::{extract_manual_invocations, resolve_manual_invocations};
 use crate::rules::precedence::sort_rule_files_by_precedence;
 use crate::rules::{TopicInferenceService, TopicTracker};
-use crate::storage::model::{Message, PendingToolState, Session, SessionConfig};
-use crate::storage::StorageBackend;
+use crate::storage::model::{
+    Message, PendingToolState, Session, SessionConfig, Todo, TodoFilter, TodoUpdate,
+};
+use crate::storage::{RoutingTraceFilter, StorageBackend};
 
 #[derive(Debug, Clone)]
 pub struct LoadedRule {
@@ -310,5 +312,44 @@ impl SessionManager {
     /// Check if a session has pending tool execution state (without clearing it)
     pub async fn has_pending_tool(&self, session_id: Uuid) -> Result<bool> {
         self.storage.has_pending_tool(session_id).await
+    }
+
+    // TODO tracking pass-through methods
+
+    pub async fn create_todo(&self, todo: &Todo) -> Result<()> {
+        self.storage.create_todo(todo).await
+    }
+
+    pub async fn list_todos(&self, filter: &TodoFilter) -> Result<Vec<Todo>> {
+        self.storage.list_todos(filter).await
+    }
+
+    pub async fn update_todo(&self, id: Uuid, update: &TodoUpdate) -> Result<()> {
+        self.storage.update_todo(id, update).await
+    }
+
+    pub async fn delete_todo(&self, id: Uuid) -> Result<()> {
+        self.storage.delete_todo(id).await
+    }
+
+    pub async fn get_todo(&self, id: Uuid) -> Result<Option<Todo>> {
+        self.storage.get_todo(id).await
+    }
+
+    pub async fn complete_todo_chain(&self, id: Uuid) -> Result<()> {
+        self.storage.complete_todo_chain(id).await
+    }
+
+    /// List routing traces for a session or all sessions
+    pub async fn list_routing_traces(
+        &self,
+        filter: &RoutingTraceFilter,
+    ) -> Result<Vec<crate::storage::RoutingTrace>> {
+        self.storage.list_routing_traces(filter).await
+    }
+
+    /// Create a routing trace for storage
+    pub async fn create_routing_trace(&self, trace: &crate::storage::RoutingTrace) -> Result<()> {
+        self.storage.create_routing_trace(trace).await
     }
 }

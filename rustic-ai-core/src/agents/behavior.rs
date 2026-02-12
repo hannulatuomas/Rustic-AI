@@ -1,4 +1,4 @@
-use crate::agents::memory::AgentMemory;
+use crate::agents::memory::{AgentMemory, AgentMemoryConfig};
 use crate::config::schema::AgentConfig;
 use crate::conversation::session_manager::SessionManager;
 use crate::error::Result;
@@ -6,7 +6,7 @@ use crate::events::Event;
 use crate::learning::{LearningManager, MistakeType};
 use crate::providers::types::{ChatMessage, GenerateOptions, ModelProvider};
 use crate::rag::HybridRetriever;
-use crate::storage::PendingToolState;
+use crate::storage::{PendingToolState, Todo, TodoMetadata, TodoPriority, TodoStatus};
 use crate::ToolManager;
 use chrono::Utc;
 use serde::Deserialize;
@@ -70,12 +70,19 @@ impl Agent {
         session_manager: Arc<SessionManager>,
         learning: Arc<LearningManager>,
         retriever: Arc<HybridRetriever>,
+        aggressive_summary_enabled: bool,
     ) -> Self {
+        let memory_config = AgentMemoryConfig {
+            aggressive_summary_enabled,
+            ..Default::default()
+        };
+
         let memory = AgentMemory::new(
             config.context_window_size,
             config.context_summary_enabled.unwrap_or(true),
             config.context_summary_max_tokens,
             config.context_summary_cache_entries,
+            memory_config,
         );
 
         Self {
@@ -433,6 +440,8 @@ impl Agent {
     async fn load_context_window_from_session(
         &self,
         session_id: uuid::Uuid,
+        session_id_str: &str,
+        event_tx: &mpsc::Sender<Event>,
     ) -> Result<Vec<ChatMessage>> {
         let messages = self
             .session_manager
@@ -453,6 +462,27 @@ impl Agent {
             .memory
             .build_context_window(chat_messages, &system_prompt, Some(self.provider.as_ref()))
             .await?;
+
+        if let Some(signal) = self.memory.take_last_summary_signal().await {
+            let _ = event_tx.try_send(Event::SummaryGenerated {
+                session_id: session_id_str.to_owned(),
+                agent: self.config.name.clone(),
+                trigger: signal.trigger,
+                message_count: signal.message_count,
+                token_pressure: signal.token_pressure,
+                summary_length: signal.summary_length,
+                summary_key: signal.summary_key.clone(),
+                has_user_task: signal.has_user_task,
+                has_completion_summary: signal.has_completion_summary,
+            });
+            let _ = event_tx.try_send(Event::SummaryQualityUpdated {
+                session_id: session_id_str.to_owned(),
+                summary_key: signal.summary_key,
+                rating: signal.rating,
+                implicit: signal.implicit,
+                acceptance_count: signal.acceptance_count,
+            });
+        }
 
         let mut system_context_blocks = Vec::new();
 
@@ -606,6 +636,10 @@ impl Agent {
                         category: pattern.category.as_str().to_owned(),
                     });
                 }
+
+                // Auto-create TODOs from response when enabled
+                let _ = self.maybe_auto_create_todos(session_id, &response).await;
+
                 return Ok(());
             }
 
@@ -997,7 +1031,9 @@ impl Agent {
 
         // We need to load the assistant response that was generated before the pending tool
         // This is the last assistant message before the tool messages
-        let context_window = self.load_context_window_from_session(session_id).await?;
+        let context_window = self
+            .load_context_window_from_session(session_id, session_id_str, &event_tx)
+            .await?;
         let assistant_response = context_window
             .iter()
             .rev()
@@ -1008,7 +1044,15 @@ impl Agent {
         // Check if there are more tool calls in the assistant response
         let parsed_tool_calls = self.extract_tool_calls(&assistant_response);
 
-        // Find where our pending tool was in the list and continue from there
+        if parsed_tool_calls.is_empty() {
+            // Auto-create TODOs from response when enabled
+            let _ = self
+                .maybe_auto_create_todos(session_id, &assistant_response)
+                .await;
+            return Ok(());
+        }
+
+        // Find where our pending tool was in list and continue from there
         let pending_tool_index = parsed_tool_calls
             .iter()
             .position(|call| call.tool == resumed_call.tool)
@@ -1020,13 +1064,6 @@ impl Agent {
             .take(max_tools_per_round.saturating_sub(tool_messages.len()));
 
         for call in remaining_tools {
-            if Self::is_cancelled(cancellation_token.as_ref()) {
-                let _ = event_tx.try_send(Event::Progress(
-                    "agent turn interrupted by user request".to_owned(),
-                ));
-                return Err(Self::interrupted_error());
-            }
-
             if total_tool_calls_executed >= max_total_tool_calls {
                 let _ = event_tx.try_send(Event::Progress(format!(
                     "agent reached max total tool calls per turn ({max_total_tool_calls}); stopping autonomous loop"
@@ -1109,9 +1146,11 @@ impl Agent {
             self.session_manager
                 .append_message(session_id, "assistant", &response)
                 .await?;
-
             let mut parsed_tool_calls = self.extract_tool_calls(&response);
+
             if parsed_tool_calls.is_empty() {
+                // Auto-create TODOs from response when enabled
+                let _ = self.maybe_auto_create_todos(session_id, &response).await;
                 return Ok(());
             }
 
@@ -1216,7 +1255,9 @@ impl Agent {
             }
         } else {
             // No pending state - reload context and continue
-            let mut context_window = self.load_context_window_from_session(session_id).await?;
+            let mut context_window = self
+                .load_context_window_from_session(session_id, &session_id_str, &event_tx)
+                .await?;
             if let Some(query) = Self::latest_user_task(&context_window) {
                 self.maybe_inject_retrieval_context(
                     &session_id_str,
@@ -1268,7 +1309,9 @@ impl Agent {
         });
 
         // 2-4. Load session history and build context window
-        let context_window = self.load_context_window_from_session(session_id).await?;
+        let context_window = self
+            .load_context_window_from_session(session_id, &session_id_str, &event_tx)
+            .await?;
 
         // 5. Add user input to context
         let mut full_context = context_window;
@@ -1294,6 +1337,11 @@ impl Agent {
         self.session_manager
             .append_message(session_id, "user", &input)
             .await?;
+
+        // Auto-create TODOs for complex multi-step user tasks.
+        let _ = self
+            .maybe_auto_create_todos_from_input(session_id, &input)
+            .await;
 
         // 7+. Run autonomous assistant/tool loop with configured limits
         let turn_result = self
@@ -1385,6 +1433,232 @@ impl Agent {
 
     pub fn config(&self) -> &AgentConfig {
         &self.config
+    }
+
+    pub async fn record_summary_feedback(
+        &self,
+        session_id: &str,
+        summary_key: &str,
+        accepted: bool,
+    ) -> Option<Event> {
+        self.memory
+            .record_summary_quality(summary_key, accepted)
+            .await;
+        self.memory
+            .get_summary_quality(summary_key)
+            .await
+            .map(|(acceptance_count, _)| {
+                self.memory.create_summary_quality_updated_event(
+                    session_id.to_string(),
+                    summary_key.to_string(),
+                    if accepted { 1 } else { -1 },
+                    false,
+                    acceptance_count,
+                )
+            })
+    }
+
+    /// Auto-create TODOs from agent response when enabled
+    ///
+    /// Parses markdown checklist items or lines starting with TODO: or - [ ]
+    /// and creates session TODOs. When todo_project_scope is true, also creates
+    /// a project-scoped parent TODO and links child TODOs via parent_id.
+    async fn maybe_auto_create_todos(&self, session_id: uuid::Uuid, response: &str) -> Result<()> {
+        if !self.config.auto_create_todos {
+            return Ok(());
+        }
+
+        let mut todo_items = Vec::new();
+
+        // Parse lines looking for TODO patterns
+        for line in response.lines() {
+            let trimmed = line.trim();
+            let title = if trimmed.starts_with("TODO:") || trimmed.starts_with("todo:") {
+                trimmed[5..].trim().to_string()
+            } else if trimmed.starts_with("- [ ]") {
+                trimmed[4..].trim().to_string()
+            } else if trimmed.starts_with("- [x]") {
+                // Skip completed items
+                continue;
+            } else {
+                continue;
+            };
+
+            if !title.is_empty() {
+                todo_items.push(title);
+            }
+        }
+
+        if todo_items.is_empty() {
+            return Ok(());
+        }
+
+        // Get project ID from session manager if available
+        let project_id = self
+            .session_manager
+            .project_profile()
+            .map(|p| p.name.clone());
+
+        let parent_id = if self.config.todo_project_scope && project_id.is_some() {
+            // Create a parent TODO for project scope
+            let parent_id = uuid::Uuid::new_v4();
+            let parent_todo = Todo {
+                id: parent_id,
+                project_id: project_id.clone(),
+                session_id,
+                parent_id: None,
+                title: format!("Session TODOs ({})", todo_items.len()),
+                description: Some("Auto-generated TODOs from agent response".to_string()),
+                status: TodoStatus::Todo,
+                priority: TodoPriority::Medium,
+                tags: vec!["auto-generated".to_string()],
+                metadata: TodoMetadata::default(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                completed_at: None,
+            };
+
+            self.session_manager.create_todo(&parent_todo).await?;
+            Some(parent_id)
+        } else {
+            None
+        };
+
+        // Create child TODOs for each parsed item
+        for title in todo_items {
+            let todo = Todo {
+                id: uuid::Uuid::new_v4(),
+                project_id: if self.config.todo_project_scope {
+                    project_id.clone()
+                } else {
+                    None
+                },
+                session_id,
+                parent_id,
+                title,
+                description: None,
+                status: TodoStatus::Todo,
+                priority: TodoPriority::Medium,
+                tags: vec!["auto-generated".to_string()],
+                metadata: TodoMetadata::default(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                completed_at: None,
+            };
+
+            self.session_manager.create_todo(&todo).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn maybe_auto_create_todos_from_input(
+        &self,
+        session_id: uuid::Uuid,
+        input: &str,
+    ) -> Result<()> {
+        if !self.config.auto_create_todos {
+            return Ok(());
+        }
+
+        let mut tasks = Vec::new();
+        for segment in input.split('\n') {
+            let trimmed = segment.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            let normalized = trimmed
+                .trim_start_matches(|c: char| {
+                    c.is_ascii_digit() || c == '.' || c == '-' || c == ' '
+                })
+                .trim();
+            if normalized.is_empty() {
+                continue;
+            }
+
+            if normalized.contains(" and ") {
+                for part in normalized.split(" and ") {
+                    let part = part.trim().trim_end_matches('.');
+                    if !part.is_empty() {
+                        tasks.push(part.to_string());
+                    }
+                }
+                continue;
+            }
+
+            if normalized.contains(",") {
+                for part in normalized.split(',') {
+                    let part = part.trim().trim_end_matches('.');
+                    if !part.is_empty() {
+                        tasks.push(part.to_string());
+                    }
+                }
+                continue;
+            }
+
+            tasks.push(normalized.trim_end_matches('.').to_string());
+        }
+
+        tasks.sort();
+        tasks.dedup();
+
+        if tasks.len() < 2 {
+            return Ok(());
+        }
+
+        let project_id = self
+            .session_manager
+            .project_profile()
+            .map(|p| p.name.clone());
+
+        let parent_id = if self.config.todo_project_scope && project_id.is_some() {
+            let parent_id = uuid::Uuid::new_v4();
+            let parent_todo = Todo {
+                id: parent_id,
+                project_id: project_id.clone(),
+                session_id,
+                parent_id: None,
+                title: format!("User request with {} tasks", tasks.len()),
+                description: Some(input.to_string()),
+                status: TodoStatus::Todo,
+                priority: TodoPriority::High,
+                tags: vec!["auto-generated".to_string(), "multi-step".to_string()],
+                metadata: TodoMetadata::default(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                completed_at: None,
+            };
+            self.session_manager.create_todo(&parent_todo).await?;
+            Some(parent_id)
+        } else {
+            None
+        };
+
+        for task in tasks {
+            let todo = Todo {
+                id: uuid::Uuid::new_v4(),
+                project_id: if self.config.todo_project_scope {
+                    project_id.clone()
+                } else {
+                    None
+                },
+                session_id,
+                parent_id,
+                title: task,
+                description: None,
+                status: TodoStatus::Todo,
+                priority: TodoPriority::Medium,
+                tags: vec!["auto-generated".to_string(), "input-task".to_string()],
+                metadata: TodoMetadata::default(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                completed_at: None,
+            };
+            self.session_manager.create_todo(&todo).await?;
+        }
+
+        Ok(())
     }
 }
 

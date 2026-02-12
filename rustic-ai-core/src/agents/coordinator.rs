@@ -7,9 +7,11 @@ use crate::learning::LearningManager;
 use crate::providers::registry::ProviderRegistry;
 use crate::providers::types::ChatMessage;
 use crate::rag::HybridRetriever;
+use crate::storage::StorageBackend;
 use crate::ToolManager;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -63,9 +65,11 @@ pub struct AgentCoordinator {
     registry: Arc<AgentRegistry>,
     default_agent: String,
     session_manager: Arc<SessionManager>,
+    _storage: Arc<dyn StorageBackend>,
 }
 
 impl AgentCoordinator {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         agent_configs: Vec<AgentConfig>,
         provider_registry: &ProviderRegistry,
@@ -73,6 +77,8 @@ impl AgentCoordinator {
         session_manager: Arc<SessionManager>,
         learning: Arc<LearningManager>,
         retriever: Arc<HybridRetriever>,
+        aggressive_summary_enabled: bool,
+        storage: Arc<dyn StorageBackend>,
     ) -> Result<Self> {
         let mut registry = AgentRegistry::new();
         let mut default_agent = String::new();
@@ -94,6 +100,7 @@ impl AgentCoordinator {
                 session_manager.clone(),
                 learning.clone(),
                 retriever.clone(),
+                aggressive_summary_enabled,
             ));
 
             registry.register(config.clone(), agent);
@@ -108,7 +115,12 @@ impl AgentCoordinator {
             registry: Arc::new(registry),
             default_agent,
             session_manager,
+            _storage: storage,
         })
+    }
+
+    pub fn get_inner_registry(&self) -> AgentRegistry {
+        self.registry.as_ref().clone()
     }
 
     pub fn get_agent(&self, name: Option<&str>) -> Result<Arc<Agent>> {
@@ -321,5 +333,86 @@ impl AgentCoordinator {
 
         selected.reverse();
         selected
+    }
+
+    /// Execute multiple sub-agent requests in parallel with bounded concurrency.
+    /// Results are returned in the same order as requests.
+    pub async fn run_parallel_sub_agents(
+        &self,
+        requests: Vec<SubAgentRequest>,
+        event_tx: mpsc::Sender<crate::events::Event>,
+        max_parallelism: Option<usize>,
+        emit_progress: bool,
+    ) -> Result<Vec<Result<String>>> {
+        if requests.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let session_id = requests
+            .first()
+            .map(|r| r.session_id.to_string())
+            .unwrap_or_default();
+        let caller_agent = requests
+            .first()
+            .map(|r| r.caller_agent_name.clone())
+            .unwrap_or_default();
+        let task_count = requests.len();
+        let max_tasks = max_parallelism.unwrap_or(8).max(1);
+
+        let _ = event_tx.try_send(crate::events::Event::SubAgentParallelStarted {
+            session_id: session_id.clone(),
+            caller_agent: caller_agent.clone(),
+            task_count,
+            max_parallelism: max_tasks,
+        });
+
+        let semaphore = Arc::new(Semaphore::new(max_tasks));
+        let completed_counter = Arc::new(AtomicUsize::new(0));
+        let mut tasks = Vec::with_capacity(requests.len());
+
+        for request in requests {
+            let semaphore = semaphore.clone();
+            let event_tx = event_tx.clone();
+            let coordinator = self.clone();
+            let progress_tx = event_tx.clone();
+            let progress_session_id = session_id.clone();
+            let progress_caller_agent = caller_agent.clone();
+            let completed_counter = completed_counter.clone();
+
+            let task = tokio::spawn(async move {
+                let _permit = semaphore.acquire_owned().await.map_err(|_| {
+                    Error::Tool("parallel sub-agent semaphore closed unexpectedly".to_owned())
+                })?;
+                let result = coordinator.run_sub_agent(request, event_tx).await;
+
+                if emit_progress {
+                    let completed = completed_counter.fetch_add(1, Ordering::SeqCst) + 1;
+                    let _ = progress_tx.try_send(crate::events::Event::SubAgentParallelProgress {
+                        session_id: progress_session_id,
+                        caller_agent: progress_caller_agent,
+                        completed,
+                        total: task_count,
+                    });
+                }
+
+                result
+            });
+
+            tasks.push(task);
+        }
+
+        let mut results = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            match task.await {
+                Ok(result) => results.push(result),
+                Err(err) => {
+                    results.push(Err(Error::Tool(format!(
+                        "parallel sub-agent task join failed: {err}"
+                    ))));
+                }
+            }
+        }
+
+        Ok(results)
     }
 }

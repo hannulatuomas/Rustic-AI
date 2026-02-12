@@ -641,6 +641,22 @@ pub fn validate_config(config: &Config) -> Result<()> {
             }
         }
 
+        if let Some(max_parallel) = agent.sub_agent_max_parallel_tasks {
+            if max_parallel > 10_000 {
+                return Err(Error::Validation(format!(
+                    "agent '{name}' sub_agent_max_parallel_tasks must be <= 10000 when set"
+                )));
+            }
+        }
+
+        if let Some(ttl) = agent.sub_agent_output_cache_ttl_secs {
+            if ttl > 31_536_000 {
+                return Err(Error::Validation(format!(
+                    "agent '{name}' sub_agent_output_cache_ttl_secs must be <= 31536000 when set"
+                )));
+            }
+        }
+
         for membership in &agent.taxonomy_membership {
             let basket = membership.basket.trim();
             if basket.is_empty() {
@@ -827,6 +843,50 @@ pub fn validate_config(config: &Config) -> Result<()> {
         return Err(Error::Validation(
             "summarization.summary_max_tokens must be greater than zero".to_owned(),
         ));
+    }
+
+    if let Some(threshold) = config.summarization.message_window_threshold {
+        if threshold == 0 {
+            return Err(Error::Validation(
+                "summarization.message_window_threshold must be greater than zero when set"
+                    .to_owned(),
+            ));
+        }
+    }
+
+    if let Some(percent) = config.summarization.token_threshold_percent {
+        if !(0.0..=1.0).contains(&percent) {
+            return Err(Error::Validation(
+                "summarization.token_threshold_percent must be between 0.0 and 1.0 when set"
+                    .to_owned(),
+            ));
+        }
+    }
+
+    if !(0.0..=1.0).contains(&config.dynamic_routing.context_pressure_threshold) {
+        return Err(Error::Validation(
+            "dynamic_routing.context_pressure_threshold must be between 0.0 and 1.0".to_owned(),
+        ));
+    }
+
+    if config.features.dynamic_routing_enabled {
+        if config.dynamic_routing.fallback_agent.trim().is_empty() {
+            return Err(Error::Validation(
+                "dynamic_routing.fallback_agent must be non-empty when dynamic routing is enabled"
+                    .to_owned(),
+            ));
+        }
+
+        let fallback_exists = config
+            .agents
+            .iter()
+            .any(|agent| agent.name == config.dynamic_routing.fallback_agent);
+        if !fallback_exists {
+            return Err(Error::Validation(format!(
+                "dynamic_routing.fallback_agent '{}' must reference a configured agent",
+                config.dynamic_routing.fallback_agent
+            )));
+        }
     }
 
     if config.retrieval.max_snippets == 0 {
